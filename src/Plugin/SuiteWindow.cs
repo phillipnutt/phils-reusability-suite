@@ -400,7 +400,7 @@ namespace PhilsReusabilitySuite
             GUILayout.Label(h.DisplayName, Look.Name);
             string under = BuildsLink.Under(h);
             if (under != null) GUILayout.Label("on " + under, Look.Meta);
-            string meta = Suite.Parts(h.Placed.Count) + " · " + (h.Flights == 0 ? "never flown" : h.Flights + (h.Flights == 1 ? " flight" : " flights")) + " · wear " + Core.Wear.Percent(h.Wear);
+            string meta = Suite.Parts(h.Placed.Count) + " · " + (h.Flights == 0 ? "never flown" : h.Flights + (h.Flights == 1 ? " flight" : " flights")) + (h.Flights > 0 || h.Wear >= 0.005 ? " · wear " + Core.Wear.Percent(h.Wear) : "");
             // Against what it launched with: a booster loaded to 30% on purpose that brings all of it back is full.
             if (!h.Ready) meta += " · fuel " + Mathf.RoundToInt((float)(h.Fuel * 100)) + "% of launch load";
             GUILayout.Label(meta, Look.Meta);

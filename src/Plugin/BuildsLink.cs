@@ -372,7 +372,7 @@ namespace PhilsReusabilitySuite
                 {
                     Id = h.Id,
                     Label = "#" + h.Number,
-                    Text = what + " · " + (h.Flights == 0 ? "never flown" : h.Flights + (h.Flights == 1 ? " flight" : " flights")) + " · wear " + Core.Wear.Percent(h.Wear),
+                    Text = what + " · " + (h.Flights == 0 ? "never flown" : h.Flights + (h.Flights == 1 ? " flight" : " flights")) + (h.Flights > 0 || h.Wear >= 0.005 ? " · wear " + Core.Wear.Percent(h.Wear) : ""),
                     Warning = h.Missing.Count > 0 ? "missing " + Suite.Parts(h.Missing.Count) : "",
                     Price = Price(q),
                     Reserved = h.ReservedBy != null,

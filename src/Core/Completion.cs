@@ -61,6 +61,7 @@ namespace PhilsReusabilitySuite.Core
                     m.Set("serial", flown.Get("serial"));
                     m.Set("flights", flown.Get("flights") ?? "0");
                     m.Set("hull", flown.Get("hull") ?? "");
+                    m.Set("wear", flown.Get("wear") ?? "0");
                     result.Used.Add(flown.Get("serial"));
                 }
                 else
@@ -69,6 +70,7 @@ namespace PhilsReusabilitySuite.Core
                     m.Set("serial", "");
                     m.Set("flights", "0");
                     m.Set("hull", "");
+                    m.Set("wear", "0");
                     result.NewSlots.Add(i);
                 }
                 i++;

@@ -18,7 +18,8 @@ namespace PhilsReusabilitySuite
         float speed, g, wait, settled;
         bool sim, simKnown;
 
-        public override Activation GetActivation() => Activation.LoadedVessels;
+        // Both flags: KSP checks the scene and the vessel separately (LoadedVessels alone is never active).
+        public override Activation GetActivation() => Activation.FlightScene | Activation.LoadedVessels;
 
         void FixedUpdate()
         {

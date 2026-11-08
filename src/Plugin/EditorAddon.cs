@@ -200,6 +200,9 @@ namespace PhilsReusabilitySuite
         public static void OpenHangarShip(HangarShip h)
         {
             if (HighLogic.LoadedSceneIsEditor) { LoadHangarShip(h); return; }
+            // Entering a building from the Space Center saves the game first, as KSP's own buttons do: the hangar
+            // as it is now (refuelled, say) is what the editor scene loads.
+            GamePersistence.SaveGame("persistent", HighLogic.SaveFolder, SaveMode.OVERWRITE);
             string facility = Suite.FacilityOf(h.Craft);
             ConfigNode c = KspNodes.ToKsp(h.Craft, "");
             c.SetValue("ship", h.DisplayName, true);
@@ -636,8 +639,10 @@ namespace PhilsReusabilitySuite
                 bool nothing = line.Price < 0.5 && line.Fuel < 0.5;
                 if (line.Kind == OwnerKind.Bin) title = parts + " from the parts bin";
                 else title = (line.MaxFlights > 0 ? parts.Replace(" part", " flown part") : parts) + " from " + line.Label;
+                bool refuel = line.Fuel >= 0.5;
                 note = nothing ? (line.Ready ? "fuelled and like new: nothing to do" : "nothing to do")
-                     : wear + " · refurbished to 0%" + (line.Fuel >= 0.5 ? " and refuelled" : "");
+                     : line.Wear < 0.005 ? "like new" + (refuel ? " · refuelled" : "")
+                     : wear + " · refurbished to 0%" + (refuel ? " and refuelled" : "");
             }
             GUILayout.BeginHorizontal();
             GUILayout.BeginVertical();
