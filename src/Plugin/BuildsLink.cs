@@ -66,11 +66,25 @@ namespace PhilsReusabilitySuite
 
         static Core.Settings S => Suite.Settings;
 
-        /// <summary>The design a hangar ship is a copy of: the design most of its parts were placed from.</summary>
-        public static string DesignOf(HangarShip h)
+        /// <summary>
+        /// The design a hangar ship is a copy of: the one design every design-placed part of it came from (parts
+        /// added by hand don't count). A ship made of two designs, such as a payload stacked on a launcher, is a
+        /// copy of neither: it waits in the hangar as itself, until its first stage comes home on its own.
+        /// </summary>
+        public static string DesignOf(HangarShip h) => SingleDesign(h.Craft.Children("PART").Select(DesignIn));
+
+        /// <summary>The one design id among these (blanks ignored), or null when there are none or several.</summary>
+        public static string SingleDesign(IEnumerable<string> designs)
         {
-            return h.Craft.Children("PART").Select(p => DesignIn(p)).Where(x => !string.IsNullOrEmpty(x))
-                .GroupBy(x => x).OrderByDescending(g => g.Count()).Select(g => g.Key).FirstOrDefault();
+            var ids = designs.Where(x => !string.IsNullOrEmpty(x)).Distinct().Take(2).ToList();
+            return ids.Count == 1 ? ids[0] : null;
+        }
+
+        /// <summary>A design's name ("Kopje 005"), or null if Phil's Builds doesn't know the id.</summary>
+        public static string NameOf(string designId)
+        {
+            try { return BuildsApi.Find(designId)?.Name; }
+            catch (Exception) { return null; }
         }
 
         static string DesignIn(Node part) => part.Children("MODULE").FirstOrDefault(m => m.Get("name") == Core.Craft.ModuleName)?.Get("design");

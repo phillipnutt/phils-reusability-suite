@@ -220,6 +220,14 @@ namespace PhilsReusabilitySuite
             ShipConstruct ship = EditorLogic.fetch.ship;
             Craft = KspNodes.FromKsp(ship.SaveShip());
             ShipName = KSP.Localization.Localizer.Format(ship.shipName);
+            // A launcher picked up into an empty VAB keeps KSP's "Untitled Space Craft". A ship that is all one
+            // design is built under that design's name instead, so it comes home as "Kopje 005 #1".
+            string onlyDesign = BuildsLink.SingleDesign(ship.parts.Select(p => PRSPart.Of(p)?.design));
+            if (ShipName == KSP.Localization.Localizer.Format("#autoLOC_900530") && onlyDesign != null)
+            {
+                string designName = BuildsLink.NameOf(onlyDesign);
+                if (!string.IsNullOrEmpty(designName)) { ShipName = designName; Craft.Set("ship", designName); }
+            }
             Facility = ship.shipFacility == EditorFacility.SPH ? "SPH" : "VAB";
             var serials = ship.parts.Select(PRSPart.SerialOf).Where(s => s != null).ToList();
             ReadyShip = sc?.ReadyShipOf(serials);

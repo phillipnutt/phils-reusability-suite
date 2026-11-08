@@ -130,6 +130,13 @@ namespace PhilsReusabilitySuite
             yield return new WaitForSeconds(0.5f);
         }
 
+        static void StampedPart(Node craft, string designId)
+        {
+            Node m = craft.AddNode("PART").AddNode("MODULE");
+            m.Set("name", Core.Craft.ModuleName);
+            m.Set("design", designId);
+        }
+
         static bool Stamped(IList<Part> parts, Design d) =>
             parts.Select((p, i) => PRSPart.Of(p) != null && PRSPart.Of(p).design == d.Id && PRSPart.Of(p).slot == i).All(x => x);
 
@@ -190,7 +197,10 @@ namespace PhilsReusabilitySuite
             yield return Place(d);
             ShipConstruct ship = EditorLogic.fetch.ship;
             Check(ship.parts.Count == 8 && Stamped(ship.parts, d), "all " + ship.parts.Count + " placed parts carry the design and their slot");
+            // Picked up into an empty VAB, a launcher keeps KSP's default name; the build takes the design's name.
+            ship.shipName = KSP.Localization.Localizer.Format("#autoLOC_900530");
             EditorAddon.Instance.OpenBuildPanel();
+            Check(EditorAddon.Instance.Panel.ShipName == DesignName, "a ship called '" + KSP.Localization.Localizer.Format("#autoLOC_900530") + "' that is all one design is built as " + EditorAddon.Instance.Panel.ShipName);
             BuildPanel panel = EditorAddon.Instance.Panel;
             Check(!panel.Unfiled, "a filed design shows no 'Not filed' warning");
             Check(panel.ReadyCopy == null, "nothing ready in the hangar to offer yet");
@@ -207,6 +217,14 @@ namespace PhilsReusabilitySuite
             HangarShip ready = sc.Hangar.FirstOrDefault(h => h.Ready);
             Check(ready != null && BuildsLink.DesignOf(ready) == d.Id, "the ready ship is a copy of the design (" + ready?.DisplayName + ")");
             if (ready == null) yield break;
+            Check(ready.Name == DesignName, "it's named after the design, not 'Untitled Space Craft' (" + ready.Name + ")");
+            // A payload stacked on a launcher is a copy of neither design; parts added by hand don't count.
+            var mixed = new HangarShip { Craft = new Node("SHIP") };
+            var handAdded = new HangarShip { Craft = new Node("SHIP") };
+            foreach (string id in new[] { d.Id, d.Id, "another-design" }) StampedPart(mixed.Craft, id);
+            foreach (string id in new[] { d.Id, d.Id, "" }) StampedPart(handAdded.Craft, id);
+            Check(BuildsLink.DesignOf(mixed) == null, "a ship made of two designs (a payload on a launcher) is a copy of neither");
+            Check(BuildsLink.DesignOf(handAdded) == d.Id, "a copy with a part added by hand is still a copy of its design");
             string readyId = ready.Id;
             rows = Link.CopiesOf(d);
             CopyRow readyRow = rows.FirstOrDefault(r => r.Id == readyId);
@@ -313,6 +331,29 @@ namespace PhilsReusabilitySuite
             sc = PRSScenario.Instance;
             Check(!sc.Hangar.Any(h => h.Placed.Any(plainSerials.Contains)) && sc.Hangar.Count == hangarBefore, "the unfiled ship didn't come home to the hangar");
             Check(sc.Bin.Count(b => plainSerials.Contains(b.Serial)) == plainSerials.Count, "all " + plainSerials.Count + " of its parts went to the parts bin");
+
+            // 8. The VAB landing check on the stock Kerbal X: launch clamps stay on the pad, and the same ship
+            // measures the same every time it's checked.
+            yield return ToEditor();
+            EditorLogic.LoadShipFromFile(Path.Combine(KSPUtil.ApplicationRootPath, "Ships", "VAB", "Kerbal X.craft"));
+            yield return new WaitForSeconds(3f);
+            ShipConstruct kx = EditorLogic.fetch.ship;
+            var clampNames = new HashSet<string>(kx.parts.Where(p => p.FindModuleImplementing<LaunchClamp>() != null).Select(p => p.partInfo.name));
+            List<StageReturns.EditorPiece> first = StageReturns.CheckEditorShip(kx);
+            foreach (StageReturns.EditorPiece pc in first) Note("landing check: " + pc.Count + " × " + pc.Label + " (" + pc.Parts + " parts): " + pc.Speed.ToString("0.0") + " m/s");
+            Check(clampNames.Count > 0 && first.Count > 0 && first.All(pc => !pc.Names.Any(clampNames.Contains)), "no dropping piece includes a launch clamp (" + kx.parts.Count(p => clampNames.Contains(p.partInfo.name)) + " clamps on the ship)");
+            bool same = true;
+            for (int i = 0; i < 4; i++)
+            {
+                EditorAddon.Instance.OpenBuildPanel();
+                yield return new WaitForSeconds(1f);
+                EditorAddon.Instance.Panel.Showing = false;
+                List<StageReturns.EditorPiece> again = StageReturns.CheckEditorShip(kx);
+                for (int j = 0; j < first.Count && j < again.Count; j++)
+                    if (Math.Abs(again[j].Speed - first[j].Speed) > first[j].Speed * 0.005) { same = false; Note("landing check moved: " + first[j].Label + " " + first[j].Speed.ToString("0.0") + " → " + again[j].Speed.ToString("0.0") + " m/s"); }
+                if (again.Count != first.Count) same = false;
+            }
+            Check(same, "checking the same ship five times gives the same landing speeds");
         }
     }
 }

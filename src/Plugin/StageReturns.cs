@@ -281,6 +281,8 @@ namespace PhilsReusabilitySuite
             public double Speed;
             public int Chutes;
             public bool CanBurn;
+            /// <summary>The part names in the piece (for checking).</summary>
+            public List<string> Names = new List<string>();
         }
 
         /// <summary>
@@ -307,19 +309,22 @@ namespace PhilsReusabilitySuite
                                && piece.SelectMany(p => p.FindModulesImplementing<ModuleEngines>()).Any(e => !e.propellants.Any(pr => pr.name == "SolidFuel"));
                 string key = string.Join(",", piece.Select(p => p.partInfo.name).OrderBy(n => n).ToArray()) + "|" + Math.Round(vt, 1);
                 if (byKey.TryGetValue(key, out EditorPiece same)) { same.Count++; continue; }
-                var e2 = new EditorPiece { Label = "Piece with " + biggest.partInfo.title, Parts = piece.Count, Speed = vt, Chutes = prof.Chutes, CanBurn = canBurn };
+                var e2 = new EditorPiece { Label = "Piece with " + biggest.partInfo.title, Parts = piece.Count, Speed = vt, Chutes = prof.Chutes, CanBurn = canBurn, Names = piece.Select(p => p.partInfo.name).ToList() };
                 byKey[key] = e2;
                 pieces.Add(e2);
             }
             return pieces;
         }
 
-        /// <summary>A decoupler and everything under it, stopping at the next decoupler down.</summary>
+        /// <summary>
+        /// A decoupler and everything under it, stopping at the next decoupler down. Launch clamps are left out:
+        /// they stay on the pad, so they never fall with a stage.
+        /// </summary>
         static void Collect(Part p, List<Part> into)
         {
             into.Add(p);
             foreach (Part c in p.children)
-                if (c.FindModuleImplementing<ModuleDecouplerBase>() == null) Collect(c, into);
+                if (c.FindModuleImplementing<ModuleDecouplerBase>() == null && c.FindModuleImplementing<LaunchClamp>() == null) Collect(c, into);
         }
 
         static string Name(Vessel v) => KSP.Localization.Localizer.Format(v.vesselName);
