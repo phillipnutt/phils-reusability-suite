@@ -439,6 +439,17 @@ namespace PhilsReusabilitySuite
             // and is ready again as itself, with its own flown parts.
             yield return ToSpaceCenter();
             sc = PRSScenario.Instance;
+            // A price made before a bin part was sold doesn't hold: the build is refused, not charged the old price.
+            BuildsLink.LibraryBuild stale = BuildsLink.Library().FirstOrDefault(i => i.Design.Id == d.Id);
+            if (stale != null && stale.Quote.BinSerials.Count > 0)
+            {
+                string gone = stale.Quote.BinSerials[0];
+                sc.Sell(sc.Bin.Where(b => b.Serial == gone).ToList());
+                double fStale = Funds;
+                BuildJob staleJob = BuildsLink.BuildFromLibrary(stale, false, false, out string staleErr);
+                Check(staleJob == null && staleErr != null && staleErr.Contains("changed") && Near(Funds, fStale, 0.5), "a library build priced with a bin part that was then sold is refused, nothing charged (" + staleErr + ")");
+            }
+            else Note("no bin parts matched the Hopper here, so the stale-price check was skipped");
             HangarShip toRestore = sc.Hangar.FirstOrDefault(h => h.Id == flownId);
             BuildsLink.Restore rs = toRestore != null ? BuildsLink.RestoreOf(toRestore) : null;
             if (toRestore != null && SuiteWindow.Instance != null) SuiteWindow.Instance.ShowHangarShip(toRestore.Id);
@@ -482,6 +493,21 @@ namespace PhilsReusabilitySuite
             Check(same, "checking the same ship five times gives the same landing speeds");
             // (The stage-recovery test checks that a piece measured on its own before it drops reads the same as
             // the real piece measured after it has dropped.)
+
+            // A stage that can steer and has liquid engines is told how much propellant to keep for a landing
+            // burn: the Z-MAP's middle stage (a QBE probe core and a Terrier), which lands that way in the
+            // powered-landing test.
+            EditorLogic.LoadShipFromFile(Path.Combine(KSPUtil.ApplicationRootPath, "Ships", "VAB", "Z-MAP Satellite Launch Kit.craft"));
+            yield return new WaitForSeconds(3f);
+            List<StageReturns.EditorPiece> zmap = StageReturns.CheckEditorShip(EditorLogic.fetch.ship);
+            foreach (StageReturns.EditorPiece pc in zmap) Note("Z-MAP landing check: " + pc.Label + " (" + pc.Parts + " parts): " + pc.Speed.ToString("0") + " m/s, " + (pc.CanBurn ? (pc.TooWeakToBurn ? "engines too weak" : "keep " + pc.BurnPropellant.ToString("0.000") + " t") : "can't burn"));
+            StageReturns.EditorPiece middle = zmap.FirstOrDefault(pc => pc.Names.Contains("probeCoreCube"));
+            Check(middle != null && middle.CanBurn && !middle.TooWeakToBurn && middle.BurnPropellant > 0.01 && middle.BurnPropellant < 2, "the Z-MAP's middle stage is told to keep " + (middle != null ? middle.BurnPropellant.ToString("0.00") : "?") + " t of propellant for its landing burn");
+            EditorAddon.Instance.OpenBuildPanel();
+            yield return new WaitForSeconds(1f);
+            Shot("build_panel_landing_burn");
+            yield return new WaitForSeconds(1f);
+            EditorAddon.Instance.Panel.Showing = false;
         }
     }
 }

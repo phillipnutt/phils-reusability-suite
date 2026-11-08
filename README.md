@@ -18,7 +18,9 @@ it hasn't had much real play yet. Back up your saves. The design is in [DESIGN.m
   upgrade times, no research times, no upgrade points.
 - **A hangar.** Finished builds wait in the hangar, ready, and launch at no extra cost. Recovered ships come
   back to the hangar exactly as they landed, a lost fin and all, and fly again after a cheap refit.
-  Refitting costs 10% of a part's price, plus 1% for every flight it has made.
+  Refitting costs 10% of a part's price, plus 1% for every flight it has made. A flown first stage, or a ship
+  that came back short of a part, can be **restored to its design** from the hangar: its own parts plus new ones
+  for whatever it's missing, and it stays the same ship.
 - **Recovery that asks.** The Recover button offers **To the hangar** (you pay the transport home, more the
   farther away it landed) or **Sell for scrap** (half its price, less the haul). Cancel leaves it where it
   is.

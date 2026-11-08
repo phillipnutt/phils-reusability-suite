@@ -124,7 +124,14 @@ namespace PhilsReusabilitySuite
         void TabButton(int i, string label, int count)
         {
             GUILayout.BeginVertical(); GUILayout.Space(10);
-            if (GUILayout.Button(label + "   <color=#ffa62b><b>" + count + "</b></color>", Tab == i ? Look.TabOn : Look.Tab, GUILayout.Height(30), GUILayout.ExpandWidth(false))) { Tab = i; error = null; }
+            if (GUILayout.Button(label + "   <color=#ffa62b><b>" + count + "</b></color>", Tab == i ? Look.TabOn : Look.Tab, GUILayout.Height(30), GUILayout.ExpandWidth(false)))
+            {
+                Tab = i;
+                error = null;
+                picking = false;
+                library = null;
+                GUIUtility.ExitGUI();   // what the window holds changed: end this event, draw afresh next frame
+            }
             GUILayout.EndVertical();
             GUILayout.Space(4);
         }
@@ -138,8 +145,9 @@ namespace PhilsReusabilitySuite
             List<BuildJob> active = sc.ActiveJobs();
             if (picking)
             {
-                if (library == null) library = BuildsLink.Library();
-                LibraryList(sc);
+                // Priced once, at the start of a frame (Layout), so every event in the frame draws the same list.
+                if (library == null && Event.current.type == EventType.Layout) library = BuildsLink.Library();
+                if (library != null) LibraryList(sc);
             }
             else
             {
@@ -156,7 +164,7 @@ namespace PhilsReusabilitySuite
                 }
                 Indent(() =>
                 {
-                    if (GUILayout.Button("Build from Phil's Builds…", Look.Ghost, GUILayout.Height(32), GUILayout.ExpandWidth(false))) OpenLibrary();
+                    if (GUILayout.Button("Build from Phil's Builds…", Look.Ghost, GUILayout.Height(32), GUILayout.ExpandWidth(false))) { OpenLibrary(); GUIUtility.ExitGUI(); }
                     GUILayout.Label("Queue a filed launcher or craft without opening the VAB or SPH.", Look.Hint);
                 });
             }
@@ -217,7 +225,7 @@ namespace PhilsReusabilitySuite
                 GUILayout.BeginHorizontal();
                 GUILayout.Label("<b>Build from Phil's Builds</b>", Look.H2Muted);
                 GUILayout.FlexibleSpace();
-                if (GUILayout.Button("Back to the queue", Look.Ghost, GUILayout.Height(28), GUILayout.ExpandWidth(false))) { picking = false; library = null; }
+                if (GUILayout.Button("Back to the queue", Look.Ghost, GUILayout.Height(28), GUILayout.ExpandWidth(false))) { picking = false; library = null; GUIUtility.ExitGUI(); }
                 GUILayout.EndHorizontal();
                 GUILayout.Label("Each is built new, from its design file. Matching parts in the parts bin are used automatically, at their refit price.", Look.Hint);
                 GUILayout.Space(4);
@@ -269,6 +277,7 @@ namespace PhilsReusabilitySuite
                 if (job == null) error = err;
                 else { error = null; picking = false; }
                 library = null;   // fresh serials and prices next time
+                GUIUtility.ExitGUI();
             }
             GUILayout.EndHorizontal();
             GUILayout.EndVertical();
@@ -367,14 +376,15 @@ namespace PhilsReusabilitySuite
         BuildsLink.Restore RestoreFor(HangarShip h)
         {
             if (h.Ready || h.ReservedBy != null) return null;
-            if (restoreFor != h.Id || Time.realtimeSinceStartup - restoreAt > 2f)
+            // Worked out only at the start of a frame (Layout), so the panel's shape can't change between its events.
+            if (Event.current.type == EventType.Layout && (restoreFor != h.Id || Time.realtimeSinceStartup - restoreAt > 2f))
             {
                 restoreFor = h.Id;
                 restoreAt = Time.realtimeSinceStartup;
                 try { restore = BuildsLink.RestoreOf(h); }
                 catch (Exception ex) { restore = null; Log.Warn("Couldn't work out restoring " + h.DisplayName + ": " + ex.Message); }
             }
-            return restore;
+            return restoreFor == h.Id ? restore : null;
         }
 
         static string GroupOf(HangarShip h) => h.ReservedBy != null ? "In a build" : h.Ready ? "Ready to fly" : "Stored";
@@ -440,7 +450,9 @@ namespace PhilsReusabilitySuite
                     if (r != null && GUILayout.Button("Restore to " + r.Design.Name, r.Blocked == null ? Look.Go : Look.GoOff, GUILayout.Height(38)) && r.Blocked == null)
                     {
                         if (BuildsLink.RestoreBuild(h, r, false, false, out err) == null) error = err;
-                        else { error = null; Tab = 0; restoreFor = null; }
+                        else { error = null; Tab = 0; picking = false; library = null; }
+                        restoreFor = null;
+                        GUIUtility.ExitGUI();
                     }
                     if (GUILayout.Button("Refit and launch", r != null ? Look.Ghost : Look.Go, GUILayout.Height(r != null ? 32 : 38)))
                     {
@@ -458,9 +470,9 @@ namespace PhilsReusabilitySuite
                 GUILayout.Space(4);
                 GUILayout.BeginHorizontal();
                 GUILayout.FlexibleSpace();
-                if (GUILayout.Button("<u>Take apart</u>", Look.Link, GUILayout.ExpandWidth(false))) { sc.TakeApart(h); selectedId = null; error = null; }
+                if (GUILayout.Button("Take apart", Look.Link, GUILayout.ExpandWidth(false))) { sc.TakeApart(h); selectedId = null; error = null; }
                 GUILayout.Space(16);
-                if (Suite.Career && GUILayout.Button("<u>Sell for scrap · +" + Pricing.Funds(sc.ScrapValue(h)) + "</u>", Look.Link, GUILayout.ExpandWidth(false))) { sc.Sell(h); selectedId = null; error = null; }
+                if (Suite.Career && GUILayout.Button("Sell for scrap · +" + Pricing.Funds(sc.ScrapValue(h)), Look.Link, GUILayout.ExpandWidth(false))) { sc.Sell(h); selectedId = null; error = null; }
                 GUILayout.FlexibleSpace();
                 GUILayout.EndHorizontal();
             }

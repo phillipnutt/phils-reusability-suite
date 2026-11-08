@@ -191,7 +191,7 @@ namespace PhilsReusabilitySuite
                         Parts = craft.Children("PART").Count(),
                         Quote = sc.QuoteFor(craft, d.Name, null),
                         Ready = sc.Hangar.Count(h => h.Ready && h.ReservedBy == null && DesignOf(h) == d.Id),
-                        KindLabel = d.Kind == DesignKind.Launcher ? "Launcher" + (d.Tons > 0 ? " · " + d.Tons.ToString("0.#") + " t" : "")
+                        KindLabel = d.Kind == DesignKind.Launcher ? "Launcher" + (d.Tons > 0 ? " · " + d.Tons.ToString(d.Tons < 1 ? "0.##" : "0.#") + " t" : "")
                                   : d.Kind == DesignKind.UpperStage ? "Upper stage" : (d.CategoryLabel + " · " + facility),
                     };
                     item.Blocked = WhyNot(craft, facility);

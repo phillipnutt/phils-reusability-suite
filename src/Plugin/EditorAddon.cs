@@ -25,13 +25,35 @@ namespace PhilsReusabilitySuite
             Instance = this;
             Look.Init();
             PRSPart.EditorTrusted.Clear();
-            // Coming back to the editor restores the ship that was there: its hangar parts stay hangar parts.
-            if (EditorDriver.StartupBehaviour == EditorDriver.StartupBehaviours.LOAD_FROM_CACHE) PRSPart.EditorTrusted.UnionWith(PRSPart.EditorCarry);
+            pendingCarry = EditorDriver.StartupBehaviour == EditorDriver.StartupBehaviours.LOAD_FROM_CACHE ? new HashSet<string>(PRSPart.EditorCarry) : null;
+            ApplyCarry();
             GameEvents.onEditorShipModified.Add(OnShipModified);
             GameEvents.onEditorLoad.Add(OnEditorLoad);
             GameEvents.onGameSceneLoadRequested.Add(OnLeavingScene);
             window = gameObject.AddComponent<SuiteWindow>();
             StartCoroutine(HookLaunchButton());
+            StartCoroutine(CheckShipAlreadyThere());
+        }
+
+        /// <summary>
+        /// KSP can bring the ship back from its cache before this addon is listening for editor loads, so the
+        /// ship already in the editor is checked once it's there (giving new serials to anything that isn't
+        /// hangar hardware). Checking twice changes nothing.
+        /// </summary>
+        IEnumerator CheckShipAlreadyThere()
+        {
+            float t0 = Time.realtimeSinceStartup;
+            while (Time.realtimeSinceStartup - t0 < 5f)
+            {
+                ShipConstruct ship = EditorLogic.fetch != null ? EditorLogic.fetch.ship : null;
+                if (ship != null && ship.parts.Count > 0)
+                {
+                    yield return null;
+                    Check(ship);
+                    yield break;
+                }
+                yield return null;
+            }
         }
 
         void OnDestroy()
@@ -91,9 +113,27 @@ namespace PhilsReusabilitySuite
         /// Designs never carry specific hardware: any serial the editor didn't give out or load from the hangar
         /// (a saved craft or subassembly) gets replaced, and so does a duplicate.
         /// </summary>
+        static HashSet<string> pendingCarry;
+
+        /// <summary>
+        /// Coming back to the editor, KSP brings back the ship that was there, or the ship just launched. Only
+        /// the parts that are still hangar hardware (a hangar ship's, the parts bin's or a queued build's) stay
+        /// so. Every other serial the editor gave out last time may be flying now, and those parts get new ones.
+        /// </summary>
+        static void ApplyCarry()
+        {
+            PRSScenario sc = PRSScenario.Instance;
+            if (pendingCarry == null || sc == null) return;
+            var inBuilds = new HashSet<string>(sc.Jobs.SelectMany(j => j.Serials()));
+            foreach (string s in pendingCarry)
+                if (inBuilds.Contains(s) || sc.Hangar.Any(h => h.Placed.Contains(s)) || sc.Bin.Any(b => b.Serial == s)) PRSPart.EditorTrusted.Add(s);
+            pendingCarry = null;
+        }
+
         static void Check(ShipConstruct ship)
         {
             if (ship == null) return;
+            ApplyCarry();
             var seen = new HashSet<string>();
             int renewed = 0;
             foreach (Part p in ship.parts)
@@ -335,9 +375,16 @@ namespace PhilsReusabilitySuite
                 GUILayout.BeginHorizontal();
                 GUILayout.Label((p.Count > 1 ? p.Count + " × " : "") + p.Label + " <color=#7d88a3>(" + p.Parts + " parts)</color>", Look.Meta, GUILayout.Width(330));
                 string how = p.Chutes > 0 ? " on " + p.Chutes + (p.Chutes == 1 ? " chute" : " chutes") : " with no chutes";
-                if (p.Speed <= Core.Landing.SafeSpeed) GUILayout.Label("comes home: " + p.Speed.ToString("0.0") + " m/s" + how, Look.MetaGood);
-                else if (p.Speed <= Core.Landing.LostSpeed) GUILayout.Label("comes home hard: " + p.Speed.ToString("0.0") + " m/s" + how, Look.MetaWarn);
-                else GUILayout.Label(p.CanBurn ? "needs a landing burn: " + p.Speed.ToString("0") + " m/s" + how : "lost: " + p.Speed.ToString("0") + " m/s" + how, p.CanBurn ? Look.MetaWarn : Look.MetaBad);
+                // A fixed width, so a result that wraps gets the height it needs (GUILayout measures wrapped text at
+                // the width it's given).
+                GUILayoutOption w = GUILayout.Width(226);
+                if (p.Speed <= Core.Landing.SafeSpeed) GUILayout.Label("comes home: " + p.Speed.ToString("0.0") + " m/s" + how, Look.MetaGood, w);
+                else if (p.Speed <= Core.Landing.LostSpeed) GUILayout.Label("comes home hard: " + p.Speed.ToString("0.0") + " m/s" + how, Look.MetaWarn, w);
+                else if (p.CanBurn && !p.TooWeakToBurn)
+                    GUILayout.Label("lands with a burn if it keeps " + p.BurnPropellant.ToString("0.00") + " t of propellant (" + p.Speed.ToString("0") + " m/s without)", Look.MetaWarn, w);
+                else if (p.CanBurn)
+                    GUILayout.Label("lost: " + p.Speed.ToString("0") + " m/s" + how + "; its engines are too weak for a landing burn", Look.MetaBad, w);
+                else GUILayout.Label("lost: " + p.Speed.ToString("0") + " m/s" + how, Look.MetaBad, w);
                 GUILayout.EndHorizontal();
             }
         }
@@ -349,6 +396,15 @@ namespace PhilsReusabilitySuite
             if (sc == null || Quote == null) { Error = "The suite's save data isn't loaded."; return false; }
             if (Quote.PartCount == 0) { Error = "There's nothing to build."; return false; }
             string error;
+            // Bin parts or hangar ships priced into this build may have been sold or put in another build since
+            // the panel opened: price it again and let the player look before paying.
+            string stale = sc.StaleQuote(Quote, Editing, null);
+            if (stale != null)
+            {
+                Refresh();
+                Error = "Something changed since this was priced (" + stale + "). Check the new price and press Build again.";
+                return false;
+            }
             if (Editing != null)
             {
                 if (!sc.UpdateBuild(Editing, Craft, ShipName, Quote, out error)) { Error = error; return false; }

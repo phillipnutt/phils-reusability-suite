@@ -394,8 +394,39 @@ namespace PhilsReusabilitySuite
             public double Speed;
             public int Chutes;
             public bool CanBurn;
+            /// <summary>Propellant (tonnes) it must keep for a landing burn, when it could make one.</summary>
+            public double BurnPropellant;
+            /// <summary>It could steer, but its engines can't hold it up even when empty.</summary>
+            public bool TooWeakToBurn;
             /// <summary>The part names in the piece (for checking).</summary>
             public List<string> Names = new List<string>();
+        }
+
+        /// <summary>
+        /// How much propellant a piece must still carry for a landing burn: the burn's own propellant makes the
+        /// piece heavier and faster, so it's worked out a few times over. Zero if its liquid engines can't lift it.
+        /// </summary>
+        static double PropellantToKeep(List<Part> piece, double emptyMass, double cdA, double rho, out bool tooWeak)
+        {
+            double thrust = 0, flowIsp = 0;
+            foreach (ModuleEngines e in piece.SelectMany(p => p.FindModulesImplementing<ModuleEngines>()))
+            {
+                if (e.propellants.Any(pr => pr.name == "SolidFuel")) continue;
+                double isp = e.atmosphereCurve.Evaluate(1);
+                if (isp <= 0) continue;
+                thrust += e.maxThrust;
+                flowIsp += e.maxThrust / isp;
+            }
+            tooWeak = thrust <= 0 || thrust < emptyMass * 9.81;
+            if (tooWeak) return 0;
+            double avgIsp = thrust / flowIsp, keep = 0;
+            for (int i = 0; i < 4; i++)
+            {
+                double m = emptyMass + keep;
+                keep = Landing.PropellantNeeded(m, Landing.TerminalSpeed(m, cdA, rho), avgIsp);
+            }
+            tooWeak = thrust < (emptyMass + keep) * 9.81;
+            return tooWeak ? 0 : keep;
         }
 
         /// <summary>
@@ -425,6 +456,11 @@ namespace PhilsReusabilitySuite
                 string key = string.Join(",", piece.Select(p => p.partInfo.name).OrderBy(n => n).ToArray()) + "|" + Math.Round(vt, 1);
                 if (byKey.TryGetValue(key, out EditorPiece same)) { same.Count++; continue; }
                 var e2 = new EditorPiece { Label = "Piece with " + biggest.partInfo.title, Parts = piece.Count, Speed = vt, Chutes = prof.Chutes, CanBurn = canBurn, Names = piece.Select(p => p.partInfo.name).ToList() };
+                if (canBurn && vt > Landing.SafeSpeed)
+                {
+                    e2.BurnPropellant = PropellantToKeep(piece, mass, prof.CdA, rho, out bool weak);
+                    e2.TooWeakToBurn = weak;
+                }
                 byKey[key] = e2;
                 pieces.Add(e2);
             }

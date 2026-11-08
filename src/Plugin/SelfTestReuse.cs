@@ -220,6 +220,24 @@ namespace PhilsReusabilitySuite
             CopyRow row = BuildsLink.Instance.CopiesOf(d).FirstOrDefault(r => r.Id == flownId);
             Check(row != null && row.Text.Contains("1 flight"), "Phil's Builds lists it under the launcher (" + row?.Label + " " + row?.Text + ")");
 
+            // Clicking the VAB now brings back the ship just launched, from KSP's cache. Its parts still flying (the core
+            // stage in orbit) must get new serials; only the pod, which is hangar hardware again, keeps its own.
+            var flying = new HashSet<string>(HighLogic.CurrentGame.flightState.protoVessels.SelectMany(pv => pv.protoPartSnapshots)
+                .Select(ps => ps.modules.FirstOrDefault(m => m.moduleName == Core.Craft.ModuleName)?.moduleValues?.GetValue("serial")).Where(s => !string.IsNullOrEmpty(s)));
+            var vabBuilding = FindObjectOfType<VehicleAssemblyBuilding>();
+            Check(vabBuilding != null, "found the VAB at the Space Center");
+            if (vabBuilding == null) yield break;
+            typeof(VehicleAssemblyBuilding).GetMethod("OnClicked", BindingFlags.Instance | BindingFlags.NonPublic).Invoke(vabBuilding, null);
+            yield return WaitFor(() => HighLogic.LoadedScene == GameScenes.EDITOR && EditorLogic.fetch != null && EditorAddon.Instance != null && EditorLogic.fetch.ship != null && EditorLogic.fetch.ship.parts.Count > 0, 90, "clicking the VAB brought back the launched ship");
+            yield return new WaitForSeconds(3f);
+            var backInVab = EditorLogic.fetch.ship.parts.Select(PRSPart.SerialOf).Where(s => s != null).ToList();
+            Note("back in the VAB: " + backInVab.Count + " parts; " + flying.Count + " serials still flying");
+            Check(flying.Count > 0 && !backInVab.Any(flying.Contains), "no part in the VAB shares a serial with a part still flying (" + backInVab.Count(flying.Contains) + " shared)");
+            Check(flownSerials.All(backInVab.Contains), "the pod, back in the hangar, keeps its own serials");
+            yield return ToSpaceCenter();
+            sc = PRSScenario.Instance;
+            flown = sc.Hangar.FirstOrDefault(h => h.Id == flownId);
+
             // 4. Picked up as the whole design: the flown pod plus everything else new.
             CompletionResult c = BuildsLink.Complete(d, flown);
             Check(c != null && c.Used.Count == flownSerials.Count && c.NewSlots.Count == designParts - flownSerials.Count, "completed to the design: " + c?.Used.Count + " flown parts and " + c?.NewSlots.Count + " new");

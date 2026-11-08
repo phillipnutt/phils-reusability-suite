@@ -167,9 +167,33 @@ namespace PhilsReusabilitySuite
 
         // ---- Starting, changing and ending builds ----
 
+        /// <summary>
+        /// Why a quote no longer holds, or null if it does: a bin part it uses was sold or went into another build,
+        /// or a hangar ship it uses was taken apart, sold or put in another build since it was priced.
+        /// </summary>
+        public string StaleQuote(Quote q, BuildJob editing, string fromShipId)
+        {
+            string mine = editing?.Id;
+            foreach (string s in q.BinSerials)
+            {
+                BinPart b = Bin.FirstOrDefault(x => x.Serial == s);
+                if (b == null) return "a part from the parts bin is gone";
+                if (b.ReservedBy != null && b.ReservedBy != mine) return "a part from the parts bin is in another build now";
+            }
+            foreach (string id in q.HangarShips.Concat(fromShipId != null ? new[] { fromShipId } : new string[0]))
+            {
+                HangarShip h = Hangar.FirstOrDefault(x => x.Id == id);
+                if (h == null) return "a hangar ship it uses is gone";
+                if (h.ReservedBy != null && h.ReservedBy != mine) return h.DisplayName + " is in another build now";
+            }
+            return null;
+        }
+
         public BuildJob StartBuild(Node craft, string name, string facility, Quote q, bool overtime, bool outsource, string fromShipId, out string error)
         {
             error = null;
+            string stale = StaleQuote(q, null, fromShipId);
+            if (stale != null) { error = "Something changed since this was priced: " + stale + ". Check the new price and try again."; return null; }
             double extra = outsource ? Pricing.OutsourceCharge(q.BuildPrice, 1, S) : overtime ? Pricing.OvertimeCharge(q.BuildPrice, 1, S) : 0;
             double total = q.Total + extra;
             if (!CanAfford(total)) { error = "Not enough funds: this costs " + Pricing.Funds(total) + "."; return null; }
@@ -201,6 +225,8 @@ namespace PhilsReusabilitySuite
         public bool UpdateBuild(BuildJob job, Node craft, string name, Quote q, out string error)
         {
             error = null;
+            string stale = StaleQuote(q, job, job.FromShipId);
+            if (stale != null) { error = "Something changed since this was priced: " + stale + ". Check the new price and try again."; return false; }
             double workDone = job.Progress * job.BuildPrice;
             double newProgress = q.BuildPrice > 0 ? Math.Min(1, workDone / q.BuildPrice) : 1;
             double overtimeDiff = job.Overtime ? Pricing.OvertimeCharge(q.BuildPrice, 1 - newProgress, S) - Pricing.OvertimeCharge(job.BuildPrice, 1 - job.Progress, S) : 0;

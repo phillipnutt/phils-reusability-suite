@@ -13,6 +13,9 @@ New:
   that lost a fin) has "Restore to <design>" in the Hangar tab: its own parts plus new ones (or matching bin
   parts) for everything it's missing, priced and queued without the VAB. It stays the same ship, with the same
   name, number and flight log, and is ready to launch when it's done.
+- **The VAB's landing check says how much propellant to keep** for a stage that can make a landing burn (it can
+  steer and has liquid engines): "lands with a burn if it keeps 0.25 t of propellant". It says so if its engines
+  are too weak to hold it up.
 - **Each dropping stage says at once whether it will come home**: on its chutes, with a landing burn, hard, or
   not at all. Stages dropping together make one message ("6 × … won't survive the landing").
 
@@ -27,6 +30,12 @@ Fixed:
 - The VAB's landing check gave different speeds each time and measured each piece as if still stacked in the
   ship. It now measures each piece on its own, as it will fall, and leaves out launch clamps (they stay on the
   pad).
+- Coming back to the VAB after a launch, KSP brings back the ship just launched: its parts now get new serial
+  numbers unless they're hangar hardware, instead of sharing serials with the ship still flying.
+- A build can't be started from an old price: if a bin part or hangar ship it uses was sold, taken apart or put
+  in another build since it was priced, the build is refused (nothing charged) and priced again.
+- "Back to the queue" in the library list threw an error; the "Take apart" and "Sell for scrap" links showed
+  "<u>" tags; landing-check lines were cut off when they wrapped.
 - KSP's pre-launch warnings during a build say "Build anyway" instead of "Launch anyway".
 - Messages say why a piece went to the parts bin.
 

@@ -109,7 +109,7 @@ namespace PhilsReusabilitySuite
             Ghost.padding = new RectOffset(12, 12, 0, 0);
             GhostOn = Button(Round(Color.Lerp(Panel, Amber, 0.1f), Amber, 8), null, 8, Text(Body, 13, Amber, align: TextAnchor.MiddleCenter));
             GhostOn.padding = Ghost.padding;
-            Link = Text(Body, 12, Ink2, align: TextAnchor.MiddleCenter);
+            Link = Text(Body, 12, Amber, align: TextAnchor.MiddleCenter);   // IMGUI has no underline, so links are amber
             Link.hover.textColor = Ink;
             Hint = Text(Body, 12, Ink3, wrap: true);
             Notice = Box(Round(Panel2, Line, 8), 9, Text(Body, 13, Ink2, wrap: true));
