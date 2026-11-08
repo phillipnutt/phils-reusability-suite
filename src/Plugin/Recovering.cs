@@ -84,6 +84,11 @@ namespace PhilsReusabilitySuite
             if (!RecoverGate.ShouldAsk(v)) return true;
             RecoverPrompt.Show(v, choice =>
             {
+                // KSP recovers whichever ship is selected when it's confirmed, and the Tracking Station's list can
+                // still be clicked while the prompt is open: put the selection back on the ship that was asked about.
+                if (v == null || !v.IsRecoverable) { Suite.Message("That ship can't be recovered now."); return; }
+                if (__instance.SelectedVessel != v) __instance.SetVessel(v, false);
+                if (__instance.SelectedVessel != v) { Suite.Message("Select " + KSP.Localization.Localizer.Format(v.vesselName) + " and press Recover again."); return; }
                 RecoverGate.Choices[v.persistentId] = choice;
                 // Straight to KSP's own "recover confirmed" step: the suite's prompt was the confirmation.
                 RecoverGate.Proceed(() => AccessTools.Method(typeof(SpaceTracking), "OnRecoverConfirm").Invoke(__instance, null));
@@ -269,6 +274,25 @@ namespace PhilsReusabilitySuite
             GUILayout.EndHorizontal();
             if (Event.current.type == EventType.MouseUp && GUILayoutUtility.GetLastRect().Contains(Event.current.mousePosition)) { pick = c; Event.current.Use(); }
             GUILayout.Space(6);
+        }
+    }
+}
+
+namespace PhilsReusabilitySuite
+{
+    /// <summary>
+    /// A ready hangar ship is already paid for, so KSP's own "can you afford it" pre-launch check doesn't stop it
+    /// launching from the VAB or SPH when funds are below its full price (the suite hands KSP's rollout charge
+    /// back). Only while the suite itself is launching a ready ship; every other launch is checked as usual.
+    /// </summary>
+    [HarmonyLib.HarmonyPatch(typeof(PreFlightTests.CanAffordLaunchTest), "Test")]
+    static class ReadyShipAffordable
+    {
+        static bool Prefix(ref bool __result)
+        {
+            if (!EditorAddon.LaunchingReadyShip) return true;
+            __result = true;
+            return false;
         }
     }
 }

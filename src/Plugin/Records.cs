@@ -14,12 +14,15 @@ namespace PhilsReusabilitySuite
         public string Ship;
         public Node Craft;
         public readonly HashSet<string> Serials = new HashSet<string>();
+        /// <summary>The vessel this launch became (0 until it's known), so going back to it on the pad isn't a new launch.</summary>
+        public uint VesselId;
 
         public void Save(ConfigNode n)
         {
             n.AddValue("id", Id);
             n.AddValue("ut", UT.ToString("R", CultureInfo.InvariantCulture));
             n.AddValue("ship", Ship);
+            if (VesselId != 0) n.AddValue("vessel", VesselId.ToString(CultureInfo.InvariantCulture));
             n.AddNode(KspNodes.ToKsp(Craft, "CRAFT"));
         }
 
@@ -34,6 +37,7 @@ namespace PhilsReusabilitySuite
                 Ship = n.GetValue("ship") ?? "",
                 Craft = KspNodes.FromKsp(c),
             };
+            if (uint.TryParse(n.GetValue("vessel") ?? "", NumberStyles.Integer, CultureInfo.InvariantCulture, out uint vid)) r.VesselId = vid;
             r.IndexSerials();
             return r;
         }

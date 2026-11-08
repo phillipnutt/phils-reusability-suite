@@ -35,20 +35,21 @@ namespace PhilsReusabilitySuite.Core
             s.BuildBase = D(n, "buildBase", s.BuildBase);
             s.BuildExponent = D(n, "buildExponent", s.BuildExponent);
             s.OvertimeSpeed = D(n, "overtimeSpeed", s.OvertimeSpeed);
-            s.OvertimeCost = D(n, "overtimeCost", s.OvertimeCost);
-            s.OutsourceCost = D(n, "outsourceCost", s.OutsourceCost);
-            s.RefitBase = D(n, "refitBase", s.RefitBase);
-            s.RefitPerFlight = D(n, "refitPerFlight", s.RefitPerFlight);
-            s.ScrapValue = D(n, "scrapValue", s.ScrapValue);
+            // Prices and shares may be 0 (free overtime, free refits, worthless scrap); rates and sizes must be above 0.
+            s.OvertimeCost = D(n, "overtimeCost", s.OvertimeCost, true);
+            s.OutsourceCost = D(n, "outsourceCost", s.OutsourceCost, true);
+            s.RefitBase = D(n, "refitBase", s.RefitBase, true);
+            s.RefitPerFlight = D(n, "refitPerFlight", s.RefitPerFlight, true);
+            s.ScrapValue = D(n, "scrapValue", s.ScrapValue, true);
             s.LinesPerLevel = (int)Math.Max(1, D(n, "linesPerLevel", s.LinesPerLevel));
             if (n.Get("requireDesign") != null) s.RequireDesign = !string.Equals(n.Get("requireDesign"), "false", StringComparison.OrdinalIgnoreCase);
             return s;
         }
 
-        static double D(Node n, string key, double def)
+        static double D(Node n, string key, double def, bool zeroOk = false)
         {
             string v = n.Get(key);
-            return v != null && double.TryParse(v, NumberStyles.Float, CultureInfo.InvariantCulture, out double d) && d > 0 ? d : def;
+            return v != null && double.TryParse(v, NumberStyles.Float, CultureInfo.InvariantCulture, out double d) && (d > 0 || (zeroOk && d == 0)) ? d : def;
         }
     }
 

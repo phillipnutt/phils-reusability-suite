@@ -220,6 +220,23 @@ namespace PhilsReusabilitySuite
             Check(v.parts.All(p => PRSPart.Of(p).flights == 1), "its parts are on their first flight");
             Check(sc.FindRecord(flown) != null, "the launch was recorded");
 
+            // Going back to a ship still on the pad (here: loading the flight again) isn't a new launch.
+            int launchesBefore = sc.Launches.Count;
+            uint padId = v.persistentId;
+            GamePersistence.SaveGame("persistent", HighLogic.SaveFolder, SaveMode.OVERWRITE);
+            int padIdx = HighLogic.CurrentGame.flightState.protoVessels.FindIndex(p => p.persistentId == padId);
+            Check(padIdx >= 0, "found the ship on the pad in the save");
+            if (padIdx >= 0)
+            {
+                FlightDriver.StartAndFocusVessel("persistent", padIdx);
+                yield return new WaitForSeconds(2f);
+                yield return WaitFor(() => HighLogic.LoadedSceneIsFlight && FlightGlobals.ActiveVessel != null && FlightGlobals.ActiveVessel.persistentId == padId && FlightGlobals.ActiveVessel.loaded && !FlightGlobals.ActiveVessel.packed, 120, "back at the ship on the pad");
+                yield return new WaitForSeconds(3f);
+                v = FlightGlobals.ActiveVessel;
+                sc = PRSScenario.Instance;
+                Check(v.parts.All(p => PRSPart.Of(p).flights == 1) && sc.Launches.Count == launchesBefore, "going back to it on the pad isn't a new launch: still its first flight, no new launch record");
+            }
+
             // 5. Recover it from the pad. The Recover button asks first: Cancel leaves it, To the hangar keeps it.
             var altimeter = FindObjectOfType<KSP.UI.Screens.AltimeterSliderButtons>();
             var recoverMethod = typeof(KSP.UI.Screens.AltimeterSliderButtons).GetMethod("recoverVessel", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
@@ -343,6 +360,45 @@ namespace PhilsReusabilitySuite
             // Half of what KSP itself paid back (KSP's value runs a little above the suite's own sum).
             Check(Near(Funds - f7, value * S.ScrapValue, value * 0.03), "Sell for scrap from the pad paid half its value (" + Pricing.Funds(Funds - f7) + " of " + Pricing.Funds(value) + ")");
             Check(!sc.Hangar.Any(h => h.Placed.Any(binSerials.Contains)) && !sc.Bin.Any(b => binSerials.Contains(b.Serial)), "a sold ship goes to neither the hangar nor the bin");
+
+            // 11. KSP's own launch-pad dialog launches a saved craft file straight into flight. A file holding the serials
+            // of a ready hangar ship, but not that exact ship (a part removed), is new hardware: new serials.
+            yield return ToEditor();
+            yield return LoadFlea();
+            EditorAddon.Instance.OpenBuildPanel();
+            panel = EditorAddon.Instance.Panel;
+            sc = PRSScenario.Instance;
+            Check(panel.Confirm(), "building one more Flea " + panel.Error);
+            string lastJobId = sc.Jobs.LastOrDefault()?.Id;
+            yield return ToSpaceCenter();
+            sc = PRSScenario.Instance;
+            BuildJob lastJob = sc.Jobs.FirstOrDefault(j => j.Id == lastJobId);
+            if (lastJob != null) sc.Outsource(lastJob, out err);
+            HangarShip held = sc.Hangar.FirstOrDefault(h => h.Ready);
+            Check(held != null, "it's ready in the hangar");
+            if (held == null) yield break;
+            var heldSerials = held.Placed.ToList();
+            // One fin taken off, and every reference to it (its parent's link and attachment, the other fins' symmetry).
+            Node craftCopy = held.Craft.Clone();
+            Node fin = craftCopy.Children("PART").FirstOrDefault(p => (p.Get("part") ?? "").StartsWith("basicFin"));
+            if (fin != null)
+            {
+                string finRef = fin.Get("part");
+                craftCopy.Nodes.Remove(fin);
+                foreach (Node p in craftCopy.Children("PART")) p.Values.RemoveAll(kv => kv.Value != null && kv.Value.Contains(finRef));
+            }
+            ConfigNode file = KspNodes.ToKsp(craftCopy, "");
+            string filePath = Path.Combine(SuiteFiles.SaveDir, "selftest-padlaunch.craft");
+            file.Save(filePath);
+            VesselCrewManifest manifest = HighLogic.CurrentGame.CrewRoster.DefaultCrewForVessel(file, VesselCrewManifest.FromConfigNode(file), true, false);
+            FlightDriver.StartWithNewLaunch(filePath, HighLogic.CurrentGame.flagURL, "LaunchPad", manifest);
+            yield return WaitFor(() => HighLogic.LoadedSceneIsFlight && FlightGlobals.ActiveVessel != null && FlightGlobals.ActiveVessel.loaded && !FlightGlobals.ActiveVessel.packed, 120, "the saved craft reached the pad");
+            yield return new WaitForSeconds(3f);
+            var padSerials = FlightGlobals.ActiveVessel.parts.Select(PRSPart.SerialOf).Where(s => s != null).ToList();
+            sc = PRSScenario.Instance;
+            Check(fin != null && padSerials.Count == heldSerials.Count - 1, "the saved craft is the ready Flea less a fin (" + padSerials.Count + " parts)");
+            Check(!padSerials.Any(heldSerials.Contains), "launched from a saved file, its parts got new serials: none shared with the ready hangar ship (" + padSerials.Count(heldSerials.Contains) + " shared)");
+            Check(sc.Hangar.Any(h => h.Id == held.Id && h.Ready), "the ready hangar ship is untouched");
         }
     }
 }

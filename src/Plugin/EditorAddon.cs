@@ -58,6 +58,7 @@ namespace PhilsReusabilitySuite
 
         void OnDestroy()
         {
+            LaunchingReadyShip = false;
             GameEvents.onEditorShipModified.Remove(OnShipModified);
             GameEvents.onEditorLoad.Remove(OnEditorLoad);
             GameEvents.onGameSceneLoadRequested.Remove(OnLeavingScene);
@@ -80,9 +81,13 @@ namespace PhilsReusabilitySuite
 
         void OnLaunchClicked() { OpenBuildPanel(); }
 
+        /// <summary>A ready hangar ship is being launched from the editor (see ReadyShipAffordable).</summary>
+        public static bool LaunchingReadyShip;
+
         /// <summary>Runs the stock launch (for a ready hangar ship, which launches free).</summary>
         public void StockLaunch()
         {
+            LaunchingReadyShip = true;   // already paid for: KSP's "can you afford it" check lets it through
             if (stockLaunch != null) stockLaunch.Invoke();
             else EditorLogic.fetch.launchVessel();
         }
@@ -268,6 +273,7 @@ namespace PhilsReusabilitySuite
         public void Refresh()
         {
             Error = null;
+            EditorAddon.LaunchingReadyShip = false;   // a launch that was cancelled doesn't carry over
             PRSScenario sc = PRSScenario.Instance;
             ShipConstruct ship = EditorLogic.fetch.ship;
             EditorAddon.Check(ship);   // serials are right before pricing, whatever KSP restored
@@ -371,22 +377,20 @@ namespace PhilsReusabilitySuite
             if (Landings == null || Landings.Count == 0) return;
             GUILayout.Space(8);
             GUILayout.Label("LANDING CHECK · pieces that drop off, empty, with every chute open", Look.Section);
+            // Each piece on two full-width lines, its name and then how it lands: side by side, wrapped text in one
+            // column was cut off where it ran longer than the other.
             foreach (StageReturns.EditorPiece p in Landings)
             {
-                GUILayout.BeginHorizontal();
-                GUILayout.Label((p.Count > 1 ? p.Count + " × " : "") + p.Label + " <color=#7d88a3>(" + p.Parts + " parts)</color>", Look.Meta, GUILayout.Width(330));
+                GUILayout.Label((p.Count > 1 ? p.Count + " × " : "") + p.Label + " <color=#7d88a3>(" + p.Parts + " parts)</color>", Look.Meta);
                 string how = p.Chutes > 0 ? " on " + p.Chutes + (p.Chutes == 1 ? " chute" : " chutes") : " with no chutes";
-                // A fixed width, so a result that wraps gets the height it needs (GUILayout measures wrapped text at
-                // the width it's given).
-                GUILayoutOption w = GUILayout.Width(226);
-                if (p.Speed <= Core.Landing.SafeSpeed) GUILayout.Label("comes home: " + p.Speed.ToString("0.0") + " m/s" + how, Look.MetaGood, w);
-                else if (p.Speed <= Core.Landing.LostSpeed) GUILayout.Label("comes home hard: " + p.Speed.ToString("0.0") + " m/s" + how, Look.MetaWarn, w);
+                if (p.Speed <= Core.Landing.SafeSpeed) GUILayout.Label("    comes home: " + p.Speed.ToString("0.0") + " m/s" + how, Look.MetaGood);
+                else if (p.Speed <= Core.Landing.LostSpeed) GUILayout.Label("    comes home hard: " + p.Speed.ToString("0.0") + " m/s" + how, Look.MetaWarn);
                 else if (p.CanBurn && !p.TooWeakToBurn)
-                    GUILayout.Label("lands with a burn if it keeps " + p.BurnPropellant.ToString("0.00") + " t of propellant (" + p.Speed.ToString("0") + " m/s without)", Look.MetaWarn, w);
+                    GUILayout.Label("    lands with a burn if it keeps " + p.BurnPropellant.ToString("0.00") + " t of propellant (" + p.Speed.ToString("0") + " m/s without)", Look.MetaWarn);
                 else if (p.CanBurn)
-                    GUILayout.Label("lost: " + p.Speed.ToString("0") + " m/s" + how + "; its engines are too weak for a landing burn", Look.MetaBad, w);
-                else GUILayout.Label("lost: " + p.Speed.ToString("0") + " m/s" + how, Look.MetaBad, w);
-                GUILayout.EndHorizontal();
+                    GUILayout.Label("    lost: " + p.Speed.ToString("0") + " m/s" + how + "; its engines are too weak for a landing burn", Look.MetaBad);
+                else GUILayout.Label("    lost: " + p.Speed.ToString("0") + " m/s" + how, Look.MetaBad);
+                GUILayout.Space(2);
             }
         }
 

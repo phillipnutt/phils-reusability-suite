@@ -60,49 +60,51 @@ namespace PhilsReusabilitySuite
         void OnRollout(ShipConstruct ship)
         {
             if (ship == null) return;
-            ReadyShipRollout(ship);
+            if (!ReadyShipRollout(ship) && !Krash.SimActive) RenewTakenSerials(ship.parts);
             RecordLaunch(ship.parts, KSP.Localization.Localizer.Format(ship.shipName), "rollout");
         }
 
-        /// <summary>Backstop in case the rollout event came before this module woke up.</summary>
+        /// <summary>
+        /// Backstop in case the rollout event came before this module woke up. KSP fires this on every flight
+        /// scene load, and a ship on the pad keeps a mission time of 0, so a launch is told apart from going back
+        /// to a ship still on the pad (or quickloading it) by the vessel each record belongs to.
+        /// </summary>
         void OnFlightReady()
         {
             Vessel v = FlightGlobals.ActiveVessel;
-            if (v == null || v.situation != Vessel.Situations.PRELAUNCH || v.missionTime > 0) return;
-            if (IsRecordedNow(v.parts)) return;
-            RecordLaunch(v.parts, v.vesselName, "flight ready");
+            if (v == null || v.situation != Vessel.Situations.PRELAUNCH) return;
+            if (Launches.Any(r => r.VesselId == v.persistentId)) return;
+            LaunchRecord rec = RecentRecordOf(v.parts) ?? RecordLaunch(v.parts, v.vesselName, "flight ready");
+            if (rec != null) rec.VesselId = v.persistentId;
         }
 
-        bool IsRecordedNow(List<Part> parts)
+        /// <summary>The record made for these parts in the last few seconds (by the rollout), if any.</summary>
+        LaunchRecord RecentRecordOf(List<Part> parts)
         {
             double now = Planetarium.GetUniversalTime();
             foreach (Part p in parts)
             {
                 string s = PRSPart.SerialOf(p);
-                if (s != null && Launches.Any(r => Math.Abs(r.UT - now) < 10 && r.Serials.Contains(s))) return true;
+                LaunchRecord r = s != null ? Launches.FirstOrDefault(x => Math.Abs(x.UT - now) < 10 && x.Serials.Contains(s)) : null;
+                if (r != null) return r;
             }
-            return false;
+            return null;
         }
 
-        void RecordLaunch(List<Part> parts, string name, string how)
+        LaunchRecord RecordLaunch(List<Part> parts, string name, string how)
         {
-            if (Krash.SimActive) { Log.Info("KRASH simulation: launch of " + name + " not recorded"); return; }
-            if (parts == null || parts.Count == 0) return;
-            if (IsRecordedNow(parts)) return;
+            if (Krash.SimActive) { Log.Info("KRASH simulation: launch of " + name + " not recorded"); return null; }
+            if (parts == null || parts.Count == 0) return null;
+            if (RecentRecordOf(parts) != null) return null;
             var mods = parts.Select(PRSPart.Of).ToList();
             foreach (PRSPart m in mods)
-            {
-                if (m == null) continue;
-                if (string.IsNullOrEmpty(m.serial)) m.serial = PRSPart.NewSerial();
-                m.flights++;
-                BrokeOff.Remove(m.serial);   // a fresh flight
-            }
+                if (m != null && string.IsNullOrEmpty(m.serial)) m.serial = PRSPart.NewSerial();
 
             ConfigNode cfg = ShipConstruction.ShipConfig;
-            if (cfg == null) { Log.Warn("No launched-ship config for " + name + "; launch not recorded"); return; }
+            if (cfg == null) { Log.Warn("No launched-ship config for " + name + "; launch not recorded"); return null; }
             Node craft = KspNodes.FromKsp(cfg);
             List<Node> partNodes = craft.Children("PART").ToList();
-            if (partNodes.Count != parts.Count) { Log.Warn("Launched-ship config of " + name + " has " + partNodes.Count + " parts, the ship " + parts.Count + "; launch not recorded"); return; }
+            if (partNodes.Count != parts.Count) { Log.Warn("Launched-ship config of " + name + " has " + partNodes.Count + " parts, the ship " + parts.Count + "; launch not recorded"); return null; }
             for (int i = 0; i < parts.Count; i++)
             {
                 string want = parts[i].partInfo != null ? parts[i].partInfo.name : null;
@@ -110,15 +112,24 @@ namespace PhilsReusabilitySuite
                 if (want != null && !have.StartsWith(want + "_", StringComparison.Ordinal))
                 {
                     Log.Warn("Launched-ship config of " + name + " doesn't match its parts (" + have + " vs " + want + "); launch not recorded");
-                    return;
+                    return null;
                 }
-                if (mods[i] != null) Stamp(partNodes[i], mods[i]);
             }
+
+            // It's a launch: only now does every part count a flight.
+            foreach (PRSPart m in mods)
+            {
+                if (m == null) continue;
+                m.flights++;
+                BrokeOff.Remove(m.serial);   // a fresh flight
+            }
+            for (int i = 0; i < parts.Count; i++) if (mods[i] != null) Stamp(partNodes[i], mods[i]);
 
             var rec = new LaunchRecord { Id = Guid.NewGuid().ToString("N"), UT = Planetarium.GetUniversalTime(), Ship = name, Craft = craft };
             rec.IndexSerials();
             Launches.Add(rec);
             Log.Info("Launch recorded (" + how + "): " + name + ", " + rec.Serials.Count + " parts");
+            return rec;
         }
 
         static void Stamp(Node partNode, PRSPart m)
@@ -250,7 +261,7 @@ namespace PhilsReusabilitySuite
             {
                 LastBinReason = "it couldn't be rebuilt as a ship";
                 if (problems.Count > 0) Log.Error("Rebuilt " + pv.vesselName + " isn't valid (" + string.Join("; ", problems.Take(3).ToArray()) + "); its parts go to the parts bin");
-                foreach (string s in serials) ToBin(s, info);
+                foreach (string s in serials) ToBin(s, info, Core.Craft.Read(rec.Craft));
                 return;
             }
 
@@ -285,6 +296,24 @@ namespace PhilsReusabilitySuite
                 name = KSP.Localization.Localizer.Format(pv.vesselName);
                 lastNumber.TryGetValue(name, out int last);
                 number = last + 1;
+            }
+            // A piece that is a copy of one filed design, coming home on its own from a ship of another name (the
+            // launcher under "Seeker I #2"), is that design's next copy: "Kopje 005 #2". A flown stage that's
+            // already a Kopje 005 keeps its own name and number.
+            string designId = BuildsLink.SingleDesign(r.Placed.Select(s => info[s].modules.FirstOrDefault(x => x.moduleName == Core.Craft.ModuleName)?.moduleValues?.GetValue("design")));
+            string designName = designId != null ? BuildsLink.NameOf(designId) : null;
+            if (!string.IsNullOrEmpty(designName) && designName != name)
+            {
+                name = designName;
+                lastNumber.TryGetValue(name, out int lastOfDesign);
+                number = lastOfDesign + 1;
+            }
+            // Pieces of one ship that come home separately (side boosters on chutes, then the capsule) don't all
+            // become the same hangar ship: a name and number already in the hangar goes to the next number.
+            else if (Hangar.Any(x => x.Name == name && x.Number == number))
+            {
+                lastNumber.TryGetValue(name, out int lastOfName);
+                number = Math.Max(lastOfName, number) + 1;
             }
             if (!lastNumber.TryGetValue(name, out int lastGiven) || lastGiven < number) lastNumber[name] = number;
             var h = new HangarShip
@@ -371,8 +400,29 @@ namespace PhilsReusabilitySuite
         void ToBin(string serial, Dictionary<string, ProtoPartSnapshot> info, Craft from = null)
         {
             if (serial == null || !info.TryGetValue(serial, out ProtoPartSnapshot ps)) return;
-            Node partNode = from != null && from.BySerial.TryGetValue(serial, out CraftPart cp) ? Builds.Loose(cp.Node) : null;
+            // From its launch record when there is one; otherwise made from the part itself, so the bin part can
+            // still be matched to a new build and sold for what it's worth.
+            Node partNode = from != null && from.BySerial.TryGetValue(serial, out CraftPart cp) ? Builds.Loose(cp.Node) : PartNodeFrom(ps, serial);
             Bin.Add(new BinPart { Serial = serial, Part = ps.partName, Flights = FlightsOf(ps), PartNode = partNode });
+        }
+
+        static Node PartNodeFrom(ProtoPartSnapshot ps, string serial)
+        {
+            var n = new Node("PART");
+            n.Add("part", ps.partName + "_" + ps.flightID.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            foreach (ProtoPartResourceSnapshot r in ps.resources)
+            {
+                Node rn = n.AddNode("RESOURCE");
+                rn.Add("name", r.resourceName);
+                rn.Add("amount", r.amount.ToString("R", System.Globalization.CultureInfo.InvariantCulture));
+                rn.Add("maxAmount", r.maxAmount.ToString("R", System.Globalization.CultureInfo.InvariantCulture));
+            }
+            Node m = n.AddNode("MODULE");
+            m.Add("name", Core.Craft.ModuleName);
+            m.Add("isEnabled", "True");
+            m.Add("serial", serial);
+            m.Add("flights", FlightsOf(ps).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            return n;
         }
 
         static int FlightsOf(ProtoPartSnapshot ps)

@@ -41,6 +41,19 @@ Fixed:
 - "Update build" on a build that had just been finished or cancelled reserved parts for a build that no longer
   existed. It's refused and the panel prices the ship again.
 - A multi-mode engine (a RAPIER) counted its thrust once per mode when judging a landing burn.
+- Going back to a ship still on the pad (or quickloading it) counted another flight on every part each time.
+- A saved craft launched from KSP's own launch-pad building could carry the serials of hangar ships, bin parts or
+  ships still flying; those parts now get new serials.
+- A ready hangar ship couldn't be launched from the VAB or SPH when funds were below its full price (KSP's own
+  "can you afford it" check). It's already paid for, so it now launches.
+- "Bring it home" on a ship with no launch record took KSP's refund and gave back bin parts that couldn't be
+  used or sold. Bin parts from such recoveries now keep what they need to be matched and valued.
+- In the Tracking Station, picking another ship in the list while the Recover prompt was open recovered that one
+  instead. The prompt now always recovers the ship it was asked about.
+- Pieces of one ship that came home separately all became the same hangar ship name and number. A piece that's a
+  copy of one filed design now comes home as that design's next copy ("Kopje 005 #2"); otherwise a name and number
+  already in the hangar goes to the next number.
+- Settings.cfg accepts 0 for overtime and outsourcing prices, refit shares and scrap value.
 - "Back to the queue" in the library list threw an error; the "Take apart" and "Sell for scrap" links showed
   "<u>" tags; landing-check lines were cut off when they wrapped.
 - KSP's pre-launch warnings during a build say "Build anyway" instead of "Launch anyway".

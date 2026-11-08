@@ -458,21 +458,52 @@ namespace PhilsReusabilitySuite
             pv.protoPartSnapshots.Count > 0 && pv.protoPartSnapshots.All(ps => ps.partInfo?.partPrefab != null && ps.partInfo.partPrefab.FindModuleImplementing<LaunchClamp>() != null);
 
         /// <summary>At rollout: a ready hangar ship launches free (KSP charges its price at rollout, so refund it).</summary>
-        void ReadyShipRollout(ShipConstruct ship)
+        /// <summary>True if the ship rolling out is a ready hangar ship (launched free).</summary>
+        bool ReadyShipRollout(ShipConstruct ship)
         {
-            if (Krash.SimActive) return;
+            if (Krash.SimActive) return false;
             var serials = ship.parts.Select(PRSPart.SerialOf).Where(s => s != null).ToList();
             HangarShip h = ReadyShipOf(serials);
             if (h == null)
             {
                 if (serials.Count > 0) Log.Warn(KSP.Localization.Localizer.Format(ship.shipName) + " launched without being built: KSP charged its normal price");
-                return;
+                return false;
             }
             float cost = ship.GetShipCosts(out float dry, out float fuel, ShipConstruction.ShipManifest);
             if (Suite.Career) Funding.Instance.AddFunds(cost, TransactionReasons.VesselRollout);
             Hangar.Remove(h);
             Changed();
             Log.Info("Launched " + h.DisplayName + " from the hangar: already paid for, " + Pricing.Funds(cost) + " handed back");
+            return true;
+        }
+
+        /// <summary>
+        /// A ship launched without being built (KSP's own launch-pad dialog launches a saved craft file straight
+        /// into flight) can carry serials saved in the file: those of parts that are still hangar ships, bin parts,
+        /// builds or flying ships. Those parts are new, so they get new serials.
+        /// </summary>
+        void RenewTakenSerials(List<Part> parts)
+        {
+            var taken = new HashSet<string>(Hangar.SelectMany(x => x.Placed));
+            taken.UnionWith(Bin.Select(b => b.Serial));
+            taken.UnionWith(Jobs.SelectMany(j => j.Serials()));
+            if (HighLogic.CurrentGame?.flightState != null)
+                foreach (ProtoVessel pv in HighLogic.CurrentGame.flightState.protoVessels)
+                    foreach (ProtoPartSnapshot ps in pv.protoPartSnapshots)
+                    {
+                        string s = ps.modules.FirstOrDefault(x => x.moduleName == Core.Craft.ModuleName)?.moduleValues?.GetValue("serial");
+                        if (!string.IsNullOrEmpty(s)) taken.Add(s);
+                    }
+            int renewed = 0;
+            var seen = new HashSet<string>();
+            foreach (PRSPart m in parts.Select(PRSPart.Of).Where(x => x != null))
+            {
+                if (string.IsNullOrEmpty(m.serial) || (!taken.Contains(m.serial) && seen.Add(m.serial))) continue;
+                m.MakeNew();
+                seen.Add(m.serial);
+                renewed++;
+            }
+            if (renewed > 0) Log.Info("Gave " + renewed + " parts of a ship launched without being built new serial numbers (their saved ones belong to other hardware)");
         }
     }
 }
