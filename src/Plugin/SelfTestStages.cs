@@ -106,6 +106,13 @@ namespace PhilsReusabilitySuite
             Note("after the move: " + v.situation + ", " + Math.Round(v.altitude) + " m, " + Math.Round(v.srfSpeed) + " m/s, packed=" + v.packed);
             Check(!v.LandedOrSplashed && v.altitude > 10000 && v.altitude < 40000, "the ship is flying high over Kerbin (" + Math.Round(v.altitude) + " m)");
 
+            // The VAB's landing check measures a piece "on its own" while it's still part of the ship. Measure the
+            // pod piece and a booster that way now, to compare with the real pieces once they've dropped away.
+            double podAlone = StageReturns.MeasureAlone(podPiece).CdA;
+            List<Part> oneBooster = radial != null ? Subtree(radial) : new List<Part>();
+            double boosterAlone = oneBooster.Count > 0 ? StageReturns.MeasureAlone(oneBooster).CdA : 0;
+            string boosterSerial = oneBooster.Select(PRSPart.SerialOf).FirstOrDefault(s => s != null);
+
             // 3. Drop the boosters and the pod, then switch to the core and move it far away.
             var podSerials = podPiece.Select(PRSPart.SerialOf).ToList();
             var boosterSerials = v.parts.Where(IsBooster).Select(PRSPart.SerialOf).ToList();
@@ -117,6 +124,11 @@ namespace PhilsReusabilitySuite
                                        .OrderByDescending(x => x.parts.Count).FirstOrDefault();
             Check(core != null, "the core stage separated from the pod");
             if (core == null) yield break;
+            Vessel boosterVessel = FlightGlobals.Vessels.FirstOrDefault(x => x != null && x.loaded && x.parts.Any(p => PRSPart.SerialOf(p) == boosterSerial));
+            StageReturns.Profile boosterReal = boosterVessel != null ? StageReturns.MeasuredFor(boosterVessel.persistentId) : null;
+            Note("booster drag: measured on its own before dropping " + boosterAlone.ToString("0.00") + ", after dropping " + (boosterReal != null ? boosterReal.CdA.ToString("0.00") : "not measured"));
+            Check(boosterReal != null && Math.Abs(boosterAlone - boosterReal.CdA) <= boosterReal.CdA * 0.15, "a booster measured on its own before it drops reads the same as after (" + boosterAlone.ToString("0.00") + " vs " + (boosterReal?.CdA.ToString("0.00") ?? "none") + ")");
+            uint podId = FlightGlobals.ActiveVessel != null ? FlightGlobals.ActiveVessel.persistentId : 0;   // the pod stays the ship being flown
             FlightGlobals.ForceSetActiveVessel(core);
             yield return new WaitForSeconds(3f);
             Check(FlightGlobals.ActiveVessel == core, "switched to the core stage");
@@ -136,6 +148,17 @@ namespace PhilsReusabilitySuite
             Check(outcomes.Any(o => o.Contains("came home")), "its message says it came home");
             Check(podShip == null || podShip.Flights == 1, "the pod has 1 flight");
             Check(!sc.Hangar.Any(h => h.Placed.Any(boosterSerials.Contains)), "no lost booster is in the hangar");
+
+            // The pod was measured for real when it went out of range (it was the ship being flown when it dropped).
+            StageReturns.Profile podReal = StageReturns.MeasuredFor(podId);
+            Note("pod drag: measured on its own before dropping " + podAlone.ToString("0.00") + ", after dropping " + (podReal != null ? podReal.CdA.ToString("0.00") : "not measured"));
+            Check(podReal != null && Math.Abs(podAlone - podReal.CdA) <= podReal.CdA * 0.15, "the pod measured on its own before it drops reads the same as after (" + podAlone.ToString("0.00") + " vs " + (podReal?.CdA.ToString("0.00") ?? "none") + ")");
+
+            // What the player was told as the pieces dropped away.
+            List<string> forecasts = StageReturns.Instance != null ? StageReturns.Instance.Forecasts.ToList() : new List<string>();
+            foreach (string f in forecasts) Note("forecast: " + f);
+            Check(forecasts.Any(f => f.StartsWith("6 × ") && f.Contains("won't survive")), "dropping the six boosters gave one message: they won't survive");
+            Check(forecasts.Any(f => f.Contains("will come home")), "the pod's forecast said it will come home");
         }
 
         static bool IsBooster(Part p)

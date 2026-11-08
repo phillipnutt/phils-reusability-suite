@@ -1,5 +1,35 @@
 # Changelog
 
+## Unreleased
+
+From Phil's first play-test, and work on the night after.
+
+New:
+- **Build from Phil's Builds without the VAB.** The Build queue tab has "Build from Phil's Builds…": every filed
+  launcher, upper stage and craft with its price and build time (Normal, Overtime or Outsource). Anything that
+  can't be built yet says why: a part not researched or not bought, too many parts for the building, too heavy
+  or too big for the launch pad or runway.
+- **Restore to design, from the hangar.** A flown copy of a filed design (a first stage that came home, a ship
+  that lost a fin) has "Restore to <design>" in the Hangar tab: its own parts plus new ones (or matching bin
+  parts) for everything it's missing, priced and queued without the VAB. It stays the same ship, with the same
+  name, number and flight log, and is ready to launch when it's done.
+- **Each dropping stage says at once whether it will come home**: on its chutes, with a landing burn, hard, or
+  not at all. Stages dropping together make one message ("6 × … won't survive the landing").
+
+Fixed:
+- Stage recovery now works while you're at the Space Center or the Tracking Station. A ship left falling there
+  used to vanish with no landing check and no message.
+- A launcher built on its own was called "Untitled Space Craft". A ship that is all one design is now built
+  under the design's name; a payload stacked on a launcher takes the payload's name.
+- A payload stacked on a launcher was listed under the launcher in Phil's Builds as one of its copies. A ship
+  counts as a copy of a design only if every part placed from a design came from that one.
+- A hangar ship opened in the VAB lost its hangar identity after a trip to the Space Center and back.
+- The VAB's landing check gave different speeds each time and measured each piece as if still stacked in the
+  ship. It now measures each piece on its own, as it will fall, and leaves out launch clamps (they stay on the
+  pad).
+- KSP's pre-launch warnings during a build say "Build anyway" instead of "Launch anyway".
+- Messages say why a piece went to the parts bin.
+
 ## 0.1.0 (pre-release)
 
 First release, for testing. Back up your saves.

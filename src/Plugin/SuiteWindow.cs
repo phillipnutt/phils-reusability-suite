@@ -136,16 +136,29 @@ namespace PhilsReusabilitySuite
             scrollMain = GUILayout.BeginScrollView(scrollMain, GUILayout.ExpandWidth(true));
             GUILayout.BeginVertical(); GUILayout.Space(10);
             List<BuildJob> active = sc.ActiveJobs();
-            foreach (string f in new[] { "VAB", "SPH" })
+            if (picking)
             {
-                int lines = Suite.Lines(f);
-                GUILayout.BeginHorizontal(); GUILayout.Space(16);
-                GUILayout.Label("<b>" + f + "</b>   <color=#9ba7c0>" + lines + (lines == 1 ? " build line" : " build lines") + "</color>", Look.H2Muted);
-                GUILayout.EndHorizontal();
-                List<BuildJob> jobs = sc.Jobs.Where(j => j.Facility == f).ToList();
-                if (jobs.Count == 0) Indent(() => GUILayout.Label("Nothing being built.", Look.Hint));
-                for (int i = 0; i < jobs.Count; i++) Indent(() => JobCard(sc, jobs[i], active.Contains(jobs[i]) ? "Line " + (active.Where(j => j.Facility == f).ToList().IndexOf(jobs[i]) + 1) : "Waiting", i > 0));
-                GUILayout.Space(8);
+                if (library == null) library = BuildsLink.Library();
+                LibraryList(sc);
+            }
+            else
+            {
+                foreach (string f in new[] { "VAB", "SPH" })
+                {
+                    int lines = Suite.Lines(f);
+                    GUILayout.BeginHorizontal(); GUILayout.Space(16);
+                    GUILayout.Label("<b>" + f + "</b>   <color=#9ba7c0>" + lines + (lines == 1 ? " build line" : " build lines") + "</color>", Look.H2Muted);
+                    GUILayout.EndHorizontal();
+                    List<BuildJob> jobs = sc.Jobs.Where(j => j.Facility == f).ToList();
+                    if (jobs.Count == 0) Indent(() => GUILayout.Label("Nothing being built.", Look.Hint));
+                    for (int i = 0; i < jobs.Count; i++) Indent(() => JobCard(sc, jobs[i], active.Contains(jobs[i]) ? "Line " + (active.Where(j => j.Facility == f).ToList().IndexOf(jobs[i]) + 1) : "Waiting", i > 0));
+                    GUILayout.Space(8);
+                }
+                Indent(() =>
+                {
+                    if (GUILayout.Button("Build from Phil's Builds…", Look.Ghost, GUILayout.Height(32), GUILayout.ExpandWidth(false))) OpenLibrary();
+                    GUILayout.Label("Queue a filed launcher or craft without opening the VAB or SPH.", Look.Hint);
+                });
             }
             GUILayout.EndVertical();
             GUILayout.EndScrollView();
@@ -169,6 +182,97 @@ namespace PhilsReusabilitySuite
             if (!InEditor && active.Count > 0 && GUILayout.Button("Warp to next finish", Look.Ghost, GUILayout.Height(32))) sc.WarpToNextFinish();
             GUILayout.Label("Upgrade the VAB or SPH for more build lines. No points, no upgrade times.", Look.Hint);
             GUILayout.EndVertical();
+        }
+
+        // ---- Building from Phil's Builds' library, without the editor ----
+
+        bool picking;
+        BuildPanel.Pace pickPace = BuildPanel.Pace.Normal;
+        List<BuildsLink.LibraryBuild> library;
+
+        /// <summary>Opens the window on the Hangar tab with this ship picked.</summary>
+        public void ShowHangarShip(string id)
+        {
+            Tab = 1;
+            picking = false;
+            selectedId = id;
+            restoreFor = null;
+            error = null;
+            Show = true;
+        }
+
+        public void OpenLibrary()
+        {
+            Tab = 0;
+            picking = true;
+            library = null;
+            error = null;
+            scrollMain = Vector2.zero;
+        }
+
+        void LibraryList(PRSScenario sc)
+        {
+            Indent(() =>
+            {
+                GUILayout.BeginHorizontal();
+                GUILayout.Label("<b>Build from Phil's Builds</b>", Look.H2Muted);
+                GUILayout.FlexibleSpace();
+                if (GUILayout.Button("Back to the queue", Look.Ghost, GUILayout.Height(28), GUILayout.ExpandWidth(false))) { picking = false; library = null; }
+                GUILayout.EndHorizontal();
+                GUILayout.Label("Each is built new, from its design file. Matching parts in the parts bin are used automatically, at their refit price.", Look.Hint);
+                GUILayout.Space(4);
+                GUILayout.BeginHorizontal();
+                PaceButton(BuildPanel.Pace.Normal, "Normal");
+                PaceButton(BuildPanel.Pace.Overtime, "Overtime");
+                PaceButton(BuildPanel.Pace.Outsource, "Outsource");
+                GUILayout.FlexibleSpace();
+                GUILayout.EndHorizontal();
+                GUILayout.Space(6);
+            });
+            if (library.Count == 0) Indent(() => GUILayout.Label("Nothing is filed yet. File craft and launchers with Phil's Builds' Save panel in the VAB or SPH.", Look.Hint));
+            string group = null;
+            foreach (BuildsLink.LibraryBuild item in library.ToList())
+            {
+                string g = item.Design.Kind == PhilsBuilds.DesignKind.Launcher ? "LAUNCHERS" : item.Design.Kind == PhilsBuilds.DesignKind.UpperStage ? "UPPER STAGES" : "CRAFT";
+                if (g != group) { group = g; Indent(() => GUILayout.Label(g, Look.Section)); }
+                Indent(() => LibraryCard(item));
+            }
+        }
+
+        void PaceButton(BuildPanel.Pace p, string label)
+        {
+            if (GUILayout.Button(label, pickPace == p ? Look.SegOn : Look.Seg, GUILayout.Height(30), GUILayout.Width(120))) pickPace = p;
+        }
+
+        void LibraryCard(BuildsLink.LibraryBuild item)
+        {
+            Quote q = item.Quote;
+            bool overtime = pickPace == BuildPanel.Pace.Overtime, outsource = pickPace == BuildPanel.Pace.Outsource;
+            double extra = outsource ? Pricing.OutsourceCharge(q.BuildPrice, 1, S) : overtime ? Pricing.OvertimeCharge(q.BuildPrice, 1, S) : 0;
+            double seconds = outsource ? 0 : overtime ? q.Seconds / S.OvertimeSpeed : q.Seconds;
+            GUILayout.BeginVertical(Look.Card);
+            GUILayout.BeginHorizontal();
+            GUILayout.Label(item.Design.Name, Look.Name, GUILayout.ExpandWidth(false));
+            GUILayout.Space(6);
+            if (q.RefitPrice > 0) { Look.Chip("Parts from the bin", Look.ChipReuse); GUILayout.Space(4); }
+            if (item.Ready > 0) Look.Chip(item.Ready + " ready in the hangar", Look.ChipGrey);
+            GUILayout.FlexibleSpace();
+            GUILayout.Label(Pricing.Funds(q.Total + extra) + " · " + (seconds <= 0 ? "ready now" : Pricing.Duration(seconds, S)), Look.Name, GUILayout.ExpandWidth(false));
+            GUILayout.EndHorizontal();
+            GUILayout.BeginHorizontal();
+            GUILayout.Label(item.KindLabel + " · " + item.Parts + " parts" + (item.Blocked != null ? "\n<color=#ff8a7a>" + item.Blocked + "</color>" : ""), Look.Meta);
+            GUILayout.FlexibleSpace();
+            bool can = item.Blocked == null;
+            if (GUILayout.Button(can ? "Build" : "Can't build", can ? Look.Go : Look.GoOff, GUILayout.Height(30), GUILayout.Width(120)) && can)
+            {
+                BuildJob job = BuildsLink.BuildFromLibrary(item, overtime, outsource, out string err);
+                if (job == null) error = err;
+                else { error = null; picking = false; }
+                library = null;   // fresh serials and prices next time
+            }
+            GUILayout.EndHorizontal();
+            GUILayout.EndVertical();
+            GUILayout.Space(6);
         }
 
         static void Indent(Action body)
@@ -255,6 +359,24 @@ namespace PhilsReusabilitySuite
             GUILayout.EndVertical();
         }
 
+        // Restore to design, worked out for the picked ship at most every two seconds (not every frame).
+        BuildsLink.Restore restore;
+        string restoreFor;
+        float restoreAt;
+
+        BuildsLink.Restore RestoreFor(HangarShip h)
+        {
+            if (h.Ready || h.ReservedBy != null) return null;
+            if (restoreFor != h.Id || Time.realtimeSinceStartup - restoreAt > 2f)
+            {
+                restoreFor = h.Id;
+                restoreAt = Time.realtimeSinceStartup;
+                try { restore = BuildsLink.RestoreOf(h); }
+                catch (Exception ex) { restore = null; Log.Warn("Couldn't work out restoring " + h.DisplayName + ": " + ex.Message); }
+            }
+            return restore;
+        }
+
         static string GroupOf(HangarShip h) => h.ReservedBy != null ? "In a build" : h.Ready ? "Ready to fly" : "Stored";
 
         void ShipRow(PRSScenario sc, HangarShip h)
@@ -289,6 +411,17 @@ namespace PhilsReusabilitySuite
                 Line("Refit", h.Ready ? "done" : Pricing.Funds(q.RefitPrice));
                 Line("Fuel back to launch levels", h.Ready ? "full" : Pricing.Funds(q.FuelPrice));
                 Line("Total · refit time", h.Ready ? "launch now" : Pricing.Funds(q.Total) + " · " + Pricing.Duration(q.Seconds, S));
+                BuildsLink.Restore r = RestoreFor(h);
+                if (r != null)
+                {
+                    GUILayout.Space(8);
+                    GUILayout.Label("RESTORE TO " + r.Design.Name.ToUpperInvariant(), Look.Section);
+                    Line(r.NewParts + (r.NewParts == 1 ? " new part" : " new parts") + (r.Quote.BinSerials.Count > 0 ? " (" + r.Quote.BinSerials.Count + " from the bin)" : ""), Pricing.Funds(r.Quote.NewPrice));
+                    Line("Refit", Pricing.Funds(r.Quote.RefitPrice));
+                    Line("Fuel", Pricing.Funds(r.Quote.FuelPrice));
+                    Line("Total · build time", Pricing.Funds(r.Quote.Total) + " · " + Pricing.Duration(r.Quote.Seconds, S));
+                    if (r.Blocked != null) GUILayout.Label(r.Blocked, Look.MetaBad);
+                }
                 List<string> log = sc.LogOf(h);
                 if (log.Count > 0)
                 {
@@ -302,10 +435,18 @@ namespace PhilsReusabilitySuite
                 {
                     if (GUILayout.Button("Launch", Look.Go, GUILayout.Height(38))) Launch(sc, h);
                 }
-                else if (GUILayout.Button("Refit and launch", Look.Go, GUILayout.Height(38)))
+                else
                 {
-                    if (sc.RefitBuild(h, out err) == null) error = err;
-                    else { error = null; Tab = 0; }
+                    if (r != null && GUILayout.Button("Restore to " + r.Design.Name, r.Blocked == null ? Look.Go : Look.GoOff, GUILayout.Height(38)) && r.Blocked == null)
+                    {
+                        if (BuildsLink.RestoreBuild(h, r, false, false, out err) == null) error = err;
+                        else { error = null; Tab = 0; restoreFor = null; }
+                    }
+                    if (GUILayout.Button("Refit and launch", r != null ? Look.Ghost : Look.Go, GUILayout.Height(r != null ? 32 : 38)))
+                    {
+                        if (sc.RefitBuild(h, out err) == null) error = err;
+                        else { error = null; Tab = 0; }
+                    }
                 }
                 if (InEditor && GUILayout.Button("Open in the " + (HighLogic.LoadedScene == GameScenes.EDITOR && EditorDriver.editorFacility == EditorFacility.SPH ? "SPH" : "VAB"), Look.Ghost, GUILayout.Height(32)))
                 {

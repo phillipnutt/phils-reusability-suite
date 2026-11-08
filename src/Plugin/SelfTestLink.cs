@@ -214,6 +214,7 @@ namespace PhilsReusabilitySuite
             PRSScenario sc = PRSScenario.Instance;
             Check(panel.Confirm(), "building the Hopper " + panel.Error);
             string jobId = sc.Jobs.LastOrDefault()?.Id;
+            double vabPaid = sc.Jobs.LastOrDefault()?.Paid ?? 0;
 
             // 3. Built, it's a ready copy of the design in the library.
             yield return ToSpaceCenter();
@@ -239,6 +240,29 @@ namespace PhilsReusabilitySuite
             Check(Link.Note(d) == "1 ready in the hangar", "the design's note: " + Link.Note(d));
             CopyDetail det = readyRow != null ? Link.Detail(d, readyRow) : null;
             Check(det != null && det.Title == ready.DisplayName && det.Chips.Any(c => c.Text == "Ready"), "the ready copy's detail panel (" + det?.Title + ")");
+
+            // 3b. Building from Phil's Builds' library at the Space Center, without opening the VAB.
+            if (SuiteWindow.Instance != null) { SuiteWindow.Instance.OpenLibrary(); SuiteWindow.Instance.Show = true; }
+            yield return new WaitForSeconds(1.5f);
+            Shot("suite_library");
+            yield return new WaitForSeconds(1f);
+            if (SuiteWindow.Instance != null) SuiteWindow.Instance.Show = false;
+            List<BuildsLink.LibraryBuild> lib = BuildsLink.Library();
+            BuildsLink.LibraryBuild hop = lib.FirstOrDefault(i => i.Design.Id == d.Id);
+            Check(hop != null && hop.Blocked == null && hop.Parts == 8 && hop.Ready == 1, "the library lists the Hopper as buildable, with its ready copy (" + hop?.Blocked + ")");
+            if (hop == null) yield break;
+            Check(Near(hop.Quote.Total, vabPaid, 1), "it costs what the VAB build cost (" + Pricing.Funds(hop.Quote.Total) + " vs " + Pricing.Funds(vabPaid) + ")");
+            double fLib = Funds;
+            BuildJob libJob = BuildsLink.BuildFromLibrary(hop, false, true, out err);
+            Check(libJob != null && libJob.Name == DesignName && libJob.Facility == "VAB", "Build from the library queued " + libJob?.Name + " " + err);
+            HangarShip libShip = sc.Hangar.FirstOrDefault(h => h.Ready && h.Id != readyId && h.Name == DesignName);
+            Check(libShip != null && BuildsLink.DesignOf(libShip) == d.Id && libShip.Placed.Count == 8 && libShip.Placed.Distinct().Count() == 8, "outsourced, it's a ready copy of the design with 8 parts of its own (" + libShip?.DisplayName + ")");
+            Check(Near(fLib - Funds, hop.Quote.Total + Pricing.OutsourceCharge(hop.Quote.BuildPrice, 1, Suite.Settings), 1), "it was charged its price plus outsourcing (" + Pricing.Funds(fLib - Funds) + ")");
+            if (libShip != null) sc.Sell(libShip);   // keep the hangar as the next steps expect
+            // A design too big for a brand-new career is refused, with the reason.
+            Node kerbalX = KspNodes.FromKsp(ConfigNode.Load(Path.Combine(KSPUtil.ApplicationRootPath, "Ships", "VAB", "Kerbal X.craft")));
+            string why = BuildsLink.WhyNot(kerbalX, "VAB");
+            Check(why != null && (why.StartsWith("It uses the") || why.StartsWith("It has")), "the Kerbal X can't be built in a new career: " + why);
 
             // 4. The design placed again: the Build panel offers the ready one, and Use it makes the VAB ship that ship.
             yield return ToEditor();
@@ -306,6 +330,7 @@ namespace PhilsReusabilitySuite
             float chutePrice = PartLoader.getPartInfoByName("parachuteSingle").cost;
             Check(Near(cq.NewPrice, chutePrice, 1) && cq.RefitPrice > 0, "the whole Hopper from it: the chute new (" + Pricing.Funds(cq.NewPrice) + " of " + Pricing.Funds(chutePrice) + "), the rest refit (" + Pricing.Funds(cq.RefitPrice) + ")");
             string flownId = flown.Id, flownHull = flown.Hull;
+            string flownDisplay = flown.DisplayName;
 
             // 6. Picked up in the VAB: the flown parts in their slots plus a new chute.
             yield return ToEditor();
@@ -382,10 +407,20 @@ namespace PhilsReusabilitySuite
             FlightGlobals.fetch.SetShipOrbit(kerbin.flightGlobalsIndex, (rA - rP) / (rA + rP), (rA + rP) / 2, 0, 0, Math.PI, 0, 0);
             yield return new WaitForSeconds(3f);
             Check(!dv.LandedOrSplashed && dv.altitude > 70000, "the Flea is up at " + Math.Round(dv.altitude / 1000) + " km and falling");
+            Check(Math.Abs(StageReturns.SurfaceSpeed(dv) - dv.srfSpeed) < 5, "the suite's ground speed from the orbit matches KSP's own in flight (" + Math.Round(StageReturns.SurfaceSpeed(dv)) + " vs " + Math.Round(dv.srfSpeed) + " m/s)");
             GamePersistence.SaveGame("persistent", HighLogic.SaveFolder, SaveMode.OVERWRITE);
             HighLogic.LoadScene(GameScenes.TRACKSTATION);
             yield return WaitFor(() => HighLogic.LoadedScene == GameScenes.TRACKSTATION && StageReturns.Instance != null && PRSScenario.Instance != null, 90, "the Tracking Station opened");
             yield return new WaitForSeconds(2f);
+            Vessel tv = FlightGlobals.Vessels.FirstOrDefault(x => x != null && x.persistentId == dropId);
+            if (tv != null)
+            {
+                // Away from flight there's no KSP number to compare with: its orbital speed (vis-viva) is close,
+                // within the ground's turning speed (Kerbin's equator moves at 175 m/s).
+                double visViva = Math.Sqrt(tv.mainBody.gravParameter * (2 / tv.orbit.radius - 1 / tv.orbit.semiMajorAxis));
+                double ground = StageReturns.SurfaceSpeed(tv);
+                Check(Math.Abs(ground - visViva) < 250, "in the Tracking Station its ground speed is about its orbital speed (" + Math.Round(ground) + " vs " + Math.Round(visViva) + " m/s)");
+            }
             int outcomesBefore = StageReturns.Instance.Outcomes.Count;
             TimeWarp.SetRate(3, true, false);
             yield return WaitFor(() => !FlightGlobals.Vessels.Any(x => x != null && x.persistentId == dropId), 120, "KSP deleted the falling Flea in the Tracking Station");
@@ -395,8 +430,33 @@ namespace PhilsReusabilitySuite
             Check(outcome != null, "the suite judged its landing in the Tracking Station: " + (outcome ?? "nothing"));
             sc = PRSScenario.Instance;
             bool lostIt = outcome != null && outcome.Contains(" was lost");
-            Check(outcome != null && (lostIt || sc.Bin.Count(b => dropSerials.Contains(b.Serial)) == dropSerials.Count), "it came home to the parts bin (it was never filed), or was reported lost");
+            // A hard landing (6 to 12 m/s) can break outer parts off: those count as broken off, the rest go to the bin.
+            int inBin = sc.Bin.Count(b => dropSerials.Contains(b.Serial)), brokeOff = sc.BrokeOff.Count(dropSerials.Contains);
+            Check(outcome != null && (lostIt || (inBin > 0 && inBin + brokeOff == dropSerials.Count)), "it came home to the parts bin (it was never filed): " + inBin + " parts in the bin, " + brokeOff + " broke off in the landing");
             Check(outcome == null || lostIt || outcome.Contains("filed in Phil's Builds"), "the message says why it went to the bin");
+
+            // 7c. Restore to design from the hangar: the flown Hopper gets its chute back (new, or one from the bin)
+            // and is ready again as itself, with its own flown parts.
+            yield return ToSpaceCenter();
+            sc = PRSScenario.Instance;
+            HangarShip toRestore = sc.Hangar.FirstOrDefault(h => h.Id == flownId);
+            BuildsLink.Restore rs = toRestore != null ? BuildsLink.RestoreOf(toRestore) : null;
+            if (toRestore != null && SuiteWindow.Instance != null) SuiteWindow.Instance.ShowHangarShip(toRestore.Id);
+            yield return new WaitForSeconds(3f);
+            Shot("suite_restore");
+            yield return new WaitForSeconds(1f);
+            if (SuiteWindow.Instance != null) SuiteWindow.Instance.Show = false;
+            Check(rs != null && rs.NewParts == 1 && rs.Blocked == null && rs.Design.Id == d.Id, "Restore to design: the flown Hopper needs 1 part (" + rs?.NewParts + ") " + rs?.Blocked);
+            if (rs != null)
+            {
+                bool chuteFromBin = rs.Quote.BinSerials.Count == 1;
+                Check(rs.Quote.RefitPrice > 0 && (chuteFromBin ? rs.Quote.NewPrice < 1 : Near(rs.Quote.NewPrice, chutePrice, 1)), "it costs a chute (" + (chuteFromBin ? "from the bin" : "new, " + Pricing.Funds(rs.Quote.NewPrice)) + ") and the refit of the rest (" + Pricing.Funds(rs.Quote.RefitPrice) + ")");
+                BuildJob rj = BuildsLink.RestoreBuild(toRestore, rs, false, true, out err);
+                Check(rj != null, "restoring it " + err);
+                HangarShip restored = sc.Hangar.FirstOrDefault(h => h.Id == flownId);
+                Check(restored != null && restored.Ready && restored.Placed.Count == 8 && home.All(restored.Placed.Contains), "it's ready again with its own flown parts and a chute (" + restored?.Placed.Count + " parts)");
+                Check(restored != null && restored.DisplayName == flownDisplay, "as the same ship (" + restored?.DisplayName + ")");
+            }
 
             // 8. The VAB landing check on the stock Kerbal X: launch clamps stay on the pad, and the same ship
             // measures the same every time it's checked.
@@ -420,6 +480,8 @@ namespace PhilsReusabilitySuite
                 if (again.Count != first.Count) same = false;
             }
             Check(same, "checking the same ship five times gives the same landing speeds");
+            // (The stage-recovery test checks that a piece measured on its own before it drops reads the same as
+            // the real piece measured after it has dropped.)
         }
     }
 }

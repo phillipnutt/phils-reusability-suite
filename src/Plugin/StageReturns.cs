@@ -1,4 +1,5 @@
 using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
 using PhilsReusabilitySuite.Core;
@@ -64,10 +65,14 @@ namespace PhilsReusabilitySuite
             foreach (Vessel v in FlightGlobals.Vessels.Where(x => x != null && x.loaded && !x.LandedOrSplashed).ToList()) Remember(v);
         }
 
-        /// <summary>The ship's speed over the ground, worked out from its orbit as KSP does (it works on rails too).</summary>
+        /// <summary>
+        /// The ship's speed over the ground, worked out from its orbit (it works on rails, in any scene): its
+        /// velocity relative to the planet, less the ground's own turning. Not Orbit.GetVel(), which away from
+        /// flight also carries the planet's own speed around the Sun.
+        /// </summary>
         public static double SurfaceSpeed(Vessel v)
         {
-            try { return (v.orbit.GetVel() - v.mainBody.getRFrmVelOrbit(v.orbit)).magnitude; }
+            try { return (v.orbit.GetRelativeVel() - v.mainBody.getRFrmVelOrbit(v.orbit)).magnitude; }
             catch (Exception) { return v.srfSpeed; }
         }
 
@@ -76,12 +81,73 @@ namespace PhilsReusabilitySuite
         void OnNewVessel(Vessel original, Vessel created)
         {
             Remember(created);
-            if (original != FlightGlobals.ActiveVessel) Remember(original);
+            Forecast(created);
+            if (original != FlightGlobals.ActiveVessel) { Remember(original); Forecast(original); }
         }
 
         void OnGoOnRails(Vessel v)
         {
-            if (v != FlightGlobals.ActiveVessel && !v.LandedOrSplashed) Remember(v);
+            if (v != FlightGlobals.ActiveVessel && !v.LandedOrSplashed) { Remember(v); Forecast(v); }
+        }
+
+        /// <summary>The measured drag of a ship, if it was measured close by (null if not).</summary>
+        public static Profile MeasuredFor(uint persistentId) => measured.TryGetValue(persistentId, out Profile p) ? p : null;
+
+        // ---- Telling the player at once ----
+
+        /// <summary>What the suite expected of each piece as it dropped away (the self-tests read it).</summary>
+        public readonly List<string> Forecasts = new List<string>();
+        readonly Dictionary<uint, string> pendingForecasts = new Dictionary<uint, string>();   // one per ship: a piece that splits again replaces its own
+        readonly HashSet<string> forecast = new HashSet<string>();   // ship id and part count: a piece that splits again is forecast again
+        bool forecastQueued;
+
+        /// <summary>
+        /// When a piece drops away (or, if it was the ship being flown at the time, when it goes out of range),
+        /// say at once whether it will come home: on its chutes, with a landing burn, hard, or not at all.
+        /// The landing itself is still decided when KSP deletes the falling piece.
+        /// </summary>
+        void Forecast(Vessel v)
+        {
+            try
+            {
+                if (v == null || !v.loaded || v.isEVA || v.LandedOrSplashed || v == FlightGlobals.ActiveVessel || !forecast.Add(v.persistentId + ":" + v.parts.Count)) return;
+                if (PRSScenario.Instance == null || Krash.SimActive || StageRecoveryInstalled) return;
+                if (v.mainBody != FlightGlobals.GetHomeBody() || !v.mainBody.atmosphere) return;
+                Profile prof = MeasuredFor(v.persistentId);
+                if (prof == null) return;
+                // A single loose part with no engine, probe core or crew (a spent decoupler, a nose cone) isn't news.
+                if (v.parts.Count < 2 && !RecoveryValue.CanFly(v.parts.Select(p => p.partInfo.name)) && v.GetCrewCount() == 0) return;
+                double mass = v.parts.Sum(p => p.mass + p.GetResourceMass());
+                double vt = Landing.TerminalSpeed(mass, prof.CdA, v.mainBody.atmDensityASL);
+                string chutes = prof.Chutes + (prof.Chutes == 1 ? " chute" : " chutes");
+                string what;
+                if (vt <= Landing.SafeSpeed) what = "will come home: about " + vt.ToString("0.0") + " m/s on " + chutes;
+                else if (PoweredLanding(v.BackupVessel(), mass, vt, false)) what = "will come home with a landing burn";
+                else if (vt <= Landing.LostSpeed) what = "will come down hard (" + vt.ToString("0.0") + " m/s): it may lose outer parts";
+                else what = "won't survive the landing: " + Math.Round(vt) + " m/s" + (prof.Chutes == 0 ? " with no chutes" : " on " + chutes);
+                pendingForecasts[v.persistentId] = PieceName(v) + " " + what + ".";
+                if (!forecastQueued) { forecastQueued = true; StartCoroutine(PostForecasts()); }
+            }
+            catch (Exception ex) { Log.Warn("Couldn't forecast " + v?.vesselName + "'s landing: " + ex.Message); }
+        }
+
+        /// <summary>Pieces dropping together (six boosters) make one message, not six.</summary>
+        IEnumerator PostForecasts()
+        {
+            yield return new WaitForSeconds(0.5f);
+            var lines = pendingForecasts.Values.GroupBy(x => x).Select(g => (g.Count() > 1 ? g.Count() + " × " : "") + g.Key).ToList();
+            pendingForecasts.Clear();
+            forecastQueued = false;
+            foreach (string l in lines) { Forecasts.Add(l); Log.Info("Forecast: " + l); }
+            if (lines.Count > 0) Suite.Message(string.Join("\n", lines.ToArray()), 6f);
+        }
+
+        /// <summary>A piece by the hangar ship its parts belong to ("Kopje 005 #1"), else KSP's vessel name.</summary>
+        static string PieceName(Vessel v)
+        {
+            string hull = v.parts.Select(p => PRSPart.Of(p)?.hull).Where(h => !string.IsNullOrEmpty(h))
+                .GroupBy(h => h).OrderByDescending(g => g.Count()).Select(g => g.Key).FirstOrDefault();
+            return HangarShip.ParseHull(hull, out string name, out int number) ? name + " #" + number : Name(v);
         }
 
         static void Remember(Vessel v)
@@ -96,6 +162,7 @@ namespace PhilsReusabilitySuite
         {
             var prof = new Profile { FromLiveParts = true };
             double realChute = 0, stock = 0;
+            RefreshDrag(parts);
             foreach (Part p in parts)
             {
                 PartModule rc = p.Modules.Contains("RealChuteModule") ? p.Modules["RealChuteModule"] : null;
@@ -111,6 +178,19 @@ namespace PhilsReusabilitySuite
             // As StageRecovery does: with RealChute on board, its canopies decide the landing.
             prof.CdA = realChute > 0 ? realChute : stock;
             return prof;
+        }
+
+        /// <summary>
+        /// Brings these parts' drag up to date: every part's weights first, then how much each hides of its
+        /// neighbours (which reads the neighbours' weights). In the editor KSP doesn't keep drag current, so
+        /// without this the first check of a newly loaded ship read stale drag and gave different speeds from
+        /// every later check.
+        /// </summary>
+        static void RefreshDrag(IEnumerable<Part> parts)
+        {
+            var live = parts.Where(p => p.DragCubes != null && !p.DragCubes.None && p.DragCubes.Cubes.Count > 0).ToList();
+            foreach (Part p in live) { p.DragCubes.ForceUpdate(true, true); p.DragCubes.SetDragWeights(); }
+            foreach (Part p in live) p.DragCubes.SetPartOcclusion();
         }
 
         /// <summary>A part's drag at a gentle fall (Mach 0.03), with a stock parachute counted as open. The part's
@@ -282,9 +362,10 @@ namespace PhilsReusabilitySuite
                        + (broke.Count > 0 ? " Lost " + broke.Count + (broke.Count == 1 ? " outer part." : " outer parts.") : "")
                        + money + " In the hangar, now " + h.Flights + (h.Flights == 1 ? " flight." : " flights.");
             else
-                text = Name(v) + " came down at " + landing.ToString("0.0") + " m/s " + how + ", " + where + ": " + (sc.LastBinReason ?? "it has no engine or probe core") + ", so its parts went to the parts bin." + money;
+                text = Name(v) + " came down at " + landing.ToString("0.0") + " m/s " + how + ", " + where + ": " + (sc.LastBinReason ?? "it has no engine or probe core") + ", so its parts went to the parts bin."
+                       + (broke.Count > 0 ? " Lost " + broke.Count + (broke.Count == 1 ? " outer part." : " outer parts.") : "") + money;
             Outcomes.Add(text);
-            Log.Info("Stage recovery: " + text + (prof.FromLiveParts ? "" : " (drag from default part sizes: it was never measured close by)"));
+            Log.Info("Stage recovery: " + text + Parts(pv) + (prof.FromLiveParts ? "" : " (drag from default part sizes: it was never measured close by)"));
             Suite.Message(text, 8f);
         }
 
@@ -292,8 +373,16 @@ namespace PhilsReusabilitySuite
         {
             string text = Name(v) + " was lost: it " + why + ".";
             Outcomes.Add(text);
-            Log.Info("Stage recovery: " + text);
+            Log.Info("Stage recovery: " + text + Parts(v.loaded ? v.BackupVessel() : v.protoVessel));
             Suite.Message(text, 6f);
+        }
+
+        /// <summary>" [3 parts: HeatShield2, ...]" for the log, so a piece can be told apart from its neighbours.</summary>
+        static string Parts(ProtoVessel pv)
+        {
+            if (pv == null) return "";
+            var names = pv.protoPartSnapshots.Select(ps => ps.partName).GroupBy(n => n).Select(g => (g.Count() > 1 ? g.Count() + "×" : "") + g.Key);
+            return " [" + pv.protoPartSnapshots.Count + " parts: " + string.Join(", ", names.ToArray()) + "]";
         }
 
         /// <summary>One piece that drops off a ship in the editor, and how it would land (empty of fuel).</summary>
@@ -320,13 +409,15 @@ namespace PhilsReusabilitySuite
             CelestialBody home = FlightGlobals.GetHomeBody();
             double rho = home != null ? home.atmDensityASL : 1.225;
             var byKey = new Dictionary<string, EditorPiece>();
+            RefreshDrag(ship.parts);   // the whole ship, since a piece's drag depends on the parts it touches
             foreach (Part d in ship.parts.Where(p => p.FindModuleImplementing<ModuleDecouplerBase>() != null && p.parent != null))
             {
                 var piece = new List<Part>();
                 Collect(d, piece);
                 if (piece.Count == 0) continue;
-                Profile prof = Measure(piece);
-                double mass = piece.Sum(p => p.mass);
+                Profile prof = MeasureAlone(piece);
+                // Empty of fuel, as a spent stage, but a heat shield keeps its ablator (it isn't burnt as fuel).
+                double mass = piece.Sum(p => p.mass + p.Resources.Cast<PartResource>().Where(r => r.resourceName == "Ablator").Sum(r => r.amount * r.info.density));
                 double vt = Landing.TerminalSpeed(mass, prof.CdA, rho);
                 Part biggest = piece.OrderByDescending(p => p.mass).First();
                 bool canBurn = piece.Any(p => p.FindModuleImplementing<ModuleSAS>() != null)
@@ -338,6 +429,32 @@ namespace PhilsReusabilitySuite
                 pieces.Add(e2);
             }
             return pieces;
+        }
+
+        /// <summary>
+        /// A piece measured as it will fall: on its own. KSP hides a part's face where it's stacked against
+        /// another part, so a piece measured while still in the ship counted the faces it shares with the parts
+        /// above and below as hidden, and read far too fast (Kerbal X's heat shield: 619 m/s in the VAB, 62 m/s
+        /// in flight). Its stack joints to the rest of the ship are unhooked for the measurement only, within
+        /// this one call, and hooked straight back.
+        /// </summary>
+        public static Profile MeasureAlone(List<Part> piece)
+        {
+            var inPiece = new HashSet<Part>(piece);
+            var cut = new List<KeyValuePair<AttachNode, Part>>();
+            foreach (Part p in piece)
+                foreach (AttachNode n in p.attachNodes)
+                    if (n.attachedPart != null && !inPiece.Contains(n.attachedPart)) cut.Add(new KeyValuePair<AttachNode, Part>(n, n.attachedPart));
+            try
+            {
+                foreach (var c in cut) c.Key.attachedPart = null;
+                return Measure(piece);
+            }
+            finally
+            {
+                foreach (var c in cut) c.Key.attachedPart = c.Value;
+                RefreshDrag(piece);
+            }
         }
 
         /// <summary>
@@ -367,7 +484,10 @@ namespace PhilsReusabilitySuite
         /// SAS), have liquid engines with thrust-to-weight of at least 1, and carry the propellant to slow from
         /// its falling speed with a 1.5× margin. The propellant is used up.
         /// </summary>
-        static bool TryPoweredLanding(ProtoVessel pv, double mass, double speed)
+        static bool TryPoweredLanding(ProtoVessel pv, double mass, double speed) => PoweredLanding(pv, mass, speed, true);
+
+        /// <summary>Whether a powered landing would work; with burn, the propellant it takes is used up.</summary>
+        static bool PoweredLanding(ProtoVessel pv, double mass, double speed, bool burn)
         {
             bool controlled = pv.protoPartSnapshots.Any(ps =>
                 ps.protoModuleCrew.Any(c => c.experienceTrait != null && c.experienceTrait.TypeName == "Pilot")
@@ -395,6 +515,7 @@ namespace PhilsReusabilitySuite
             var tanks = pv.protoPartSnapshots.SelectMany(ps => ps.resources).Where(r => propellants.Contains(r.resourceName) && r.definition != null && r.definition.density > 0).ToList();
             double have = tanks.Sum(r => r.amount * r.definition.density);
             if (have < need || have <= 0) return false;
+            if (!burn) return true;
             double use = need / have;
             foreach (ProtoPartResourceSnapshot r in tanks) r.amount -= r.amount * use;
             return true;

@@ -549,6 +549,41 @@ and not sit idle").
   - the "Not filed" text was cut off;
   - the hangar note called a never-flown copy "flown".
 
+**Released 0.1.0, then Phil's first play-test (2026-11-07 evening).** Phil filed a payload (Seeker I) and a
+launcher (Kopje 005) in his own career on the test install, built both, stacked them and flew. Fixed from what he
+found, all covered by in-game tests:
+- A launcher built on its own kept KSP's default name. A ship that is all one design is now built under the
+  design's name; a payload stacked on a launcher takes the payload's (its root part's) name.
+- A payload stacked on a launcher counted as a copy of the launcher (a majority of its parts). A hangar ship is
+  now a copy of a design only if every design-placed part came from that one design.
+- Stage recovery only ran in flight: a ship left falling while Phil watched from the Tracking Station was deleted
+  by KSP with no landing check. It now runs at the Space Center and in the Tracking Station too, with ground speed
+  and height worked out from the orbit. (KSP's Orbit.GetVel() includes the planet's own speed around the Sun away
+  from flight: GetRelativeVel() is used.)
+- A hangar ship opened in the VAB lost its identity after a trip to the Space Center and back: which parts were
+  hangar hardware was noted as the editor closed, after its ship was gone. It's now kept up to date.
+- The VAB landing check gave different speeds each time and measured each piece while still stacked between its
+  neighbours (faces it shares with them counted as hidden). It now brings the whole ship's drag up to date first,
+  and measures each piece on its own by unhooking its stack joints to the rest for the measurement only. Launch
+  clamps are left out (they stay on the pad); a heat shield keeps its ablator. Checked in flight: a booster
+  measured this way before it drops reads 0.71, the same as the real dropped booster; the pod 2,069 vs 2,195.
+- KSP's pre-launch warnings during a build say "Build anyway".
+- Launch clamps left on the pad by an earlier launch no longer block launching a ready ship: they're recovered
+  to the parts bin.
+
+**Overnight 2026-11-07 → 08** (Phil: "do whatever you want within the scope of these projects", "Build freely",
+push code, no release). Phil's Builds worked alongside on its own findings from the same play-test.
+- **Build from Phil's Builds without the VAB:** the Build queue tab lists every filed launcher, upper stage and
+  craft, priced, with Normal / Overtime / Outsource. What KSP's own checks would stop is checked from the craft
+  file: parts not researched, bought or installed, the building's part limit, the pad's or runway's mass and size.
+- **Restore to design** in the Hangar tab: a flown copy is built back up to its whole design (its own parts, new
+  or bin parts for the rest) and stays the same ship.
+- **Forecasts:** as each stage drops (or, if it was the ship being flown, as it goes out of range), the suite
+  says whether it will come home, and how. Pieces dropping together make one message.
+- **New in-game tests:** a powered landing (the Z-MAP's middle stage comes home with a landing burn and uses up
+  the propellant), and the whole reuse loop (build, fly, the pod comes home, picked up as the whole design at
+  refit price, built and flown again, comes home as the same ship with two flights).
+
 ## Open questions
 
 - None for the design. The money numbers get tuned in play.

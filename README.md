@@ -24,9 +24,13 @@ it hasn't had much real play yet. Back up your saves. The design is in [DESIGN.m
   is.
 - **Stage recovery.** Stages that fall out of range come home on their own if they would land safely, on
   parachutes or with a landing burn. Landing between 6 and 12 m/s breaks off outer parts; faster than that,
-  the stage is lost. The VAB shows each dropping piece's landing speed while you design it.
+  the stage is lost. The VAB shows each dropping piece's landing speed while you design it, and in flight each
+  stage says as it drops whether it will come home. It works while you watch from the Space Center or the
+  Tracking Station too.
 - **A parts bin.** Loose parts, from ships you take apart or pieces with no engine or probe core, are used
   automatically in new builds at refit price.
+- **Build ahead from the Space Center.** "Build from Phil's Builds…" in the Build queue tab queues any filed
+  launcher or craft without opening the VAB or SPH, and says why if it can't be built yet.
 - **A flown booster under a new payload.** Phil's Builds' library window lists the hangar copies under
   each launcher. Pick a flown first stage and the whole launcher goes on the cursor: that exact stage plus
   a new upper stage from the design. Attach it under your payload. Only the new parts cost full price and

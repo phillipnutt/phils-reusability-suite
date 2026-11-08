@@ -135,6 +135,190 @@ namespace PhilsReusabilitySuite
 
         static string Price(Quote q) => Pricing.Funds(q.Total) + " · " + Pricing.Duration(q.Seconds, S);
 
+        // ---- Building a filed design without opening the editor ----
+
+        /// <summary>A filed design that can be queued from the suite window, with its price and anything stopping it.</summary>
+        public sealed class LibraryBuild
+        {
+            public Design Design;
+            public Node Craft;
+            public Quote Quote;
+            public string Facility;
+            public int Parts;
+            /// <summary>Ready, unreserved copies already in the hangar.</summary>
+            public int Ready;
+            /// <summary>Why it can't be built here and now, or null.</summary>
+            public string Blocked;
+            public string KindLabel;
+        }
+
+        /// <summary>The design as a brand-new build: every part new, each with a serial of its own.</summary>
+        public static Node FreshCraft(Design d)
+        {
+            Node file = DesignFile(d);
+            if (file == null) return null;
+            Node craft = Completion.Complete(file, d.Id, new Node[0]).Craft;
+            craft.Set("ship", d.Name);
+            foreach (Node part in craft.Children("PART"))
+            {
+                Node m = part.Children("MODULE").FirstOrDefault(x => x.Get("name") == Core.Craft.ModuleName);
+                if (m != null) m.Set("serial", PRSPart.NewSerial());
+            }
+            return craft;
+        }
+
+        /// <summary>Every filed craft, launcher and upper stage, newest marks first, priced as a new build.</summary>
+        public static List<LibraryBuild> Library()
+        {
+            var list = new List<LibraryBuild>();
+            PRSScenario sc = PRSScenario.Instance;
+            if (sc == null) return list;
+            IEnumerable<Design> designs;
+            try { designs = BuildsApi.Designs().Where(d => d.Kind != DesignKind.Block).ToList(); }
+            catch (Exception ex) { Log.Warn("Couldn't read Phil's Builds' library: " + ex.Message); return list; }
+            foreach (Design d in designs)
+            {
+                try
+                {
+                    Node craft = FreshCraft(d);
+                    if (craft == null) continue;
+                    string facility = d.Kind == DesignKind.Craft && d.Facility == "SPH" ? "SPH" : "VAB";
+                    var item = new LibraryBuild
+                    {
+                        Design = d,
+                        Craft = craft,
+                        Facility = facility,
+                        Parts = craft.Children("PART").Count(),
+                        Quote = sc.QuoteFor(craft, d.Name, null),
+                        Ready = sc.Hangar.Count(h => h.Ready && h.ReservedBy == null && DesignOf(h) == d.Id),
+                        KindLabel = d.Kind == DesignKind.Launcher ? "Launcher" + (d.Tons > 0 ? " · " + d.Tons.ToString("0.#") + " t" : "")
+                                  : d.Kind == DesignKind.UpperStage ? "Upper stage" : (d.CategoryLabel + " · " + facility),
+                    };
+                    item.Blocked = WhyNot(craft, facility);
+                    list.Add(item);
+                }
+                catch (Exception ex) { Log.Warn("Couldn't price " + d.Name + ": " + ex.Message); }
+            }
+            return list.OrderBy(i => i.Design.Kind == DesignKind.Craft ? 1 : 0).ThenBy(i => i.Design.Family).ThenByDescending(i => i.Design.Mark).ThenBy(i => i.Design.Name).ToList();
+        }
+
+        /// <summary>
+        /// What KSP's own checks would stop, done from the craft file since there's no ship in an editor: parts not
+        /// researched, not bought or not installed, too many parts for the building, too heavy or too big for the
+        /// launch pad (or runway). Null when it can be built.
+        /// </summary>
+        public static string WhyNot(Node craft, string facility)
+        {
+            bool vab = facility != "SPH";
+            var parts = craft.Children("PART").ToList();
+            bool tech = HighLogic.CurrentGame != null && HighLogic.CurrentGame.Mode != Game.Modes.SANDBOX && ResearchAndDevelopment.Instance != null;
+            double mass = 0;
+            foreach (Node p in parts)
+            {
+                string r = p.Get("part") ?? "";
+                string name = r.Contains("_") ? r.Substring(0, r.LastIndexOf('_')) : r;
+                AvailablePart ap = PartLoader.getPartInfoByName(name);
+                if (ap == null) return "It uses a part that isn't installed (" + name + ").";
+                if (tech && !ResearchAndDevelopment.PartTechAvailable(ap)) return "It uses the " + ap.title + ", which isn't researched yet.";
+                if (tech && !ResearchAndDevelopment.PartModelPurchased(ap)) return "It uses the " + ap.title + ", which isn't bought yet.";
+                ShipConstruction.GetPartCostsAndMass(KspNodes.ToKsp(p, "PART"), ap, out float dry, out float fuel, out float dryMass, out float fuelMass);
+                mass += dryMass + fuelMass;
+            }
+            if (GameVariables.Instance == null) return null;
+            float building = ScenarioUpgradeableFacilities.GetFacilityLevel(vab ? SpaceCenterFacility.VehicleAssemblyBuilding : SpaceCenterFacility.SpaceplaneHangar);
+            int maxParts = GameVariables.Instance.GetPartCountLimit(building, vab);
+            if (maxParts > 0 && maxParts < int.MaxValue && parts.Count > maxParts)
+                return "It has " + parts.Count + " parts; the " + facility + " takes " + maxParts + " until it's upgraded.";
+            float site = ScenarioUpgradeableFacilities.GetFacilityLevel(vab ? SpaceCenterFacility.LaunchPad : SpaceCenterFacility.Runway);
+            float maxMass = GameVariables.Instance.GetCraftMassLimit(site, vab);
+            if (maxMass > 0 && maxMass < float.MaxValue && mass > maxMass)
+                return "It weighs " + Math.Round(mass, 1) + " t; the " + (vab ? "launch pad" : "runway") + " takes " + Math.Round(maxMass, 1) + " t until it's upgraded.";
+            Vector3 size = ParseSize(craft.Get("size"));
+            Vector3 maxSize = GameVariables.Instance.GetCraftSizeLimit(site, vab);
+            if (size != Vector3.zero && maxSize.x > 0 && maxSize.x < float.MaxValue && (size.x > maxSize.x || size.y > maxSize.y || size.z > maxSize.z))
+                return "It's too big for the " + (vab ? "launch pad" : "runway") + " (" + size.y.ToString("0.#") + " m tall; it takes " + maxSize.y.ToString("0.#") + " m).";
+            return null;
+        }
+
+        static Vector3 ParseSize(string s)
+        {
+            if (string.IsNullOrEmpty(s)) return Vector3.zero;
+            string[] bits = s.Split(',');
+            if (bits.Length != 3) return Vector3.zero;
+            float[] v = new float[3];
+            for (int i = 0; i < 3; i++)
+                if (!float.TryParse(bits[i], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out v[i])) return Vector3.zero;
+            return new Vector3(v[0], v[1], v[2]);
+        }
+
+        /// <summary>"Restore to design" for a hangar ship: its own parts in their slots, new parts for the rest.</summary>
+        public sealed class Restore
+        {
+            public Design Design;
+            public Node Craft;
+            public Quote Quote;
+            public int NewParts;
+            public string Facility;
+            public string Blocked;
+        }
+
+        /// <summary>
+        /// The hangar ship built back up to its whole design (a flown first stage becomes the whole launcher
+        /// again), or null when it isn't a copy of a filed design or already has every part.
+        /// </summary>
+        public static Restore RestoreOf(HangarShip h)
+        {
+            PRSScenario sc = PRSScenario.Instance;
+            string id = DesignOf(h);
+            if (sc == null || id == null) return null;
+            Design d;
+            try { d = BuildsApi.Find(id); } catch (Exception) { return null; }
+            if (d == null) return null;
+            CompletionResult c = Complete(d, h);
+            if (c == null || c.NewSlots.Count == 0) return null;
+            Node craft = c.Craft;
+            craft.Set("ship", h.Name);
+            foreach (Node part in craft.Children("PART"))
+            {
+                Node m = part.Children("MODULE").FirstOrDefault(x => x.Get("name") == Core.Craft.ModuleName);
+                if (m != null && string.IsNullOrEmpty(m.Get("serial"))) m.Set("serial", PRSPart.NewSerial());
+            }
+            string facility = Suite.FacilityOf(craft);
+            return new Restore
+            {
+                Design = d,
+                Craft = craft,
+                Quote = sc.QuoteFor(craft, h.DisplayName, null),
+                NewParts = c.NewSlots.Count,
+                Facility = facility,
+                Blocked = WhyNot(craft, facility),
+            };
+        }
+
+        /// <summary>Queues the restore. The ship keeps its name and number, and is ready to launch when it's done.</summary>
+        public static BuildJob RestoreBuild(HangarShip h, Restore r, bool overtime, bool outsource, out string error)
+        {
+            error = null;
+            PRSScenario sc = PRSScenario.Instance;
+            if (sc == null || r == null) { error = "There's nothing to restore."; return null; }
+            if (r.Blocked != null) { error = h.DisplayName + " can't be restored yet. " + r.Blocked; return null; }
+            BuildJob job = sc.StartBuild(r.Craft, h.Name, r.Facility, r.Quote, overtime, outsource, h.Id, out error);
+            if (job != null && !outsource) Suite.Message(h.DisplayName + " is being restored to " + r.Design.Name + ": " + Pricing.Duration(job.SecondsLeft(S), S));
+            return job;
+        }
+
+        /// <summary>Queues a library build, paid now, exactly as the Build panel would.</summary>
+        public static BuildJob BuildFromLibrary(LibraryBuild item, bool overtime, bool outsource, out string error)
+        {
+            error = null;
+            PRSScenario sc = PRSScenario.Instance;
+            if (sc == null || item == null) { error = "The suite's save data isn't loaded."; return null; }
+            if (item.Blocked != null) { error = item.Design.Name + " can't be built yet. " + item.Blocked; return null; }
+            BuildJob job = sc.StartBuild(item.Craft, item.Design.Name, item.Facility, item.Quote, overtime, outsource, null, out error);
+            if (job != null && !outsource) Suite.Message(item.Design.Name + " is being built: " + Pricing.Duration(job.SecondsLeft(S), S));
+            return job;
+        }
+
         public IList<CopyRow> CopiesOf(Design design)
         {
             var rows = new List<CopyRow>();

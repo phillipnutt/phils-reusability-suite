@@ -78,5 +78,13 @@ namespace PhilsReusabilitySuite
         /// <summary>Starts the in-game self-test of the Phil's Builds link (test harness only).</summary>
         [KSPEvent(guiActive = false, guiActiveEditor = false)]
         public void PRSSelfTestLink() { SelfTestLink.Begin(); }
+
+        /// <summary>Starts the in-game self-test of a powered landing (test harness only).</summary>
+        [KSPEvent(guiActive = false, guiActiveEditor = false)]
+        public void PRSSelfTestPowered() { SelfTestPowered.Begin(); }
+
+        /// <summary>Starts the in-game self-test of the whole reuse loop (test harness only).</summary>
+        [KSPEvent(guiActive = false, guiActiveEditor = false)]
+        public void PRSSelfTestReuse() { SelfTestReuse.Begin(); }
     }
 }

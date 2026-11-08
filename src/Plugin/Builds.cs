@@ -311,6 +311,14 @@ namespace PhilsReusabilitySuite
                 lastNumber[job.Name] = ready.Number;
                 Hangar.Add(ready);
             }
+            else
+            {
+                // A ship rebuilt as itself (restored to its design, which can leave out a part added by hand):
+                // anything not in the new build goes to the parts bin.
+                Craft old = Core.Craft.Read(ready.Craft);
+                foreach (string s in ready.Placed.Where(x => !serials.Contains(x)))
+                    if (old.BySerial.TryGetValue(s, out CraftPart cp)) Bin.Add(BinPartFrom(cp));
+            }
             ready.UT = Planetarium.GetUniversalTime();
             ready.Craft = job.Craft.Clone();
             ready.Placed.Clear();
@@ -394,9 +402,18 @@ namespace PhilsReusabilitySuite
             error = null;
             if (!h.Ready || h.ReservedBy != null) { error = h.DisplayName + " isn't ready to launch."; return false; }
             string site = Suite.FacilityOf(h.Craft) == "SPH" ? "Runway" : "LaunchPad";
-            if (ShipConstruction.FindVesselsLandedAt(HighLogic.CurrentGame.flightState, site).Count > 0)
+            List<ProtoVessel> inTheWay = ShipConstruction.FindVesselsLandedAt(HighLogic.CurrentGame.flightState, site);
+            // Launch clamps left standing from the last launch are cleared away, as KSP's own launch would offer:
+            // recovered the stock way, so they go to the parts bin for the next build.
+            foreach (ProtoVessel pv in inTheWay.Where(OnlyLaunchClamps).ToList())
             {
-                error = (site == "Runway" ? "The runway" : "The launch pad") + " isn't clear.";
+                Log.Info("Clearing the launch clamps left on the " + (site == "Runway" ? "runway" : "launch pad") + " (" + pv.protoPartSnapshots.Count + " parts)");
+                ShipConstruction.RecoverVesselFromFlight(pv, HighLogic.CurrentGame.flightState, true);
+                inTheWay.Remove(pv);
+            }
+            if (inTheWay.Count > 0)
+            {
+                error = KSP.Localization.Localizer.Format(inTheWay[0].vesselName) + " is on the " + (site == "Runway" ? "runway" : "launch pad") + ". Recover it first (from the Tracking Station, or fly it off).";
                 return false;
             }
             string path = SuiteFiles.WriteCraft(h);
@@ -407,6 +424,9 @@ namespace PhilsReusabilitySuite
             FlightDriver.StartWithNewLaunch(path, HighLogic.CurrentGame.flagURL, site, m);
             return true;
         }
+
+        static bool OnlyLaunchClamps(ProtoVessel pv) =>
+            pv.protoPartSnapshots.Count > 0 && pv.protoPartSnapshots.All(ps => ps.partInfo?.partPrefab != null && ps.partInfo.partPrefab.FindModuleImplementing<LaunchClamp>() != null);
 
         /// <summary>At rollout: a ready hangar ship launches free (KSP charges its price at rollout, so refund it).</summary>
         void ReadyShipRollout(ShipConstruct ship)
