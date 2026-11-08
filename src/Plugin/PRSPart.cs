@@ -11,9 +11,14 @@ namespace PhilsReusabilitySuite
     {
         [KSPField(isPersistant = true)] public string serial = "";
         [KSPField(isPersistant = true)] public int flights = 0;
+        /// <summary>The hangar ship this part belongs to, "Name|Number" (empty for a new or loose part).</summary>
+        [KSPField(isPersistant = true)] public string hull = "";
 
         /// <summary>Serials the editor may keep this session: ones it gave out, and hangar parts it loaded.</summary>
         public static readonly HashSet<string> EditorTrusted = new HashSet<string>();
+
+        /// <summary>Trusted serials of the ship left in the editor, kept for when KSP restores it on return.</summary>
+        public static readonly HashSet<string> EditorCarry = new HashSet<string>();
 
         public static string NewSerial()
         {
@@ -38,6 +43,7 @@ namespace PhilsReusabilitySuite
         {
             serial = NewSerial();
             flights = 0;
+            hull = "";
         }
 
         public override string GetInfo() { return ""; }
@@ -53,5 +59,13 @@ namespace PhilsReusabilitySuite
         /// <summary>Starts the in-game self-test (used by the unattended test harness only).</summary>
         [KSPEvent(guiActive = false, guiActiveEditor = false)]
         public void PRSSelfTest() { SelfTest.Begin(); }
+
+        /// <summary>Starts the in-game self-test of the build queue (test harness only).</summary>
+        [KSPEvent(guiActive = false, guiActiveEditor = false)]
+        public void PRSSelfTestBuild() { SelfTestBuild.Begin(); }
+
+        /// <summary>Starts the in-game self-test of stage recovery (test harness only).</summary>
+        [KSPEvent(guiActive = false, guiActiveEditor = false)]
+        public void PRSSelfTestStages() { SelfTestStages.Begin(); }
     }
 }

@@ -13,7 +13,7 @@ namespace PhilsReusabilitySuite
     /// Everything lives in the save, so KRASH's revert undoes a simulation's effects.
     /// </summary>
     [KSPScenario(ScenarioCreationOptions.AddToAllGames, GameScenes.SPACECENTER, GameScenes.EDITOR, GameScenes.FLIGHT, GameScenes.TRACKSTATION)]
-    public class PRSScenario : ScenarioModule
+    public partial class PRSScenario : ScenarioModule
     {
         public static PRSScenario Instance { get; private set; }
 
@@ -59,7 +59,9 @@ namespace PhilsReusabilitySuite
 
         void OnRollout(ShipConstruct ship)
         {
-            if (ship != null) RecordLaunch(ship.parts, KSP.Localization.Localizer.Format(ship.shipName), "rollout");
+            if (ship == null) return;
+            ReadyShipRollout(ship);
+            RecordLaunch(ship.parts, KSP.Localization.Localizer.Format(ship.shipName), "rollout");
         }
 
         /// <summary>Backstop in case the rollout event came before this module woke up.</summary>
@@ -179,7 +181,9 @@ namespace PhilsReusabilitySuite
         {
             float until = Time.realtimeSinceStartup + 0.5f;
             while (Time.realtimeSinceStartup < until) yield return null;
-            bool gone = part == null || part.vessel == null || part.vessel != was;
+            // Broken off means it came away on its own: it is now the root of a ship of its own, or gone. (A part
+            // that only moved to a new ship along with its neighbours, when a decoupler fired, didn't break.)
+            bool gone = part == null || part.vessel == null || (part.vessel != was && part.parent == null && part.vessel.rootPart == part);
             if (!gone) { Log.Info("Ignored a joint break on " + part.partInfo.title + ": it's still attached"); yield break; }
             if (BrokeOff.Add(serial)) Log.Info((part != null ? part.partInfo.title : "A part") + " broke off " + (was != null ? was.vesselName : "a ship"));
         }
@@ -217,6 +221,15 @@ namespace PhilsReusabilitySuite
                 info[s] = ps;
             }
             if (serials.Count == 0) return;
+            // Parts lost in a hard landing didn't come home: they count as broken off.
+            foreach (string s in serials.Where(LeftBehindOnNextRecovery.Contains).ToList()) { serials.Remove(s); BrokeOff.Add(s); }
+
+            RecoverChoice choice = RecoverGate.Choices.TryGetValue(pv.persistentId, out RecoverChoice ch) ? ch : RecoverChoice.Hangar;
+            if (choice == RecoverChoice.Sell)
+            {
+                Log.Info("Recovered " + pv.vesselName + ": sold for scrap (" + serials.Count + " parts)");
+                return;
+            }
 
             LaunchRecord rec = FindRecord(serials);
             if (rec == null)
@@ -235,36 +248,89 @@ namespace PhilsReusabilitySuite
                 return;
             }
 
-            string name = pv.vesselName;
-            lastNumber.TryGetValue(name, out int last);
+            // Only a piece that can fly again is kept whole; anything else is just parts.
+            Craft recCraft = Core.Craft.Read(rec.Craft);
+            if (!RecoveryValue.CanFly(r.Placed.Select(s => info[s].partName)))
+            {
+                foreach (string s in serials) ToBin(s, info, recCraft);
+                Log.Info("Recovered " + pv.vesselName + ": no engine or probe core, so its " + serials.Count + " parts went to the parts bin");
+                return;
+            }
+
+            // A piece comes home as the hangar ship most of its parts belong to ("Oak 005 #4" again); a piece
+            // flying for the first time gets the next number under its vessel name.
+            string hull = r.Placed.Select(s => info[s].modules.FirstOrDefault(x => x.moduleName == Core.Craft.ModuleName)?.moduleValues?.GetValue("hull"))
+                .Where(x => !string.IsNullOrEmpty(x)).GroupBy(x => x).OrderByDescending(g => g.Count()).Select(g => g.Key).FirstOrDefault();
+            string name;
+            int number;
+            if (!HangarShip.ParseHull(hull, out name, out number))
+            {
+                name = KSP.Localization.Localizer.Format(pv.vesselName);
+                lastNumber.TryGetValue(name, out int last);
+                number = last + 1;
+            }
+            if (!lastNumber.TryGetValue(name, out int lastGiven) || lastGiven < number) lastNumber[name] = number;
             var h = new HangarShip
             {
                 Id = Guid.NewGuid().ToString("N"),
                 Name = name,
-                Number = last + 1,
+                Number = number,
                 UT = Planetarium.GetUniversalTime(),
                 LaunchId = rec.Id,
                 RootSerial = r.RootSerial,
                 Craft = r.Craft,
                 Fuel = FuelLeft(r.Placed, info),
             };
-            lastNumber[name] = h.Number;
+            h.StampHull(true);
             h.Placed.AddRange(r.Placed);
             h.Missing.AddRange(r.Missing);
             h.Flights = r.Placed.Select(s => FlightsOf(info[s])).DefaultIfEmpty(0).Max();
+            // What each part still holds, so a refit only tops it up.
+            foreach (string s in r.Placed)
+            {
+                var left = new Dictionary<string, double>();
+                foreach (ProtoPartResourceSnapshot res in info[s].resources)
+                    left[res.resourceName] = (left.TryGetValue(res.resourceName, out double had) ? had : 0) + res.amount;
+                if (left.Count > 0) h.CameBack[s] = left;
+            }
             Hangar.Add(h);
             // Broken-off parts stay noted even when they come home on their own: the ship they came off is
             // still missing them. The note clears when the part next launches.
-            foreach (string s in r.Unplaced.Concat(r.Dropped)) ToBin(s, info);
+            foreach (string s in r.Unplaced.Concat(r.Dropped)) ToBin(s, info, recCraft);
             Log.Info("Recovered " + name + ": " + r.Placed.Count + " parts to the hangar as " + h.DisplayName
                      + (r.Missing.Count > 0 ? ", " + r.Missing.Count + " missing" : "")
                      + (r.Unplaced.Count + r.Dropped.Count > 0 ? ", " + (r.Unplaced.Count + r.Dropped.Count) + " to the parts bin" : ""));
         }
 
-        void ToBin(string serial, Dictionary<string, ProtoPartSnapshot> info)
+        readonly HashSet<uint> moneyDone = new HashSet<uint>();
+
+        /// <summary>Serials that broke off in a hard landing, set by stage recovery just before it recovers.</summary>
+        public readonly HashSet<string> LeftBehindOnNextRecovery = new HashSet<string>();
+
+        /// <summary>
+        /// KSP has just paid its recovery refund (<paramref name="paid"/>: the value times the distance factor).
+        /// The suite keeps the hardware instead, so it takes that refund back and charges the transport home
+        /// (the value times what the distance rule holds back); for a sale it leaves half the refund as scrap.
+        /// </summary>
+        public void SettleRecovery(ProtoVessel pv, double paid, float factor)
+        {
+            if (pv == null || !Suite.Career || Krash.SimActive || !moneyDone.Add(pv.persistentId)) return;
+            bool ours = pv.protoPartSnapshots.Any(ps => !string.IsNullOrEmpty(ps.modules.FirstOrDefault(x => x.moduleName == Core.Craft.ModuleName)?.moduleValues?.GetValue("serial")));
+            if (!ours) return;
+            RecoverChoice choice = RecoverGate.Choices.TryGetValue(pv.persistentId, out RecoverChoice ch) ? ch : RecoverChoice.Hangar;
+            double transport = RecoveryValue.Value(pv) * (1 - factor);
+            double adjust = choice == RecoverChoice.Hangar ? paid + transport : paid * (1 - S.ScrapValue);
+            Suite.Charge(adjust);
+            Log.Info(choice == RecoverChoice.Hangar
+                ? "Recovery of " + pv.vesselName + ": kept the hardware, transport " + Pricing.Funds(transport) + " (KSP's refund of " + Pricing.Funds(paid) + " taken back, factor " + factor.ToString("0.00") + ")"
+                : "Recovery of " + pv.vesselName + ": sold for scrap, " + Pricing.Funds(paid * S.ScrapValue));
+        }
+
+        void ToBin(string serial, Dictionary<string, ProtoPartSnapshot> info, Craft from = null)
         {
             if (serial == null || !info.TryGetValue(serial, out ProtoPartSnapshot ps)) return;
-            Bin.Add(new BinPart { Serial = serial, Part = ps.partName, Flights = FlightsOf(ps) });
+            Node partNode = from != null && from.BySerial.TryGetValue(serial, out CraftPart cp) ? Builds.Loose(cp.Node) : null;
+            Bin.Add(new BinPart { Serial = serial, Part = ps.partName, Flights = FlightsOf(ps), PartNode = partNode });
         }
 
         static int FlightsOf(ProtoPartSnapshot ps)
@@ -320,6 +386,8 @@ namespace PhilsReusabilitySuite
             foreach (LaunchRecord r in Launches) r.Save(node.AddNode("LAUNCH"));
             foreach (HangarShip h in Hangar) h.Save(node.AddNode("HANGAR_SHIP"));
             foreach (BinPart b in Bin) b.Save(node.AddNode("BIN_PART"));
+            foreach (BuildJob j in Jobs) j.Save(node.AddNode("BUILD"));
+            node.AddValue("lastUT", lastUT.ToString("R", System.Globalization.CultureInfo.InvariantCulture));
             ConfigNode broke = node.AddNode("BROKE_OFF");
             foreach (string s in BrokeOff) broke.AddValue("serial", s);
             foreach (KeyValuePair<string, int> kv in lastNumber)
@@ -333,10 +401,13 @@ namespace PhilsReusabilitySuite
         public override void OnLoad(ConfigNode node)
         {
             base.OnLoad(node);
-            Launches.Clear(); Hangar.Clear(); Bin.Clear(); BrokeOff.Clear(); lastNumber.Clear();
+            Launches.Clear(); Hangar.Clear(); Bin.Clear(); BrokeOff.Clear(); lastNumber.Clear(); Jobs.Clear();
             foreach (ConfigNode n in node.GetNodes("LAUNCH")) { LaunchRecord r = LaunchRecord.Load(n); if (r != null) Launches.Add(r); }
             foreach (ConfigNode n in node.GetNodes("HANGAR_SHIP")) { HangarShip h = HangarShip.Load(n); if (h != null) Hangar.Add(h); }
             foreach (ConfigNode n in node.GetNodes("BIN_PART")) Bin.Add(BinPart.Load(n));
+            foreach (ConfigNode n in node.GetNodes("BUILD")) { BuildJob j = BuildJob.Load(n); if (j != null) Jobs.Add(j); }
+            lastUT = node.HasValue("lastUT") ? LaunchRecord.Num(node.GetValue("lastUT")) : -1;
+            if (lastUT <= 0) lastUT = -1;
             ConfigNode broke = node.GetNode("BROKE_OFF");
             if (broke != null) foreach (string s in broke.GetValues("serial")) BrokeOff.Add(s);
             foreach (ConfigNode n in node.GetNodes("NUMBER"))

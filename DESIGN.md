@@ -424,6 +424,80 @@ What step 1 contains:
   - An in-game self-test runs through the test harness on the stock Kerbal X: break a fin off, drop the
     boosters, recover every piece, save, then load each hangar ship in the VAB.
 
+**Steps 2 to 4, built and tested in game** (2026-11-07; Phil: "go ahead and move forward with whatever
+you need to do to complete this - launch and close KSP as you need"):
+
+- **Step 2, the build queue.**
+  - **The green Launch button opens the Build panel.** It shows each piece on its own line, the totals,
+    Normal / Overtime / Outsource with time and price, funds before and after, and which build line.
+  - **Build runs KSP's own pre-launch checks** (part count, size and mass limits, experimental parts, the
+    facility, a control source). It leaves out KSP's price check and "launch site clear".
+  - **Money is paid once, at Build.** Editing a queued build pays or refunds the difference and keeps the
+    work done. Cancelling refunds it. Overtime is paid on the share still to build. Outsourcing refunds
+    any unused overtime.
+  - **Time passes in every scene except the editors,** across the build lines. Lines come from KSP's
+    normalized facility level (stock's three levels assumed when the count isn't reported). A finishing
+    build stops time warp.
+  - **Finished ships go to the hangar, ready.** Launching a ready ship costs nothing: KSP's rollout
+    charge is handed back. Launch it from the suite window, or load it in the editor unchanged and press
+    the green button.
+  - **The suite window** (toolbar, at the KSC and in the VAB/SPH) has three tabs. Build queue: lines,
+    progress, Overtime / Outsource / Move up / Edit / Cancel, the ready list and "Warp to next finish".
+    Hangar: groups, next-flight cost, Launch / Refit and launch / Open in the VAB, Take apart, Sell.
+    Parts bin.
+- **Step 3, the hangar.**
+  - **The Recover prompt** is on all three of KSP's recovery paths (the flight button, the KSC vessel
+    markers, the Tracking Station), through Harmony. It offers To the hangar (transport), Sell for scrap,
+    or Cancel.
+  - **Recovery money is settled against exactly what KSP paid,** measured around KSP's own refund. To the
+    hangar takes the refund back and charges the transport; Sell keeps half the refund.
+  - **A piece with no engine or probe core goes to the parts bin.**
+  - **Matching bin parts are used automatically in new builds:** the same part at the same price, at refit
+    price, carrying their own serial.
+  - **Take apart and Sell for scrap** work for hangar ships and bin parts.
+- **Step 4, stage recovery.**
+  - **When KSP deletes a stage falling out of range in Kerbin's air,** the suite judges its landing:
+    StageRecovery's rules, a powered landing with a 1.5× fuel margin, and the burn-up check.
+  - **Drag is measured from the stage's own parts** when it separates or goes on rails, using KSP's
+    own drag maths on a temporary state that is put back afterwards. Open parachutes count without being
+    hidden by their parent part, as StageRecovery does. RealChute canopies use their diameter and the
+    fabric's drag coefficient from RealChute's material file.
+  - **Hard landings (6 to 12 m/s)** break off outer parts with nothing attached to them.
+  - **Recovery is announced, not done the stock way,** because KSP is mid-way through deleting the vessel.
+    The crew are then taken off so the deletion doesn't kill them.
+  - **Messages** cover came home, came home hard, went to the bin, and lost.
+  - **While StageRecovery is installed, the suite leaves stage recovery to it** and says so at the KSC.
+    It also warns if ScrapYard is installed.
+  - **The Build panel has a landing check:** each piece that drops off, with its landing speed empty of
+    fuel and with every chute open.
+
+Decisions made while building (within the agreed design):
+- **Ships taken into a build stay in the hangar list,** greyed as "in a build", as the mockup shows,
+  rather than moving out. Cancelling just frees them.
+- **Each part remembers the hangar ship it belongs to** ("hull" on PRSPart). A piece that comes home
+  takes the identity most of its parts share, so a ship launched from the hangar comes back as itself,
+  and a flown first stage under a new payload comes back as "Oak 005 #4". New parts take the identity of
+  the ship they were built into. Loose parts have none.
+- **Serials the editor didn't give out or load from the hangar are replaced,** so saved designs never
+  carry hardware. Coming back to the editor keeps the hangar parts of the ship that was left there.
+
+**Test results (2026-11-07):**
+- **Core checks:** 5,784.
+- **Harness runs on the clean install:** step 1 55/55, build queue and hangar 58/58, stage recovery
+  14/14.
+- **What the stage test proved:** the Kerbal X crew pod came home at 4.6 m/s on its big chute from
+  1,728 km out; its six chute-less boosters were lost at 444 m/s.
+- **Bugs found and fixed along the way:**
+  - a build-line count of 3 outside the KSC;
+  - recovery money off by about 1%;
+  - parachutes counted as hidden behind their pod;
+  - landing legs counted as broken off when a decoupler moved them;
+  - a KSP error from recovering a vessel mid-deletion.
+
+**The test harness** gained a `waitlog` step, so a run moves on as soon as a self-test logs its done
+marker instead of idling on a fixed wait (Phil: "you should be able to tell when your own tests are done
+and not sit idle").
+
 ## Open questions
 
 - None for the design. The money numbers get tuned in play.

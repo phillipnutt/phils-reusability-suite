@@ -54,6 +54,7 @@ namespace PhilsReusabilitySuite
                 yield return cur;
             }
             Note("done: " + pass + " passed, " + fail + " failed");
+            Debug.Log("[PRS-TEST-DONE]");
             Destroy(gameObject);
         }
 
