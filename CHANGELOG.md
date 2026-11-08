@@ -19,6 +19,17 @@ New:
 - **Each dropping stage says at once whether it will come home**: on its chutes, with a landing burn, hard, or
   not at all. Stages dropping together make one message ("6 × … won't survive the landing").
 
+Simplified (Phil: "more complexity and overlapping stuff... has more ways in which it can fail"). Three questions
+that were each answered in several places now have one rule each, and the code is about 100 lines shorter:
+- **Is this VAB part real hangar hardware?** One rule: a part keeps its serial if that serial belongs to nothing
+  else, or if the suite itself put that hardware in the VAB. This replaces three lists and a timing flag. It also
+  closes a gap: after KSP's New button, a design saved from a hangar ship's parts could still take that ship.
+- **What did a piece lose on the way?** Worked out once, when it comes home, from the ship as it launched: a part
+  that didn't come home was lost unless it left at a decoupler, docking port, claw or launch clamp. This replaces
+  following KSP's joint-break, decouple and destruction events through the flight (and their timing rules). One
+  small change: a decoupler whose joint snaps instead of firing now counts as a stage leaving, not a part lost.
+- **What is a returning piece called?** One rule, used both when it comes home and by the flight forecast.
+
 From Phil's second play-test (the morning after):
 - **Building a design could quietly use up a hangar ship.** Craft files saved in the VAB keep their parts'
   serial numbers, so a design saved from parts that were later built (Harris Hawk II saved from the I's parts)

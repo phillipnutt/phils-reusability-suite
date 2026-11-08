@@ -54,10 +54,8 @@ namespace PhilsReusabilitySuite
         void OnPlaced(Placed p)
         {
             Stamp(p.Design, p.Parts);
-            // Placed from the design's file (not a hangar copy): new parts, whatever serials the file carried.
-            int renewed = p.How == PlaceHow.Copy ? 0 : EditorAddon.Renew(p.Parts);
-            Log.Info("Phil's Builds placed " + p.Design?.Name + " (" + p.How + ", " + p.Parts?.Count + " parts): parts stamped with their design slots"
-                + (renewed > 0 ? ", " + renewed + " new serial numbers" : ""));
+            EditorAddon.CheckParts(p.Parts);   // picked up from a file: the editor's one serial rule, at once
+            Log.Info("Phil's Builds placed " + p.Design?.Name + " (" + p.How + ", " + p.Parts?.Count + " parts): parts stamped with their design slots");
         }
 
         void OnSaved(Saved s)
@@ -375,7 +373,7 @@ namespace PhilsReusabilitySuite
                     Id = h.Id,
                     Label = "#" + h.Number,
                     Text = what + " · " + (h.Flights == 0 ? "never flown" : h.Flights + (h.Flights == 1 ? " flight" : " flights")),
-                    Warning = h.Missing.Count > 0 ? "missing " + h.Missing.Count + (h.Missing.Count == 1 ? " part" : " parts") : "",
+                    Warning = h.Missing.Count > 0 ? "missing " + Suite.Parts(h.Missing.Count) : "",
                     Price = Price(q),
                     Reserved = h.ReservedBy != null,
                     ReservedText = h.ReservedBy != null ? "in the build of " + (sc.Jobs.FirstOrDefault(j => j.Id == h.ReservedBy)?.Name ?? "a ship") : "",
@@ -427,14 +425,14 @@ namespace PhilsReusabilitySuite
                 LogTitle = "Flights",
             };
             detail.Chips.Add(new CopyChip((c != null && c.NewSlots.Count > 0 && design.Kind == DesignKind.Launcher ? "First stage · " : "") + (h.Flights == 1 ? "1 flight" : h.Flights + " flights"), ChipTone.Good));
-            detail.Chips.Add(h.Missing.Count > 0 ? new CopyChip("Missing " + h.Missing.Count + (h.Missing.Count == 1 ? " part" : " parts"), ChipTone.Warn) : new CopyChip(h.Ready ? "Ready" : "Complete"));
+            detail.Chips.Add(h.Missing.Count > 0 ? new CopyChip("Missing " + Suite.Parts(h.Missing.Count), ChipTone.Warn) : new CopyChip(h.Ready ? "Ready" : "Complete"));
             if (!h.Ready) detail.Lines.Add(new CopyLine("Refit", Pricing.Funds(cq.RefitPrice), true));
             int newCount = c != null ? c.NewSlots.Count : 0;
-            if (newCount > 0) detail.Lines.Add(new CopyLine(newCount + " new " + (newCount == 1 ? "part" : "parts") + (design.Kind == DesignKind.Launcher && h.Missing.Count == 0 ? " (upper stage)" : ""), Pricing.Funds(cq.NewPrice)));
+            if (newCount > 0) detail.Lines.Add(new CopyLine(Suite.Parts(newCount).Replace(" part", " new part") + (design.Kind == DesignKind.Launcher && h.Missing.Count == 0 ? " (upper stage)" : ""), Pricing.Funds(cq.NewPrice)));
             detail.Lines.Add(new CopyLine(h.Ready ? "Fuel (full)" : "Fuel top-up", Pricing.Funds(cq.FuelPrice)));
             detail.Log.AddRange(sc.LogOf(h).Take(6));
             detail.Hint = newCount > 0
-                ? "Picks up the whole " + design.Name + ": " + h.DisplayName + " plus " + newCount + " new " + (newCount == 1 ? "part" : "parts") + " from the design. Attach it under your payload."
+                ? "Picks up the whole " + design.Name + ": " + h.DisplayName + " plus " + Suite.Parts(newCount).Replace(" part", " new part") + " from the design. Attach it under your payload."
                 : "Picks up " + h.DisplayName + " exactly as it is.";
             return detail;
         }
@@ -450,7 +448,7 @@ namespace PhilsReusabilitySuite
                 Node craft = c != null ? c.Craft : h.Craft;
                 IEnumerable<string> keep = c != null ? c.Used : (IEnumerable<string>)h.Placed;
                 // The flown parts keep their serials in the editor; new parts get theirs when they're made.
-                foreach (string s in keep) PRSPart.EditorTrusted.Add(s);
+                EditorAddon.Claim(keep);
                 ConfigNode n = KspNodes.ToKsp(craft, "");
                 n.SetValue("ship", h.DisplayName, true);
                 var template = new ShipTemplate();

@@ -24,23 +24,20 @@ namespace PhilsReusabilitySuite
         {
             Instance = this;
             Look.Init();
-            PRSPart.EditorTrusted.Clear();
-            PRSPart.EditorExplicit.Clear();
-            pendingCarry = EditorDriver.StartupBehaviour == EditorDriver.StartupBehaviours.LOAD_FROM_CACHE ? new HashSet<string>(PRSPart.EditorCarry) : null;
-            restoring = pendingCarry != null;
-            ApplyCarry();
+            placed.Clear();
+            loading = null;
+            adoptRestored = EditorDriver.StartupBehaviour == EditorDriver.StartupBehaviours.LOAD_FROM_CACHE;
             GameEvents.onEditorShipModified.Add(OnShipModified);
             GameEvents.onEditorLoad.Add(OnEditorLoad);
-            GameEvents.onGameSceneLoadRequested.Add(OnLeavingScene);
+            GameEvents.onEditorRestart.Add(OnEditorRestart);
             window = gameObject.AddComponent<SuiteWindow>();
             StartCoroutine(HookLaunchButton());
             StartCoroutine(CheckShipAlreadyThere());
         }
 
         /// <summary>
-        /// KSP can bring the ship back from its cache before this addon is listening for editor loads, so the
-        /// ship already in the editor is checked once it's there (giving new serials to anything that isn't
-        /// hangar hardware). Checking twice changes nothing.
+        /// KSP brings the ship back from its cache without a load event, sometimes before this addon is listening,
+        /// so the ship already in the editor is checked once it's there. Checking twice changes nothing.
         /// </summary>
         IEnumerator CheckShipAlreadyThere()
         {
@@ -52,22 +49,17 @@ namespace PhilsReusabilitySuite
                 {
                     yield return null;
                     Check(ship);
-                    restoring = false;
                     yield break;
                 }
                 yield return null;
             }
-            restoring = false;
         }
-
-        /// <summary>KSP is bringing back the ship left in the editor: its hangar parts aren't a loaded design.</summary>
-        static bool restoring;
 
         void OnDestroy()
         {
             GameEvents.onEditorShipModified.Remove(OnShipModified);
             GameEvents.onEditorLoad.Remove(OnEditorLoad);
-            GameEvents.onGameSceneLoadRequested.Remove(OnLeavingScene);
+            GameEvents.onEditorRestart.Remove(OnEditorRestart);
             if (stockLaunch != null && EditorLogic.fetch != null && EditorLogic.fetch.launchBtn != null) EditorLogic.fetch.launchBtn.onClick = stockLaunch;
             if (Instance == this) Instance = null;
         }
@@ -102,112 +94,83 @@ namespace PhilsReusabilitySuite
             else EditorLogic.fetch.launchVessel();
         }
 
-        // ---- Serials ----
+        // ---- Serials: one rule ----
+        //
+        // A part in the editor keeps its serial if that serial is no particular piece of hardware (a new part), or
+        // if the suite itself put that hardware there: a hangar ship loaded from the hangar, a queued build opened
+        // to edit, "Use it", a hangar copy picked up in Phil's Builds, bin parts a build took, or the ship just
+        // built. Any other serial that belongs to hardware (a hangar ship's, a bin part's, a build's, or a ship in
+        // flight) came with a saved file, or with a ship that has since launched: that part is new, so it gets a
+        // new serial. Craft files keep serials, so without this a design saved from parts that were later built
+        // brought that hangar ship back in, and the next build quietly used it up (Phil's Harris Hawk I and II).
 
+        /// <summary>Hardware the suite put in the editor's ship.</summary>
+        static readonly HashSet<string> placed = new HashSet<string>();
+        /// <summary>Hardware the suite is loading as the whole ship (a hangar ship, a queued build).</summary>
+        static HashSet<string> loading;
+        /// <summary>Back in the editor, KSP is bringing back the ship that was there: what's still stored of it is
+        /// the hardware it was (the ship just launched is flying now, so its parts aren't).</summary>
+        static bool adoptRestored;
+
+        /// <summary>Marks hardware as put in the editor by the suite.</summary>
+        internal static void Claim(IEnumerable<string> serials) { foreach (string s in serials) if (!string.IsNullOrEmpty(s)) placed.Add(s); }
+
+        void OnShipModified(ShipConstruct ship) { Check(ship); }
+
+        /// <summary>
+        /// KSP restarts the editor as it opens, for New, and for every load (not a merge). Except when it opens
+        /// with the ship that was left there, the ship is replaced: only what the suite is loading is hardware now.
+        /// </summary>
+        void OnEditorRestart()
+        {
+            if (EditorDriver.StartupBehaviour == EditorDriver.StartupBehaviours.LOAD_FROM_CACHE) return;
+            placed.Clear();
+            if (loading != null) placed.UnionWith(loading);
+            adoptRestored = false;
+        }
+
+        /// <summary>KSP fires this during a load: with the whole new ship, or with only the merged parts for a merge.</summary>
         void OnEditorLoad(ShipConstruct ship, CraftBrowserDialog.LoadType type)
         {
-            FromFile(ship, type == CraftBrowserDialog.LoadType.Merge);
+            if (type == CraftBrowserDialog.LoadType.Merge) { CheckParts(ship?.parts); return; }
+            loading = null;
             Check(ship);
-        }
-
-        /// <summary>
-        /// A ship loaded or merged from a file is a design, even if its parts carry serials: a craft saved in the
-        /// editor keeps them, so a design saved from parts that were later built would bring that hangar ship's
-        /// hardware back in, and the build would quietly use it up (Phil's Harris Hawk I and II, 2026-11-08). Only
-        /// serials the suite itself is loading (a hangar ship, a queued build) are kept. A load that replaces the ship
-        /// also forgets every serial trusted for the ship it replaced. KSP fires the load event during the load,
-        /// with the whole new ship, or with only the merged parts for a merge.
-        /// </summary>
-        internal static void FromFile(ShipConstruct ship, bool merge)
-        {
-            if (ship == null || restoring) return;
-            if (merge)
-            {
-                int renewed = Renew(ship.parts);
-                if (renewed > 0) Log.Info("Merged a design: " + renewed + " parts are new parts with new serial numbers");
-            }
-            else
-            {
-                PRSPart.EditorTrusted.Clear();
-                PRSPart.EditorTrusted.UnionWith(PRSPart.EditorExplicit);
-            }
-            PRSPart.EditorExplicit.Clear();
-        }
-
-        /// <summary>Gives new serials to parts placed from a design file, except ones the suite is loading itself.</summary>
-        internal static int Renew(IEnumerable<Part> parts)
-        {
-            int renewed = 0;
-            if (parts == null) return 0;
-            foreach (Part p in parts)
-            {
-                PRSPart m = PRSPart.Of(p);
-                if (m == null || (!string.IsNullOrEmpty(m.serial) && PRSPart.EditorExplicit.Contains(m.serial))) continue;
-                m.MakeNew();
-                renewed++;
-            }
-            return renewed;
-        }
-        void OnShipModified(ShipConstruct ship) { Check(ship); }
-        void OnLeavingScene(GameScenes next) { Remember(EditorLogic.fetch != null ? EditorLogic.fetch.ship : null); }
-
-        /// <summary>
-        /// Notes which of the editor ship's parts are hangar hardware. KSP brings the ship back from its cache
-        /// when you return to the editor, and those parts must stay hangar hardware. This is kept up to date as
-        /// the ship changes, because by the time the editor closes its ship is already gone.
-        /// </summary>
-        internal static void Remember(ShipConstruct ship)
-        {
-            if (ship == null) return;
-            PRSPart.EditorCarry.Clear();
-            foreach (Part p in ship.parts)
-            {
-                string s = PRSPart.SerialOf(p);
-                if (s != null && PRSPart.EditorTrusted.Contains(s)) PRSPart.EditorCarry.Add(s);
-            }
-        }
-
-        /// <summary>
-        /// Designs never carry specific hardware: any serial the editor didn't give out or load from the hangar
-        /// (a saved craft or subassembly) gets replaced, and so does a duplicate.
-        /// </summary>
-        static HashSet<string> pendingCarry;
-
-        /// <summary>
-        /// Coming back to the editor, KSP brings back the ship that was there, or the ship just launched. Only
-        /// the parts that are still hangar hardware (a hangar ship's, the parts bin's or a queued build's) stay
-        /// so. Every other serial the editor gave out last time may be flying now, and those parts get new ones.
-        /// </summary>
-        static void ApplyCarry()
-        {
-            PRSScenario sc = PRSScenario.Instance;
-            if (pendingCarry == null || sc == null) return;
-            var inBuilds = new HashSet<string>(sc.Jobs.SelectMany(j => j.Serials()));
-            foreach (string s in pendingCarry)
-                if (inBuilds.Contains(s) || sc.Hangar.Any(h => h.Placed.Contains(s)) || sc.Bin.Any(b => b.Serial == s)) PRSPart.EditorTrusted.Add(s);
-            pendingCarry = null;
         }
 
         internal static void Check(ShipConstruct ship)
         {
-            if (ship == null) return;
-            ApplyCarry();
-            var seen = new HashSet<string>();
-            int renewed = 0;
-            foreach (Part p in ship.parts)
+            if (ship == null || ship.parts.Count == 0) return;
+            if (adoptRestored)
             {
-                PRSPart m = PRSPart.Of(p);
-                if (m == null) continue;
-                bool trusted = !string.IsNullOrEmpty(m.serial) && PRSPart.EditorTrusted.Contains(m.serial);
-                if (!trusted || !seen.Add(m.serial))
-                {
-                    m.MakeNew();
-                    seen.Add(m.serial);
-                    renewed++;
-                }
+                adoptRestored = false;
+                PRSScenario sc = PRSScenario.Instance;
+                if (sc != null) { HashSet<string> stored = sc.StoredSerials(); Claim(ship.parts.Select(PRSPart.SerialOf).Where(s => s != null && stored.Contains(s))); }
+            }
+            Renew(ship.parts, new HashSet<string>());
+        }
+
+        /// <summary>Parts arriving beside the ship (merged, or picked up): checked against the ship's own too.</summary>
+        internal static void CheckParts(IEnumerable<Part> parts)
+        {
+            ShipConstruct ship = EditorLogic.fetch != null ? EditorLogic.fetch.ship : null;
+            if (parts == null) return;
+            var inShip = new HashSet<Part>(ship != null ? ship.parts : new List<Part>());
+            var seen = new HashSet<string>(inShip.Select(PRSPart.SerialOf).Where(s => s != null));
+            Renew(parts.Where(p => !inShip.Contains(p)), seen);
+        }
+
+        static void Renew(IEnumerable<Part> parts, HashSet<string> seen)
+        {
+            HashSet<string> taken = PRSScenario.Instance != null ? PRSScenario.Instance.TakenSerials() : new HashSet<string>();
+            int renewed = 0;
+            foreach (PRSPart m in parts.Select(PRSPart.Of).Where(x => x != null).ToList())
+            {
+                if (!string.IsNullOrEmpty(m.serial) && (!taken.Contains(m.serial) || placed.Contains(m.serial)) && seen.Add(m.serial)) continue;
+                m.MakeNew();
+                seen.Add(m.serial);
+                renewed++;
             }
             if (renewed > 0) Log.Info("Gave " + renewed + " parts new serial numbers (new parts, not hangar hardware)");
-            Remember(ship);
         }
 
         /// <summary>Loads a craft into the editor, keeping its parts' serials (a hangar ship or a queued build).</summary>
@@ -217,10 +180,7 @@ namespace PhilsReusabilitySuite
             c.SetValue("ship", shipName, true);
             string path = System.IO.Path.Combine(SuiteFiles.SaveDir, fileTag + ".craft");
             c.Save(path);
-            // Trusted before loading, so it doesn't matter when the editor's load events fire, and named as the
-            // suite's own load so the load doesn't treat them as a design's.
-            PRSPart.EditorExplicit.Clear();
-            foreach (string s in serials) { PRSPart.EditorTrusted.Add(s); PRSPart.EditorExplicit.Add(s); }
+            loading = new HashSet<string>(serials);
             EditorLogic.LoadShipFromFile(path);
         }
 
@@ -417,9 +377,8 @@ namespace PhilsReusabilitySuite
                 m.serial = hm.Get("serial");
                 m.flights = int.TryParse(hm.Get("flights"), out int f) ? f : 0;
                 m.hull = hm.Get("hull") ?? "";
-                PRSPart.EditorTrusted.Add(m.serial);
+                EditorAddon.Claim(new[] { m.serial });
             }
-            EditorAddon.Remember(EditorLogic.fetch.ship);
             Log.Info("Using the ready " + ReadyCopy.DisplayName + " from the hangar in this build");
             Refresh();
         }
@@ -478,6 +437,8 @@ namespace PhilsReusabilitySuite
                 if (Chosen != Pace.Outsource) Suite.Message(ShipName + " is being built: " + Pricing.Duration(job.SecondsLeft(S), S));
             }
             AdoptBinSerials(Quote);
+            // The ship in the editor is now the build's hardware (and a hangar ship's, once it's finished).
+            EditorAddon.Claim(EditorLogic.fetch.ship.parts.Select(PRSPart.SerialOf));
             Showing = false;
             return true;
         }
@@ -496,9 +457,7 @@ namespace PhilsReusabilitySuite
                 if (m == null || string.IsNullOrEmpty(m.serial) || !q.BinSwaps.TryGetValue(m.serial, out Owner b)) continue;
                 m.serial = b.BinSerial;
                 m.flights = System.Math.Max(0, b.Flights);
-                PRSPart.EditorTrusted.Add(m.serial);
             }
-            EditorAddon.Remember(EditorLogic.fetch.ship);
         }
 
         double Extra(Pace p)

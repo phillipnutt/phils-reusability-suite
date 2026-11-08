@@ -1,5 +1,4 @@
 using System;
-using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
 using PhilsReusabilitySuite.Core;
@@ -20,12 +19,9 @@ namespace PhilsReusabilitySuite
         public readonly List<LaunchRecord> Launches = new List<LaunchRecord>();
         public readonly List<HangarShip> Hangar = new List<HangarShip>();
         public readonly List<BinPart> Bin = new List<BinPart>();
-        /// <summary>Serials of parts that broke off (not decoupled) since their last launch.</summary>
-        public readonly HashSet<string> BrokeOff = new HashSet<string>();
         /// <summary>Last hangar number given out per ship name, so numbers are never reused.</summary>
         readonly Dictionary<string, int> lastNumber = new Dictionary<string, int>();
 
-        readonly Dictionary<Part, int> separatedFrame = new Dictionary<Part, int>();
         readonly HashSet<uint> recoveredThisScene = new HashSet<uint>();
         /// <summary>How many recoveries this scene handled (the self-test reads it).</summary>
         public int RecoveriesHandled;
@@ -37,10 +33,6 @@ namespace PhilsReusabilitySuite
             GameEvents.OnVesselRollout.Add(OnRollout);
             GameEvents.onFlightReady.Add(OnFlightReady);
             GameEvents.onVesselRecovered.Add(OnRecovered);
-            GameEvents.onPartJointBreak.Add(OnPartJointBroke);
-            GameEvents.onPartDeCouple.Add(OnSeparated);
-            GameEvents.onPartUndock.Add(OnSeparated);
-            GameEvents.onPartDie.Add(OnPartDie);
         }
 
         void OnDestroy()
@@ -48,10 +40,6 @@ namespace PhilsReusabilitySuite
             GameEvents.OnVesselRollout.Remove(OnRollout);
             GameEvents.onFlightReady.Remove(OnFlightReady);
             GameEvents.onVesselRecovered.Remove(OnRecovered);
-            GameEvents.onPartJointBreak.Remove(OnPartJointBroke);
-            GameEvents.onPartDeCouple.Remove(OnSeparated);
-            GameEvents.onPartUndock.Remove(OnSeparated);
-            GameEvents.onPartDie.Remove(OnPartDie);
             if (Instance == this) Instance = null;
         }
 
@@ -129,12 +117,7 @@ namespace PhilsReusabilitySuite
             }
 
             // It's a launch: only now does every part count a flight.
-            foreach (PRSPart m in mods)
-            {
-                if (m == null) continue;
-                m.flights++;
-                BrokeOff.Remove(m.serial);   // a fresh flight
-            }
+            foreach (PRSPart m in mods) if (m != null) m.flights++;
             for (int i = 0; i < parts.Count; i++) if (mods[i] != null) Stamp(partNodes[i], mods[i]);
 
             var rec = new LaunchRecord { Id = Guid.NewGuid().ToString("N"), UT = Planetarium.GetUniversalTime(), Ship = name, Craft = craft };
@@ -170,92 +153,43 @@ namespace PhilsReusabilitySuite
             return best;
         }
 
-        // ---- Parts breaking off ----
-
-        // How KSP 1.12 reports separations (read from its code):
-        //  - a decoupler or undocking announces itself first (onPartDeCouple / onPartUndock), then removes the
-        //    part's joint, which KSP also reports as a joint break;
-        //  - a joint that physics snaps is reported as a joint break first, and KSP decouples the part after.
-        // So a joint break counts only if nothing announced a separation of that part in the same frame.
-        // (Not named OnJointBreak: Unity would take that for its own one-argument message.)
-        void OnPartJointBroke(PartJoint joint, float force)
-        {
-            // Only in flight: the VAB and SPH remove joints too, as parts are moved or deleted.
-            if (!HighLogic.LoadedSceneIsFlight) return;
-            Part child = joint != null ? joint.Child : null;
-            string s = PRSPart.SerialOf(child);
-            if (s == null || BrokeOff.Contains(s)) return;
-            // Launch clamps letting go at launch stay on the pad by design: never "lost" from the ship.
-            if (child.FindModuleImplementing<LaunchClamp>() != null) return;
-            if (separatedFrame.TryGetValue(child, out int frame) && frame == Time.frameCount) return;
-            // KSP also reports joint breaks that aren't, for example landing legs when a ship unpacks on the
-            // pad. So only count it if the part really came away.
-            StartCoroutine(ConfirmBreak(child, s, child.vessel));
-        }
-
-        void OnSeparated(Part p)
-        {
-            if (p == null) return;
-            if (separatedFrame.Count > 500)
-            {
-                foreach (Part old in separatedFrame.Keys.Where(k => k == null || separatedFrame[k] != Time.frameCount).ToList())
-                    separatedFrame.Remove(old);
-            }
-            separatedFrame[p] = Time.frameCount;
-        }
-
-        IEnumerator ConfirmBreak(Part part, string serial, Vessel was)
-        {
-            string title = part != null && part.partInfo != null ? part.partInfo.title : "A part";
-            float until = Time.realtimeSinceStartup + 1.5f;
-            while (Time.realtimeSinceStartup < until) yield return null;
-            // Broken off means it came away on its own: it is now the root of a ship of its own, or gone. (A part
-            // that only moved to a new ship along with its neighbours, when a decoupler fired, didn't break.)
-            bool gone = part == null || part.vessel == null || (part.vessel != was && part.parent == null && part.vessel.rootPart == part);
-            if (!gone) { Log.Info("Ignored a joint break on " + title + ": it's still attached"); yield break; }
-            // A part that went down with the rest of its ship (a dropped stage crashing) wasn't lost from anything
-            // that survives: only a ship that lives on (a booster that lost a fin landing) is missing it.
-            if (was == null || was.parts == null || was.parts.Count == 0) { Log.Info(title + " was destroyed with the rest of its ship: not counted as lost from it"); yield break; }
-            if (BrokeOff.Add(serial)) Log.Info(title + " broke off " + was.vesselName);
-        }
-
-        /// <summary>A part destroyed while attached, waiting to see whether its ship survived it.</summary>
-        sealed class PendingDeath { public string Serial; public string Title; public Vessel Vessel; public float At; }
-        readonly List<PendingDeath> pendingDeaths = new List<PendingDeath>();
-
-        void OnPartDie(Part p)
-        {
-            if (!HighLogic.LoadedSceneIsFlight || p == null) return;
-            string s = PRSPart.SerialOf(p);
-            // Only a part destroyed while still attached to others can be lost from its ship, and only if the ship
-            // lives on: a fin lost on landing is; a dropped stage crashing (every part destroyed) isn't.
-            if (s != null && (p.parent != null || p.children.Count > 0))
-                pendingDeaths.Add(new PendingDeath { Serial = s, Title = p.partInfo != null ? p.partInfo.title : "A part", Vessel = p.vessel, At = Time.realtimeSinceStartup });
-        }
-
-        /// <summary>About a second after a part was destroyed (or at once, with all, before a recovery): did its ship survive?</summary>
-        void SettleDeaths(bool all)
-        {
-            if (pendingDeaths.Count == 0) return;
-            float now = Time.realtimeSinceStartup;
-            foreach (PendingDeath d in pendingDeaths.Where(x => all || now - x.At >= 1f).ToList())
-            {
-                pendingDeaths.Remove(d);
-                if (d.Vessel != null && d.Vessel.parts != null && d.Vessel.parts.Count > 0)
-                {
-                    if (BrokeOff.Add(d.Serial)) Log.Info(d.Title + " was destroyed and lost from " + d.Vessel.vesselName);
-                }
-                else Log.Info(d.Title + " was destroyed with the rest of its ship: not counted as lost from another");
-            }
-        }
-
         // ---- Recovery ----
+        // (What a piece lost on the way is read from its launch record when it comes home: Core.Pieces.Build.)
+
+        /// <summary>
+        /// Who a piece of a launched ship is, as the hangar names it (when it comes home, and in the flight
+        /// forecast). It's the hangar ship most of its parts belong to ("Oak 005 #4" again). But the ship it
+        /// launched as is the piece holding the launched ship's root part: a piece that came off it (side boosters
+        /// on chutes, the launcher under a payload) is a ship of its own, named after its design if it's a copy of
+        /// one ("Kopje 005"), with its number still to give (-1): above <paramref name="above"/>, the number it came off, when it keeps that ship's name. Reused hardware with an identity of its own (a
+        /// flown "Kopje 005 #1" under a new payload) keeps it, wherever it was in the stack. Null: no hangar
+        /// identity at all (a first flight), also with no number yet.
+        /// </summary>
+        public static string WhoIs(ICollection<string> serials, Func<string, string> hullOf, Func<string, string> designOf, Craft launched, out int number, out int above)
+        {
+            number = -1;
+            above = 0;
+            string hull = serials.Select(hullOf).Where(x => !string.IsNullOrEmpty(x)).GroupBy(x => x)
+                .OrderByDescending(g => g.Count()).Select(g => g.Key).FirstOrDefault();
+            if (!HangarShip.ParseHull(hull, out string name, out int n)) return null;
+            CraftPart root = launched?.Parts.FirstOrDefault(p => p.Parent == null);
+            string rootHull = root?.Node.Children("MODULE").FirstOrDefault(m => m.Get("name") == Core.Craft.ModuleName)?.Get("hull");
+            if (root?.Serial != null && hull == rootHull && !serials.Contains(root.Serial))
+            {
+                string designId = BuildsLink.SingleDesign(serials.Select(designOf));
+                string designName = designId != null ? BuildsLink.NameOf(designId) : null;
+                if (designName != null) return designName;
+                above = n;
+                return name;
+            }
+            number = n;
+            return name;
+        }
 
         void OnRecovered(ProtoVessel pv, bool quick)
         {
             if (pv == null) return;
             if (Krash.SimActive) { Log.Info("KRASH simulation: recovery of " + pv.vesselName + " ignored"); return; }
-            SettleDeaths(true);   // a part lost just before this recovery still counts
             if (!recoveredThisScene.Add(pv.persistentId)) return;
             try { Recover(pv); }
             catch (Exception ex) { Log.Error("Recovering " + pv.vesselName + " failed: " + ex); }
@@ -279,8 +213,9 @@ namespace PhilsReusabilitySuite
                 info[s] = ps;
             }
             if (serials.Count == 0) return;
-            // Parts lost in a hard landing didn't come home: they count as broken off.
-            foreach (string s in serials.Where(LeftBehindOnNextRecovery.Contains).ToList()) { serials.Remove(s); BrokeOff.Add(s); }
+            // Parts lost in a hard landing didn't come home: they count as lost.
+            var lostOnLanding = new HashSet<string>(serials.Where(LeftBehindOnNextRecovery.Contains));
+            serials.RemoveAll(lostOnLanding.Contains);
 
             RecoverChoice choice = RecoverGate.Choices.TryGetValue(pv.persistentId, out RecoverChoice ch) ? ch : RecoverChoice.Hangar;
             if (choice == RecoverChoice.Sell)
@@ -298,7 +233,7 @@ namespace PhilsReusabilitySuite
                 return;
             }
 
-            PieceResult r = Pieces.Build(rec.Craft, serials, BrokeOff);
+            PieceResult r = Pieces.Build(rec.Craft, serials, lostOnLanding);
             List<string> problems = r.Craft != null ? Pieces.Validate(r.Craft) : new List<string> { "nothing placed" };
             if (r.Craft == null || r.Placed.Count == 0 || problems.Count > 0)
             {
@@ -319,7 +254,7 @@ namespace PhilsReusabilitySuite
                 return;
             }
             // Phil's rule: a piece of a ship that was never filed as a design in Phil's Builds is just parts.
-            if (S.RequireDesign && !r.Placed.Any(s => !string.IsNullOrEmpty(info[s].modules.FirstOrDefault(x => x.moduleName == Core.Craft.ModuleName)?.moduleValues?.GetValue("design"))))
+            if (S.RequireDesign && !r.Placed.Any(s => !string.IsNullOrEmpty(PRSPart.ValueIn(info[s], "design"))))
             {
                 LastBinReason = "it wasn't built from a design filed in Phil's Builds";
                 foreach (string s in serials) ToBin(s, info, recCraft);
@@ -328,34 +263,11 @@ namespace PhilsReusabilitySuite
                 return;
             }
 
-            // A piece comes home as the hangar ship most of its parts belong to ("Oak 005 #4" again); a piece
-            // flying for the first time gets the next number under its vessel name.
-            string hull = r.Placed.Select(s => info[s].modules.FirstOrDefault(x => x.moduleName == Core.Craft.ModuleName)?.moduleValues?.GetValue("hull"))
-                .Where(x => !string.IsNullOrEmpty(x)).GroupBy(x => x).OrderByDescending(g => g.Count()).Select(g => g.Key).FirstOrDefault();
-            string name;
-            int number;
-            if (!HangarShip.ParseHull(hull, out name, out number))
-            {
-                name = KSP.Localization.Localizer.Format(pv.vesselName);
-                lastNumber.TryGetValue(name, out int last);
-                number = last + 1;
-            }
-            // Which piece is the ship it launched as? The one holding the launched ship's root part keeps its name,
-            // number and flight log. A piece that came off it (side boosters on chutes, the launcher under a
-            // payload) is new hardware coming home on its own: it gets an identity of its own, named after its
-            // design if it's a copy of one ("Kopje 005 #2"). Reused hardware carrying an identity of its own (a
-            // flown "Kopje 005 #1" under a new payload) keeps that, wherever it was in the stack.
-            CraftPart launchRoot = recCraft.Parts.FirstOrDefault(p => p.Parent == null);
-            string rootHull = launchRoot?.Node.Children("MODULE").FirstOrDefault(m => m.Get("name") == Core.Craft.ModuleName)?.Get("hull");
-            bool holdsRoot = launchRoot?.Serial != null && r.Placed.Contains(launchRoot.Serial);
-            if (!string.IsNullOrEmpty(hull) && hull == rootHull && !holdsRoot)
-            {
-                string designId = BuildsLink.SingleDesign(r.Placed.Select(s => info[s].modules.FirstOrDefault(x => x.moduleName == Core.Craft.ModuleName)?.moduleValues?.GetValue("design")));
-                string designName = designId != null ? BuildsLink.NameOf(designId) : null;
-                if (!string.IsNullOrEmpty(designName)) name = designName;
-                lastNumber.TryGetValue(name, out int lastOfName);
-                number = Math.Max(lastOfName, name == designName ? 0 : number) + 1;
-            }
+            // Who it is (the one rule, shared with the flight forecasts). A piece with no hangar identity yet, or one
+            // that came off the ship it launched as, gets the next number under its name.
+            string name = WhoIs(r.Placed, s => PRSPart.ValueIn(info[s], "hull"), s => PRSPart.ValueIn(info[s], "design"), recCraft, out int number, out int above)
+                          ?? KSP.Localization.Localizer.Format(pv.vesselName);
+            if (number < 0) { lastNumber.TryGetValue(name, out int last); number = Math.Max(last, above) + 1; }
             if (!lastNumber.TryGetValue(name, out int lastGiven) || lastGiven < number) lastNumber[name] = number;
             var h = new HangarShip
             {
@@ -427,7 +339,7 @@ namespace PhilsReusabilitySuite
         public void SettleRecovery(ProtoVessel pv, double paid, float factor)
         {
             if (pv == null || !Suite.Career || Krash.SimActive || !moneyDone.Add(pv.persistentId)) return;
-            bool ours = pv.protoPartSnapshots.Any(ps => !string.IsNullOrEmpty(ps.modules.FirstOrDefault(x => x.moduleName == Core.Craft.ModuleName)?.moduleValues?.GetValue("serial")));
+            bool ours = pv.protoPartSnapshots.Any(ps => !string.IsNullOrEmpty(PRSPart.ValueIn(ps, "serial")));
             if (!ours) return;
             RecoverChoice choice = RecoverGate.Choices.TryGetValue(pv.persistentId, out RecoverChoice ch) ? ch : RecoverChoice.Hangar;
             double transport = RecoveryValue.Value(pv) * (1 - factor);
@@ -509,8 +421,6 @@ namespace PhilsReusabilitySuite
                 }
             int before = Launches.Count;
             Launches.RemoveAll(r => !r.Serials.Any(live.Contains));
-            var known = new HashSet<string>(Launches.SelectMany(r => r.Serials));
-            BrokeOff.RemoveWhere(s => !known.Contains(s));
             if (Launches.Count != before) Log.Info("Dropped " + (before - Launches.Count) + " finished launch records");
         }
 
@@ -530,8 +440,6 @@ namespace PhilsReusabilitySuite
                 fl.AddValue("ship", kv.Key);
                 foreach (string e in kv.Value) fl.AddValue("flight", e);
             }
-            ConfigNode broke = node.AddNode("BROKE_OFF");
-            foreach (string s in BrokeOff) broke.AddValue("serial", s);
             foreach (KeyValuePair<string, int> kv in lastNumber)
             {
                 ConfigNode n = node.AddNode("NUMBER");
@@ -543,7 +451,7 @@ namespace PhilsReusabilitySuite
         public override void OnLoad(ConfigNode node)
         {
             base.OnLoad(node);
-            Launches.Clear(); Hangar.Clear(); Bin.Clear(); BrokeOff.Clear(); lastNumber.Clear(); Jobs.Clear(); FlightLogs.Clear();
+            Launches.Clear(); Hangar.Clear(); Bin.Clear(); lastNumber.Clear(); Jobs.Clear(); FlightLogs.Clear();
             foreach (ConfigNode fl in node.GetNodes("FLIGHT_LOG"))
                 if (fl.GetValue("ship") != null) FlightLogs[fl.GetValue("ship")] = fl.GetValues("flight").ToList();
             foreach (ConfigNode n in node.GetNodes("LAUNCH")) { LaunchRecord r = LaunchRecord.Load(n); if (r != null) Launches.Add(r); }
@@ -552,8 +460,6 @@ namespace PhilsReusabilitySuite
             foreach (ConfigNode n in node.GetNodes("BUILD")) { BuildJob j = BuildJob.Load(n); if (j != null) Jobs.Add(j); }
             lastUT = node.HasValue("lastUT") ? LaunchRecord.Num(node.GetValue("lastUT")) : -1;
             if (lastUT <= 0) lastUT = -1;
-            ConfigNode broke = node.GetNode("BROKE_OFF");
-            if (broke != null) foreach (string s in broke.GetValues("serial")) BrokeOff.Add(s);
             foreach (ConfigNode n in node.GetNodes("NUMBER"))
                 if (int.TryParse(n.GetValue("last"), out int last) && n.GetValue("name") != null) lastNumber[n.GetValue("name")] = last;
             if (HighLogic.LoadedScene == GameScenes.SPACECENTER) Prune();

@@ -402,7 +402,7 @@ namespace PhilsReusabilitySuite
             string meta = Suite.Parts(h.Placed.Count) + " · " + (h.Flights == 0 ? "never flown" : h.Flights + (h.Flights == 1 ? " flight" : " flights"));
             if (!h.Ready) meta += " · fuel " + Mathf.RoundToInt((float)(h.Fuel * 100)) + "%";
             GUILayout.Label(meta, Look.Meta);
-            if (h.Missing.Count > 0) GUILayout.Label("Missing " + h.Missing.Count + (h.Missing.Count == 1 ? " part" : " parts"), Look.MetaWarn);
+            if (h.Missing.Count > 0) GUILayout.Label("Missing " + Suite.Parts(h.Missing.Count), Look.MetaWarn);
             GUILayout.EndVertical();
             GUILayout.FlexibleSpace();
             if (h.ReservedBy != null) GUILayout.Label("In the build of " + (sc.Jobs.FirstOrDefault(j => j.Id == h.ReservedBy)?.Name ?? "a ship"), Look.Meta, GUILayout.Width(200));

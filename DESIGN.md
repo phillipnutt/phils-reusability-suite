@@ -619,6 +619,22 @@ build time). Fixed from what he found:
 - Phil's Builds' own findings (Load underground, saving over a launcher, stage names of a deleted launcher, a stale
   "Built on") went to its session.
 
+**Simplification pass (2026-11-08)**, Phil's call after asking whether the code was "ballooning into patch after
+patch". About a third of the bugs since 0.1.0 came from two places where several layered rules answered one
+question. Each question now has one rule (about 100 fewer lines of code, every test still passing):
+- **Hardware in the editor** (`EditorAddon`): a part keeps its serial if no hangar ship, bin part, build or ship in
+  flight owns it, or if the suite put it there (`Claim`: hangar Load, editing a build, Use it, hangar copies, the
+  ship just built). KSP's `onEditorRestart` (as the editor opens, for New and for every load, not merges) resets
+  what the suite put there, except when it reopens with the ship left there (`LOAD_FROM_CACHE`); then whatever of
+  that ship is still stored is claimed. This replaced the trusted, carried and explicit serial lists and the
+  "restoring" flag, and found a gap they shared (New, then picking up a design saved from a hangar ship).
+- **What a piece lost** (`Pieces.Build`): read from the launch record when it comes home. A part missing from below
+  a part that came home was lost, unless the two parted at a separator (any module with "Decouple" in its name,
+  docking ports, claws, launch clamps). Parts the suite's own landing check broke off are lost either way. This
+  replaced the joint-break, decouple, undock and part-destroyed listeners, the same-frame and 1.5-second rules, and
+  the saved "broke off" list. It's checked offline by Test-Core on every stock craft.
+- **Who a returning piece is** (`PRSScenario.WhoIs`): one rule for the hangar and the flight forecast.
+
 ## Open questions
 
 - None for the design. The money numbers get tuned in play.

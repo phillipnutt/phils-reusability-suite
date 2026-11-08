@@ -258,16 +258,20 @@ static class CoreTests
             Node reparsed = Node.Parse(r.Craft.WriteContents());
             Check(Pieces.Validate(reparsed).Count == 0, label + ": valid after write and parse");
 
-            // A leaf broke off in flight: it's missing. If it left by decoupling instead, it isn't.
+            // A leaf didn't come home: it was lost, unless it parted at a separator (a decoupler, docking port, claw
+            // or launch clamp), which is how parts leave on purpose. One the landing broke off is lost either way.
             CraftPart leaf = sub.Where(p => p != top && p.Children.Count == 0 && !p.IsCompound).OrderBy(_ => rng.Next()).FirstOrDefault();
             if (leaf != null)
             {
                 var home = sub.Where(p => p != leaf).Select(p => p.Serial).ToList();
-                PieceResult b = Pieces.Build(craft, home, new[] { leaf.Serial });
-                Check(b.Missing.Count == 1 && b.Missing[0] == leaf.Serial, label + ": broken-off " + leaf.Ref + " is missing");
-                Check(Pieces.Validate(b.Craft).Count == 0, label + ": valid without the broken-off part");
-                PieceResult d = Pieces.Build(craft, home, new string[0]);
-                Check(d.Missing.Count == 0, label + ": a part that left by decoupling isn't missing");
+                PieceResult b = Pieces.Build(craft, home);
+                if (Pieces.IsSeparator(leaf) || Pieces.IsSeparator(leaf.Parent))
+                    Check(b.Missing.Count == 0, label + ": " + leaf.Ref + " parted at a separator, so it isn't missing");
+                else
+                    Check(b.Missing.Count == 1 && b.Missing[0] == leaf.Serial, label + ": lost " + leaf.Ref + " is missing");
+                Check(Pieces.Validate(b.Craft).Count == 0, label + ": valid without the lost part");
+                PieceResult d = Pieces.Build(craft, home, new[] { leaf.Serial });
+                Check(d.Missing.Count == 1 && d.Missing[0] == leaf.Serial, label + ": a part the landing broke off is missing");
             }
 
             // Strangers came home attached (docked or grabbed in flight): they can't be placed.

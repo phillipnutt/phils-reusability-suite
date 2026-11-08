@@ -113,10 +113,10 @@ namespace PhilsReusabilitySuite.Core
     {
         /// <summary>
         /// Builds the craft for a piece that came home. <paramref name="launch"/> is the ship as it left the
-        /// pad; <paramref name="cameHome"/> the serials of the parts that came home; <paramref name="brokeOff"/>
-        /// serials known to have broken off (not decoupled) during the flight.
+        /// pad; <paramref name="cameHome"/> the serials of the parts that came home; <paramref name="lostOnLanding"/>
+        /// parts the suite's own landing check broke off (they count as lost even if they're separators).
         /// </summary>
-        public static PieceResult Build(Node launch, ICollection<string> cameHome, ICollection<string> brokeOff)
+        public static PieceResult Build(Node launch, ICollection<string> cameHome, ICollection<string> lostOnLanding = null)
         {
             var result = new PieceResult();
             Craft craft = Craft.Read(launch);
@@ -153,9 +153,9 @@ namespace PhilsReusabilitySuite.Core
                     result.Dropped.Add(p.Serial);
                 }
 
-            // Parts of this piece that broke off (not decoupled), and anything attached to them.
-            var broke = new HashSet<string>(brokeOff ?? new string[0]);
-            FindMissing(root, keep, broke, result.Missing);
+            // Parts this piece lost (not separated), and anything attached to them.
+            var landing = new HashSet<string>(lostOnLanding ?? new string[0]);
+            FindMissing(root, keep, present, landing, result.Missing);
 
             var refs = new HashSet<string>(keep.Select(p => p.Ref));
             var outNode = new Node(launch.Name);
@@ -172,13 +172,33 @@ namespace PhilsReusabilitySuite.Core
             return result;
         }
 
-        static void FindMissing(CraftPart p, HashSet<CraftPart> keep, HashSet<string> broke, List<string> missing)
+        /// <summary>
+        /// What a piece lost, read from the ship as it launched: a part that didn't come home, hanging from one
+        /// that did, was lost, unless the two parted at a separator (a decoupler, docking port, claw or launch
+        /// clamp), which is how stages and payloads leave on purpose. Anything hanging from a lost part went with
+        /// it. One look when the piece comes home, instead of following KSP's joint-break, decouple and
+        /// destruction events through the flight.
+        /// </summary>
+        static void FindMissing(CraftPart p, HashSet<CraftPart> keep, HashSet<CraftPart> present, HashSet<string> lostOnLanding, List<string> missing)
         {
             foreach (CraftPart c in p.Children)
             {
-                if (keep.Contains(c)) { FindMissing(c, keep, broke, missing); continue; }
-                if (c.Serial != null && broke.Contains(c.Serial)) AddSubtree(c, keep, missing);
+                if (keep.Contains(c)) { FindMissing(c, keep, present, lostOnLanding, missing); continue; }
+                if (present.Contains(c)) continue;   // came home, but goes to the bin (a strut whose other end is gone)
+                bool landing = c.Serial != null && lostOnLanding.Contains(c.Serial);
+                if (landing || !(IsSeparator(p) || IsSeparator(c))) AddSubtree(c, keep, missing);
             }
+        }
+
+        /// <summary>A part made to let go of what's attached to it: decouplers, docking ports, claws, launch clamps.</summary>
+        public static bool IsSeparator(CraftPart p)
+        {
+            foreach (Node m in p.Node.Children("MODULE"))
+            {
+                string n = m.Get("name") ?? "";
+                if (n.Contains("Decouple") || n == "ModuleDockingNode" || n == "ModuleGrappleNode" || n == "LaunchClamp") return true;
+            }
+            return false;
         }
 
         static void AddSubtree(CraftPart p, HashSet<CraftPart> keep, List<string> into)

@@ -405,7 +405,6 @@ namespace PhilsReusabilitySuite
 
         void Update()
         {
-            SettleDeaths(false);
             if (!HighLogic.LoadedSceneHasPlanetarium || Planetarium.fetch == null) return;
             double now = Planetarium.GetUniversalTime();
             if (lastUT < 0 || now < lastUT) { lastUT = now; return; }
@@ -493,6 +492,29 @@ namespace PhilsReusabilitySuite
             return true;
         }
 
+        /// <summary>Serials of hardware the suite keeps: hangar ships', bin parts' and builds'.</summary>
+        public HashSet<string> StoredSerials()
+        {
+            var stored = new HashSet<string>(Hangar.SelectMany(x => x.Placed));
+            stored.UnionWith(Bin.Select(b => b.Serial));
+            stored.UnionWith(Jobs.SelectMany(j => j.Serials()));
+            return stored;
+        }
+
+        /// <summary>Serials that are some particular piece of hardware: stored, or on a ship in flight.</summary>
+        public HashSet<string> TakenSerials()
+        {
+            HashSet<string> taken = StoredSerials();
+            if (HighLogic.CurrentGame?.flightState != null)
+                foreach (ProtoVessel pv in HighLogic.CurrentGame.flightState.protoVessels)
+                    foreach (ProtoPartSnapshot ps in pv.protoPartSnapshots)
+                    {
+                        string s = PRSPart.ValueIn(ps, "serial");
+                        if (!string.IsNullOrEmpty(s)) taken.Add(s);
+                    }
+            return taken;
+        }
+
         /// <summary>
         /// A ship launched without being built (KSP's own launch-pad dialog launches a saved craft file straight
         /// into flight) can carry serials saved in the file: those of parts that are still hangar ships, bin parts,
@@ -500,16 +522,7 @@ namespace PhilsReusabilitySuite
         /// </summary>
         void RenewTakenSerials(List<Part> parts)
         {
-            var taken = new HashSet<string>(Hangar.SelectMany(x => x.Placed));
-            taken.UnionWith(Bin.Select(b => b.Serial));
-            taken.UnionWith(Jobs.SelectMany(j => j.Serials()));
-            if (HighLogic.CurrentGame?.flightState != null)
-                foreach (ProtoVessel pv in HighLogic.CurrentGame.flightState.protoVessels)
-                    foreach (ProtoPartSnapshot ps in pv.protoPartSnapshots)
-                    {
-                        string s = ps.modules.FirstOrDefault(x => x.moduleName == Core.Craft.ModuleName)?.moduleValues?.GetValue("serial");
-                        if (!string.IsNullOrEmpty(s)) taken.Add(s);
-                    }
+            HashSet<string> taken = TakenSerials();
             int renewed = 0;
             var seen = new HashSet<string>();
             foreach (PRSPart m in parts.Select(PRSPart.Of).Where(x => x != null))

@@ -142,29 +142,18 @@ namespace PhilsReusabilitySuite
             if (lines.Count > 0) Suite.Message(string.Join("\n", lines.ToArray()), 6f);
         }
 
-        /// <summary>A piece by the hangar ship its parts belong to ("Kopje 005 #1"), else KSP's vessel name.</summary>
+        /// <summary>A piece as the hangar will name it ("Kopje 005 #1"; a new one without its number yet), else KSP's vessel name.</summary>
         static string PieceName(Vessel v)
         {
-            string hull = v.parts.Select(p => PRSPart.Of(p)?.hull).Where(h => !string.IsNullOrEmpty(h))
-                .GroupBy(h => h).OrderByDescending(g => g.Count()).Select(g => g.Key).FirstOrDefault();
-            if (!HangarShip.ParseHull(hull, out string name, out int number)) return Name(v);
-            // As the hangar will name it: a piece that came off the ship it launched as (it doesn't hold that ship's
-            // root part) comes home as a ship of its own, so it's named by its design, or the ship's name, without
-            // a number yet.
             try
             {
-                var serials = v.parts.Select(PRSPart.SerialOf).Where(s => s != null).ToList();
-                LaunchRecord rec = PRSScenario.Instance?.FindRecord(serials);
-                CraftPart root = rec != null ? Core.Craft.Read(rec.Craft).Parts.FirstOrDefault(p => p.Parent == null) : null;
-                string rootHull = root?.Node.Children("MODULE").FirstOrDefault(m => m.Get("name") == Core.Craft.ModuleName)?.Get("hull");
-                if (root?.Serial != null && hull == rootHull && !serials.Contains(root.Serial))
-                {
-                    string designId = BuildsLink.SingleDesign(v.parts.Select(p => PRSPart.Of(p)?.design));
-                    return (designId != null ? BuildsLink.NameOf(designId) : null) ?? name;
-                }
+                var mods = v.parts.Select(PRSPart.Of).Where(m => m != null && !string.IsNullOrEmpty(m.serial)).GroupBy(m => m.serial).ToDictionary(g => g.Key, g => g.First());
+                LaunchRecord rec = PRSScenario.Instance?.FindRecord(mods.Keys);
+                string name = PRSScenario.WhoIs(mods.Keys, s => mods[s].hull, s => mods[s].design, rec != null ? Core.Craft.Read(rec.Craft) : null, out int number, out _);
+                if (name != null) return number < 0 ? name : name + " #" + number;
             }
             catch (Exception) { }
-            return name + " #" + number;
+            return Name(v);
         }
 
         static void Remember(Vessel v)
@@ -303,7 +292,7 @@ namespace PhilsReusabilitySuite
             return pv != null && pv.protoPartSnapshots.Any(ps => !string.IsNullOrEmpty(SerialOf(ps)));
         }
 
-        static string SerialOf(ProtoPartSnapshot ps) => ps.modules.FirstOrDefault(m => m.moduleName == Core.Craft.ModuleName)?.moduleValues?.GetValue("serial");
+        static string SerialOf(ProtoPartSnapshot ps) => PRSPart.ValueIn(ps, "serial");
 
         public void Process(Vessel v)
         {

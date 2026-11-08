@@ -341,6 +341,20 @@ namespace PhilsReusabilitySuite
                 var merged = all.Where(p => !ownParts.Contains(p)).Select(PRSPart.SerialOf).ToList();
                 Check(merged.Count == ready.Placed.Count && !merged.Any(ready.Placed.Contains), "the merged design came in as new parts (" + merged.Count + " parts, " + merged.Count(ready.Placed.Contains) + " with the ready ship's serials)");
                 Check(ownParts.All(p => p != null && ready.Placed.Contains(PRSPart.SerialOf(p))), "and the hangar ship already in the VAB kept its own");
+                // KSP's New clears the hangar ship away: a design merged into the empty VAB after it is new parts too.
+                MethodInfo newShip = typeof(EditorLogic).GetMethod("OnNewShipConfirm", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                Check(newShip != null, "found KSP's New");
+                if (newShip != null)
+                {
+                    newShip.Invoke(EditorLogic.fetch, null);
+                    yield return new WaitForSeconds(2f);
+                    toLoad.Invoke(EditorLogic.fetch, new object[] { copyPath, KSP.UI.Screens.CraftBrowserDialog.LoadType.Merge });
+                    yield return new WaitForSeconds(2f);
+                    var afterNew = new HashSet<Part>(EditorLogic.fetch.ship.parts);
+                    if (EditorLogic.SelectedPart != null) { afterNew.Add(EditorLogic.SelectedPart); foreach (Part c in EditorLogic.SelectedPart.FindChildParts<Part>(true)) afterNew.Add(c); }
+                    var newSerials = afterNew.Select(PRSPart.SerialOf).ToList();
+                    Check(newSerials.Count == ready.Placed.Count && !newSerials.Any(ready.Placed.Contains), "after New, the same design merged in is new parts (" + newSerials.Count(ready.Placed.Contains) + " of " + newSerials.Count + " with the ready ship's serials)");
+                }
                 EditorAddon.LoadHangarShip(readyNow);    // drops the merged copy
                 yield return new WaitForSeconds(2f);
             }
@@ -479,9 +493,9 @@ namespace PhilsReusabilitySuite
             Check(outcome != null, "the suite judged its landing in the Tracking Station: " + (outcome ?? "nothing"));
             sc = PRSScenario.Instance;
             bool lostIt = outcome != null && outcome.Contains(" was lost");
-            // A hard landing (6 to 12 m/s) can break outer parts off: those count as broken off, the rest go to the bin.
-            int inBin = sc.Bin.Count(b => dropSerials.Contains(b.Serial)), brokeOff = sc.BrokeOff.Count(dropSerials.Contains);
-            Check(outcome != null && (lostIt || (inBin > 0 && inBin + brokeOff == dropSerials.Count)), "it came home to the parts bin (it was never filed): " + inBin + " parts in the bin, " + brokeOff + " broke off in the landing");
+            // A hard landing (6 to 12 m/s) can break outer parts off: those are lost, the rest go to the bin.
+            int inBin = sc.Bin.Count(b => dropSerials.Contains(b.Serial));
+            Check(outcome != null && (lostIt || (inBin > 0 && inBin <= dropSerials.Count)), "it came home to the parts bin (it was never filed): " + inBin + " parts in the bin, " + (dropSerials.Count - inBin) + " lost in the landing");
             Check(outcome == null || lostIt || outcome.Contains("filed in Phil's Builds"), "the message says why it went to the bin");
 
             // 7c. Restore to design from the hangar: the flown Hopper gets its chute back (new, or one from the bin)

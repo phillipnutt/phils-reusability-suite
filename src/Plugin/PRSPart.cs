@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 
 namespace PhilsReusabilitySuite
 {
@@ -18,24 +19,11 @@ namespace PhilsReusabilitySuite
         [KSPField(isPersistant = true)] public string design = "";
         [KSPField(isPersistant = true)] public int slot = -1;
 
-        /// <summary>Serials the editor may keep this session: ones it gave out, and hangar parts it loaded.</summary>
-        public static readonly HashSet<string> EditorTrusted = new HashSet<string>();
+        public static string NewSerial() => Guid.NewGuid().ToString("N");
 
-        /// <summary>Trusted serials of the ship left in the editor, kept for when KSP restores it on return.</summary>
-        public static readonly HashSet<string> EditorCarry = new HashSet<string>();
-
-        /// <summary>
-        /// Serials the suite itself is bringing into the editor with the next load (a hangar ship, a queued build).
-        /// Every other serial in a loaded file is a design's, and gets replaced.
-        /// </summary>
-        public static readonly HashSet<string> EditorExplicit = new HashSet<string>();
-
-        public static string NewSerial()
-        {
-            string s = Guid.NewGuid().ToString("N");
-            if (HighLogic.LoadedSceneIsEditor) EditorTrusted.Add(s);
-            return s;
-        }
+        /// <summary>One of this module's saved values on a part that isn't loaded (serial, hull, design...).</summary>
+        public static string ValueIn(ProtoPartSnapshot ps, string key) =>
+            ps?.modules.FirstOrDefault(x => x.moduleName == Core.Craft.ModuleName)?.moduleValues?.GetValue(key);
 
         public override void OnStart(StartState state)
         {

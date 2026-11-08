@@ -89,10 +89,6 @@ namespace PhilsReusabilitySuite
             if (rec == null) yield break;
             Check(Pieces.Validate(rec.Craft).Count == 0, "the launch record is a valid craft");
 
-            // Nothing has broken off yet (KSP reports false joint breaks when a ship unpacks on the pad).
-            yield return new WaitForSeconds(1f);
-            Check(sc.BrokeOff.Count == 0, "nothing counted as broken off before the test breaks something (" + sc.BrokeOff.Count + ")");
-
             // Break the nose cone off one radial booster, so that booster comes home missing it. A clamped ship
             // on the pad won't snap a joint physically, so run the code KSP itself runs when Unity reports a
             // broken joint (PartJoint.OnJointBreak): it reports the break, then detaches the part.
@@ -112,12 +108,7 @@ namespace PhilsReusabilitySuite
             }
             else Note("no booster nose cone found to break off");
             yield return new WaitForSeconds(2f);
-            if (fin != null)
-            {
-                Check(fin.vessel != finVessel, "the nose cone really came off");
-                Check(sc.BrokeOff.Contains(finSerial), "the nose cone breaking off was noticed");
-                Check(sc.BrokeOff.Count == 1, "only the nose cone counts as broken off (" + sc.BrokeOff.Count + ")");
-            }
+            if (fin != null) Check(fin.vessel != finVessel, "the nose cone really came off");
 
             // Drop the radial boosters.
             int dropped = 0;
@@ -125,7 +116,6 @@ namespace PhilsReusabilitySuite
                 if (!d.isDecoupled) { d.Decouple(); dropped++; }
             Note("fired " + dropped + " radial decouplers");
             yield return new WaitForSeconds(4f);
-            Check(sc.BrokeOff.Count == (fin != null ? 1 : 0), "dropping the boosters didn't count anything as broken off (" + sc.BrokeOff.Count + " broken off in all)");
 
             // Recover every other piece with the suite's parts on it.
             List<Vessel> others = FlightGlobals.Vessels.Where(o => o != null && o != FlightGlobals.ActiveVessel && o.loaded && o.parts.Any(p => PRSPart.SerialOf(p) != null)).ToList();
@@ -155,16 +145,15 @@ namespace PhilsReusabilitySuite
                     Check(h.Placed.Count + binned == oSerials.Count, h.DisplayName + ": all " + oSerials.Count + " parts accounted for (hangar " + h.Placed.Count + ", bin " + binned + ")");
                     List<string> probs = Pieces.Validate(h.Craft);
                     Check(probs.Count == 0, h.DisplayName + ": hangar craft is valid " + string.Join("; ", probs.Take(3).ToArray()));
-                    if (hasFinParent) Check(h.Missing.Contains(finSerial), h.DisplayName + ": knows its nose cone broke off");
+                    // The booster that lost its nose cone is missing it; every other piece left at a decoupler, so
+                    // nothing else is missing (and whole pieces destroyed after recovery don't change that).
+                    if (hasFinParent) Check(h.Missing.Count == 1 && h.Missing.Contains(finSerial), h.DisplayName + ": knows its nose cone broke off, and nothing else (" + h.Missing.Count + " missing)");
                     else Check(h.Missing.Count == 0, h.DisplayName + ": nothing missing (" + h.Missing.Count + ")");
                     Check(h.Fuel >= 0 && h.Fuel <= 1, h.DisplayName + ": fuel left " + h.Fuel.ToString("P0"));
                     expectedIds.Add(h.Id);
                 }
                 else Check(binned == oSerials.Count, oName + ": went to the parts bin (" + binned + " of " + oSerials.Count + " parts)");
             }
-            // Whole ships destroyed (above, after each was recovered) don't count their parts as broken off from anything.
-            yield return new WaitForSeconds(2f);
-            Check(sc.BrokeOff.Count == (finSerial != null ? 1 : 0), "destroying whole ships counted none of their parts as broken off (" + sc.BrokeOff.Count + " broken off in all)");
 
             // Save, go to the VAB, and load each hangar ship.
             GamePersistence.SaveGame("persistent", HighLogic.SaveFolder, SaveMode.OVERWRITE);
