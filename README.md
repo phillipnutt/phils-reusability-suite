@@ -6,8 +6,8 @@
 
 A Kerbal Space Program 1.12 career mod that makes ships things you build, fly, bring home and fly again.
 
-**Status: in development.** It works and is tested in game, but it isn't released. The design is in
-[DESIGN.md](DESIGN.md).
+**Status: pre-release (0.1.0).** Everything below works and is tested in game by automated tests, but
+it hasn't had much real play yet. Back up your saves. The design is in [DESIGN.md](DESIGN.md).
 
 ## What it does
 
@@ -43,10 +43,20 @@ flights".
 - KSP 1.12.x
 - ModuleManager
 - Harmony 2 (000_Harmony)
-- Phil's Builds (required: it's where designs are filed). Phil's Builds works fine without this mod.
+- [Phil's Builds](https://github.com/phillipnutt/phils-builds) (required: it's where designs are filed). Phil's Builds works fine without
+  this mod.
 
 StageRecovery and ScrapYard do the same jobs, so remove them. While StageRecovery is installed, the suite
 leaves stage recovery to it.
+
+It's made for career games. In sandbox and science games there's no money: builds just take time.
+
+## Install
+
+Copy `GameData/PhilsReusabilitySuite` from the release zip into your KSP `GameData` folder, alongside
+ModuleManager, Harmony and Phil's Builds. It works in a new game or an existing one. Ships launched before
+it was installed have no launch record, so when they come home their parts go to the parts bin rather
+than the hangar.
 
 ## Settings
 
