@@ -364,16 +364,18 @@ first.
 
 ## Build status
 
-Phil said "Yes, start building" on 2026-11-07. A local git repo was made with Phil's personal identity:
-no GitHub remote, nothing committed yet.
+Phil said "Yes, start building" on 2026-11-07. A local git repo was made with Phil's personal identity.
+It has no GitHub remote; each step is committed locally.
 
 **Phil's Builds hooks:** that mod's own development proposed a `PhilsBuilds.BuildsApi` covering all six
 needs, and the suite accepted it. Its DESIGN.md has the details. Nothing is built there until Phil says
 so. Two details:
 - `DesignPlaced` fires as soon as Phil's Builds places a design. For a pick-up, the parts are held on the
   cursor and aren't in the ship until attached, so the suite stamps the parts the event carries.
-- The suite keeps its own copy of each design file with its build and launch records, because saving over
-  a mark can change part slots.
+- ~~The suite keeps its own copy of each design file~~ (changed while building step 5): a slot is only
+  filled from the hangar when the part there is the same part as in the design file today. If a mark was
+  saved over and a slot now holds a different part, that slot is built new. That's simpler than keeping
+  copies of design files, and it never puts the wrong part in a slot.
 
 **Step 1, built and proven in game** (six harness runs on the clean test install, 2026-11-07):
 - **Proven:**
@@ -497,6 +499,51 @@ Decisions made while building (within the agreed design):
 **The test harness** gained a `waitlog` step, so a run moves on as soon as a self-test logs its done
 marker instead of idling on a fixed wait (Phil: "you should be able to tell when your own tests are done
 and not sit idle").
+
+**Step 5, the Phil's Builds link, built and tested in game** (2026-11-07). Phil's Builds built its
+`BuildsApi` (Phil: "Yes, build them") and tested it on its side. The suite now requires Phil's Builds.
+- **Parts remember their design.** When Phil's Builds places a design (load, merge, pick up, or a
+  hangar copy) or saves one, each part is stamped with the design's id and its slot in the design file.
+- **Hangar copies in Phil's Builds' library window.** Under each filed design:
+  - a New row for launchers and upper stages;
+  - a row per hangar copy: "ready", "complete" or "first stage", its flights, any missing parts, and
+    its price and build time;
+  - a detail panel: what's refit, how many parts are new, fuel, and the flight log;
+  - a note on the design's own row, such as "1 ready, 2 flown first stages in the hangar";
+  - copies in a queued build are greyed out.
+- **Picking a hangar copy puts the whole design on the cursor:** the copy's own parts in their slots,
+  keeping their serials, flights and identity, plus new parts for every slot it doesn't have. That's both
+  "a flown first stage plus a new upper stage" and "Restore to design" (lost parts are added back new).
+- **"Use it?"** If the design in the editor has a ready, never-changed copy in the hangar, the Build panel
+  offers it. Use it turns the editor's parts into that ship, so the green button launches it for free.
+- **"Not filed in Phil's Builds"** shows in the Build panel when the ship isn't a filed design, with a
+  File it button that opens Phil's Builds' Save panel.
+- **Phil's rule is on** (`requireDesign` in Settings.cfg): a piece that comes home with no part from a
+  filed design goes to the parts bin, not the hangar.
+- **Slots are matched by part, not by copies of design files** (a change from the plan above). A slot
+  is only filled from the hangar if it holds the same part in the design file today; otherwise it's
+  built new. KSP renames some old parts when it loads a craft ("RCSBlock" became "RCSBlock.v2"), so
+  design files are first run through KSP's own upgrade scripts. Phil's Builds' own test spotted this.
+
+**Test results (2026-11-07, step 5):**
+- **Core checks:** 6,344, all passing, including completing a copy whose design changed.
+- **Harness runs on the clean install:**
+  - step 1: 55/55;
+  - stage recovery: 14/14;
+  - build queue and hangar: 58/58;
+  - Phil's Builds link: 39/39.
+  - No exceptions in any run.
+- **What the link test does,** in its own career save with the stock Jumping Flea filed as a launcher:
+  1. Builds it.
+  2. Sees the ready copy in the library rows and in the Build panel's "Use it".
+  3. Flies it and loses the chute.
+  4. Brings the rest home as "first stage · 1 flight".
+  5. Picks it up as the whole design: 7 flown parts plus a new chute, each in its slot, priced 422
+     new and 262 refit.
+  6. Checks that an unfiled Jumping Flea shows the warning and that all 8 of its parts go to the bin.
+- **Found and fixed:**
+  - the "Not filed" text was cut off;
+  - the hangar note called a never-flown copy "flown".
 
 ## Open questions
 

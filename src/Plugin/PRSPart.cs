@@ -74,5 +74,9 @@ namespace PhilsReusabilitySuite
         /// <summary>Starts the in-game self-test of stage recovery (test harness only).</summary>
         [KSPEvent(guiActive = false, guiActiveEditor = false)]
         public void PRSSelfTestStages() { SelfTestStages.Begin(); }
+
+        /// <summary>Starts the in-game self-test of the Phil's Builds link (test harness only).</summary>
+        [KSPEvent(guiActive = false, guiActiveEditor = false)]
+        public void PRSSelfTestLink() { SelfTestLink.Begin(); }
     }
 }

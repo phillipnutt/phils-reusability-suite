@@ -95,6 +95,7 @@ namespace PhilsReusabilitySuite
             Craft c = Core.Craft.Read(h.Craft);
             foreach (CraftPart cp in c.Parts) if (!string.IsNullOrEmpty(cp.Serial)) Bin.Add(BinPartFrom(cp));
             Hangar.Remove(h);
+            Changed();
             Log.Info("Took " + h.DisplayName + " apart: " + c.Parts.Count + " parts to the parts bin");
             return true;
         }
@@ -123,6 +124,7 @@ namespace PhilsReusabilitySuite
             double v = ScrapValue(h);
             Suite.Charge(-v);
             Hangar.Remove(h);
+            Changed();
             Log.Info("Sold " + h.DisplayName + " for scrap: " + Pricing.Funds(v));
             return true;
         }
@@ -188,6 +190,7 @@ namespace PhilsReusabilitySuite
             Suite.Charge(total);
             Jobs.Add(job);
             Reserve(job, q);
+            Changed();
             Log.Info("Build started: " + name + " (" + facility + "), paid " + Pricing.Funds(total) + ", " + Pricing.Duration(job.SecondsLeft(S), S)
                      + (overtime ? " with overtime" : "") + (outsource ? ", outsourced" : ""));
             if (outsource || q.BuildPrice <= 0) Finish(job);
@@ -213,6 +216,7 @@ namespace PhilsReusabilitySuite
             job.Paid = q.Total;
             job.Progress = newProgress;
             Reserve(job, q);
+            Changed();
             Log.Info("Build updated: " + name + ", " + (diff >= 0 ? "paid " + Pricing.Funds(diff) : "refunded " + Pricing.Funds(-diff)) + ", " + Math.Round(newProgress * 100) + "% done");
             if (job.Progress >= 1) Finish(job);
             return true;
@@ -225,6 +229,7 @@ namespace PhilsReusabilitySuite
             Suite.Charge(-refund);
             Release(job);
             Jobs.Remove(job);
+            Changed();
             Log.Info("Build cancelled: " + job.Name + ", refunded " + Pricing.Funds(refund));
         }
 
@@ -322,6 +327,7 @@ namespace PhilsReusabilitySuite
             Log.Info("Build finished: " + ready.DisplayName + " is ready in the hangar");
             Suite.Message(ready.DisplayName + " is ready in the hangar");
             if (TimeWarp.fetch != null && TimeWarp.CurrentRateIndex > 0) TimeWarp.SetRate(0, true, false);
+            Changed();
         }
 
         static int FlightsIn(Node part)
@@ -416,6 +422,7 @@ namespace PhilsReusabilitySuite
             float cost = ship.GetShipCosts(out float dry, out float fuel, ShipConstruction.ShipManifest);
             if (Suite.Career) Funding.Instance.AddFunds(cost, TransactionReasons.VesselRollout);
             Hangar.Remove(h);
+            Changed();
             Log.Info("Launched " + h.DisplayName + " from the hangar: already paid for, " + Pricing.Funds(cost) + " handed back");
         }
     }

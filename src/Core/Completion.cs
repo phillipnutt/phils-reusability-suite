@@ -28,18 +28,25 @@ namespace PhilsReusabilitySuite.Core
         {
             var result = new CompletionResult();
             var bySlot = new Dictionary<int, Node>();
+            var nameBySlot = new Dictionary<int, string>();
             foreach (Node p in hangarParts)
             {
                 Node m = Module(p);
                 if (m == null || m.Get("design") != designId) continue;
                 if (int.TryParse(m.Get("slot"), NumberStyles.Integer, CultureInfo.InvariantCulture, out int slot) && slot >= 0 && !bySlot.ContainsKey(slot))
+                {
                     bySlot[slot] = m;
+                    nameBySlot[slot] = PartName(p);
+                }
             }
 
             Node craft = design.Clone();
             int i = 0;
             foreach (Node part in craft.Children("PART"))
             {
+                // If the design was saved over since the stage flew, a slot may now hold another part: then the
+                // flown part doesn't fit it, and the slot is built new.
+                if (bySlot.ContainsKey(i) && nameBySlot[i] != PartName(part)) bySlot.Remove(i);
                 Node m = Module(part);
                 if (m == null)
                 {
@@ -71,5 +78,11 @@ namespace PhilsReusabilitySuite.Core
         }
 
         static Node Module(Node part) => part.Children("MODULE").FirstOrDefault(m => m.Get("name") == Craft.ModuleName);
+
+        static string PartName(Node part)
+        {
+            string r = part.Get("part") ?? "";
+            return r.Contains("_") ? r.Substring(0, r.LastIndexOf('_')) : r;
+        }
     }
 }

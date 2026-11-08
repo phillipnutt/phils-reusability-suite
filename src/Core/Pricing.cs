@@ -25,6 +25,8 @@ namespace PhilsReusabilitySuite.Core
         public double ScrapValue = 0.5;
         /// <summary>Build lines per VAB or SPH level.</summary>
         public int LinesPerLevel = 1;
+        /// <summary>Only pieces built from a Phil's Builds design come home to the hangar; others go to the parts bin.</summary>
+        public bool RequireDesign = true;
 
         public static Settings FromNode(Node n)
         {
@@ -39,6 +41,7 @@ namespace PhilsReusabilitySuite.Core
             s.RefitPerFlight = D(n, "refitPerFlight", s.RefitPerFlight);
             s.ScrapValue = D(n, "scrapValue", s.ScrapValue);
             s.LinesPerLevel = (int)Math.Max(1, D(n, "linesPerLevel", s.LinesPerLevel));
+            if (n.Get("requireDesign") != null) s.RequireDesign = !string.Equals(n.Get("requireDesign"), "false", StringComparison.OrdinalIgnoreCase);
             return s;
         }
 

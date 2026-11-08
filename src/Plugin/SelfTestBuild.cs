@@ -43,6 +43,9 @@ namespace PhilsReusabilitySuite
 
         IEnumerator Run()
         {
+            // The test craft are stock ships, not filed in Phil's Builds: let their pieces come home to the hangar.
+            bool designRule = Suite.Settings.RequireDesign;
+            Suite.Settings.RequireDesign = false;
             IEnumerator inner = Body();
             while (true)
             {
@@ -52,6 +55,7 @@ namespace PhilsReusabilitySuite
                 yield return cur;
             }
             Note("done: " + pass + " passed, " + fail + " failed");
+            Suite.Settings.RequireDesign = designRule;
             Debug.Log("[PRS-TEST-DONE]");
             Destroy(gameObject);
         }

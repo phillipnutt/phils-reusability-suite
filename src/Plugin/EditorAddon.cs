@@ -210,6 +210,77 @@ namespace PhilsReusabilitySuite
             Quote = sc?.QuoteFor(Craft, ShipName, Editing);
             try { Landings = StageReturns.CheckEditorShip(ship); }
             catch (System.Exception ex) { Landings = new List<StageReturns.EditorPiece>(); Log.Warn("Landing check failed: " + ex.Message); }
+            FindReadyCopy(ship);
+            try
+            {
+                bool anyUnstamped = ship.parts.Any(p => PRSPart.Of(p) != null && string.IsNullOrEmpty(PRSPart.Of(p).design));
+                Unfiled = PhilsBuilds.BuildsApi.Current == null && anyUnstamped;
+            }
+            catch (System.Exception) { Unfiled = false; }
+        }
+
+        /// <summary>The ship (or part of it) isn't from a design filed in Phil's Builds.</summary>
+        public bool Unfiled;
+        /// <summary>A ready, never-changed hangar copy of a design that's in the editor as new parts.</summary>
+        public HangarShip ReadyCopy;
+        string readyCopyDesign;
+
+        void FindReadyCopy(ShipConstruct ship)
+        {
+            ReadyCopy = null;
+            readyCopyDesign = null;
+            PRSScenario sc = PRSScenario.Instance;
+            if (sc == null || ReadyShip != null) return;
+            // Designs in the editor whose parts are all new (not already hangar hardware).
+            var groups = ship.parts.Select(PRSPart.Of).Where(m => m != null && !string.IsNullOrEmpty(m.design))
+                .GroupBy(m => m.design).ToList();
+            foreach (var g in groups)
+            {
+                if (g.Any(m => sc.OwnerOf(m.serial, Editing) != null)) continue;
+                var slots = new HashSet<int>(g.Select(m => m.slot));
+                foreach (HangarShip h in sc.Hangar.Where(x => x.Ready && x.ReservedBy == null && BuildsLink.DesignOf(x) == g.Key))
+                {
+                    var hSlots = new HashSet<int>(h.Craft.Children("PART").Select(SlotIn).Where(s => s >= 0));
+                    if (hSlots.SetEquals(slots) && hSlots.Count == g.Count())
+                    {
+                        ReadyCopy = h;
+                        readyCopyDesign = g.Key;
+                        return;
+                    }
+                }
+            }
+        }
+
+        static int SlotIn(Node part)
+        {
+            Node m = part.Children("MODULE").FirstOrDefault(x => x.Get("name") == Core.Craft.ModuleName);
+            return int.TryParse(m?.Get("slot"), out int s) ? s : -1;
+        }
+
+        /// <summary>
+        /// "Use it": the parts in the editor built from that design become the ready hangar copy's own parts,
+        /// slot by slot (same design, same slots), so the build takes the finished ship instead of new parts.
+        /// </summary>
+        public void UseReadyCopy()
+        {
+            if (ReadyCopy == null || readyCopyDesign == null) return;
+            var bySlot = new Dictionary<int, Node>();
+            foreach (Node p in ReadyCopy.Craft.Children("PART"))
+            {
+                Node m = p.Children("MODULE").FirstOrDefault(x => x.Get("name") == Core.Craft.ModuleName);
+                if (m != null && m.Get("design") == readyCopyDesign) bySlot[SlotIn(p)] = m;
+            }
+            foreach (Part part in EditorLogic.fetch.ship.parts)
+            {
+                PRSPart m = PRSPart.Of(part);
+                if (m == null || m.design != readyCopyDesign || !bySlot.TryGetValue(m.slot, out Node hm)) continue;
+                m.serial = hm.Get("serial");
+                m.flights = int.TryParse(hm.Get("flights"), out int f) ? f : 0;
+                m.hull = hm.Get("hull") ?? "";
+                PRSPart.EditorTrusted.Add(m.serial);
+            }
+            Log.Info("Using the ready " + ReadyCopy.DisplayName + " from the hangar in this build");
+            Refresh();
         }
 
         public List<StageReturns.EditorPiece> Landings = new List<StageReturns.EditorPiece>();
@@ -302,6 +373,28 @@ namespace PhilsReusabilitySuite
             GUILayout.Label(Editing != null ? "Update build" : "Ready to build", Look.Eyebrow);
             GUILayout.Label(ShipName, Look.H2);
             GUILayout.Space(6);
+            if (ReadyCopy != null && Quote != null)
+            {
+                GUILayout.BeginHorizontal(Look.NoticeGood);
+                GUILayout.Label("A ready <b>" + ReadyCopy.DisplayName + "</b> is in the hangar, built and never changed. Use it instead of building new parts?", Look.Meta, GUILayout.Width(430));
+                GUILayout.FlexibleSpace();
+                if (GUILayout.Button("Use it", Look.Go, GUILayout.Height(30), GUILayout.Width(90))) UseReadyCopy();
+                GUILayout.EndHorizontal();
+                GUILayout.Space(6);
+            }
+            if (Unfiled)
+            {
+                GUILayout.BeginHorizontal(Look.Notice);
+                GUILayout.Label("<color=#ffcf5a>Not filed in Phil's Builds.</color> Pieces of this ship that aren't from a filed design go to the parts bin when they come home.", Look.Meta, GUILayout.Width(430));
+                GUILayout.FlexibleSpace();
+                if (GUILayout.Button("File it", Look.Ghost, GUILayout.Height(30), GUILayout.Width(80)))
+                {
+                    try { PhilsBuilds.BuildsApi.OpenSave(); Showing = false; }
+                    catch (System.Exception ex) { Error = "Couldn't open Phil's Builds' Save panel: " + ex.Message; }
+                }
+                GUILayout.EndHorizontal();
+                GUILayout.Space(6);
+            }
             if (Quote == null) { GUILayout.Label("The suite's save data isn't loaded.", Look.MetaBad); EndBody(); return; }
 
             scroll = GUILayout.BeginScrollView(scroll, GUILayout.MaxHeight(330), GUILayout.MinHeight(Mathf.Min(330, 70 * Quote.Lines.Count)));

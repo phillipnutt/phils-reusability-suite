@@ -24,6 +24,7 @@
   </PropertyGroup>
   <ItemGroup>
     <Reference Include="System" />
+    <Reference Include="PhilsBuilds"><HintPath>$(KspDir)\GameData\PhilsBuilds\Plugins\PhilsBuilds.dll</HintPath><Private>False</Private></Reference>
     <Reference Include="0Harmony"><HintPath>$(KspDir)\GameData\000_Harmony\0Harmony.dll</HintPath><Private>False</Private></Reference>
     <Reference Include="System.Core" />
     <Reference Include="Assembly-CSharp"><HintPath>$(KspManaged)\Assembly-CSharp.dll</HintPath><Private>False</Private></Reference>

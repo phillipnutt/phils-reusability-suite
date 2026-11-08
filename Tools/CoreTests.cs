@@ -202,6 +202,12 @@ static class CoreTests
         Check(Pieces.Validate(r.Craft).Count == 0, label + ": the completed craft is valid");
         // A different design's parts don't fill this one.
         Check(Completion.Complete(design, "D2", flown).Used.Count == 0, label + ": parts from another design aren't used");
+        // The design was saved over and a slot now holds another part: that flown part doesn't fit it.
+        Node changed = design.Clone();
+        Node firstFlownSlot = changed.Children("PART").ElementAt(top.Index);
+        firstFlownSlot.Set("part", "someOtherPart_123");
+        CompletionResult rc = Completion.Complete(changed, "D1", flown);
+        Check(rc.Used.Count == flown.Count - 1 && rc.NewSlots.Contains(top.Index), label + ": a slot that changed part in the design is built new");
     }
 
     static List<CraftPart> Subtree(CraftPart p)

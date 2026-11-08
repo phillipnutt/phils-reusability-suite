@@ -27,8 +27,13 @@ A Kerbal Space Program 1.12 career mod that makes ships things you build, fly, b
   the stage is lost. The VAB shows each dropping piece's landing speed while you design it.
 - **A parts bin.** Loose parts, from ships you take apart or pieces with no engine or probe core, are used
   automatically in new builds at refit price.
-- **A flown booster under a new payload.** Put a stored first stage under a new payload in the VAB: only
-  the new parts cost full price and full build time.
+- **A flown booster under a new payload.** Phil's Builds' library window lists the hangar copies under
+  each launcher. Pick a flown first stage and the whole launcher goes on the cursor: that exact stage plus
+  a new upper stage from the design. Attach it under your payload. Only the new parts cost full price and
+  full build time.
+- **Built from designs.** Only ships built from a design filed in Phil's Builds come home to the hangar.
+  Pieces of anything else go to the parts bin, and the Build panel warns you first. If a design you load
+  already has a ready copy in the hangar, the Build panel offers to use it.
 
 Every part has a serial number and a flight count, so a booster comes home as itself: "Oak 005 #4, 5
 flights".
@@ -38,7 +43,7 @@ flights".
 - KSP 1.12.x
 - ModuleManager
 - Harmony 2 (000_Harmony)
-- Phil's Builds (for the launcher library link)
+- Phil's Builds (required: it's where designs are filed). Phil's Builds works fine without this mod.
 
 StageRecovery and ScrapYard do the same jobs, so remove them. While StageRecovery is installed, the suite
 leaves stage recovery to it.
@@ -46,7 +51,8 @@ leaves stage recovery to it.
 ## Settings
 
 Every number is in `GameData/PhilsReusabilitySuite/Settings.cfg`: the build-time curve, overtime and
-outsourcing prices, refit prices, scrap value and build lines per level.
+outsourcing prices, refit prices, scrap value, build lines per level, and `requireDesign` (set it to
+`false` to let unfiled ships come home to the hangar too).
 
 ## Building
 

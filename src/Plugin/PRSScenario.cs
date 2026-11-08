@@ -254,6 +254,15 @@ namespace PhilsReusabilitySuite
             {
                 foreach (string s in serials) ToBin(s, info, recCraft);
                 Log.Info("Recovered " + pv.vesselName + ": no engine or probe core, so its " + serials.Count + " parts went to the parts bin");
+                Changed();
+                return;
+            }
+            // Phil's rule: a piece of a ship that was never filed as a design in Phil's Builds is just parts.
+            if (S.RequireDesign && !r.Placed.Any(s => !string.IsNullOrEmpty(info[s].modules.FirstOrDefault(x => x.moduleName == Core.Craft.ModuleName)?.moduleValues?.GetValue("design"))))
+            {
+                foreach (string s in serials) ToBin(s, info, recCraft);
+                Log.Info("Recovered " + pv.vesselName + ": not built from a design filed in Phil's Builds, so its " + serials.Count + " parts went to the parts bin");
+                Changed();
                 return;
             }
 
@@ -306,9 +315,13 @@ namespace PhilsReusabilitySuite
             Log.Info("Recovered " + name + ": " + r.Placed.Count + " parts to the hangar as " + h.DisplayName
                      + (r.Missing.Count > 0 ? ", " + r.Missing.Count + " missing" : "")
                      + (r.Unplaced.Count + r.Dropped.Count > 0 ? ", " + (r.Unplaced.Count + r.Dropped.Count) + " to the parts bin" : ""));
+            Changed();
         }
 
         readonly HashSet<uint> moneyDone = new HashSet<uint>();
+
+        /// <summary>The hangar, bin or queue changed: Phil's Builds' window redraws its hangar copies.</summary>
+        internal void Changed() { BuildsLink.HangarChanged(); }
 
         /// <summary>Serials that broke off in a hard landing, set by stage recovery just before it recovers.</summary>
         public readonly HashSet<string> LeftBehindOnNextRecovery = new HashSet<string>();
