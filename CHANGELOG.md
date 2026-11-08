@@ -56,6 +56,9 @@ Fixed:
   Reused hardware with an identity of its own (a flown "Kopje 005 #1" under a new payload) keeps that identity.
 - The VAB's launch-site list (the slide-out by the green button) launched past the Build panel; it now opens the
   Build panel unless the ship is a ready hangar ship.
+- A dropped stage crashing could count its top part as broken off, so the piece it came from showed parts
+  missing. A destroyed part now only counts as lost if its ship survives it (a fin lost on landing). Launch
+  clamps letting go at launch no longer count as broken off.
 - Settings.cfg accepts 0 for overtime and outsourcing prices, refit shares and scrap value.
 - "Back to the queue" in the library list threw an error; the "Take apart" and "Sell for scrap" links showed
   "<u>" tags; landing-check lines were cut off when they wrapped.

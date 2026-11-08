@@ -583,6 +583,21 @@ push code, no release). Phil's Builds worked alongside on its own findings from 
 - **New in-game tests:** a powered landing (the Z-MAP's middle stage comes home with a landing burn and uses up
   the propellant), and the whole reuse loop (build, fly, the pod comes home, picked up as the whole design at
   refit price, built and flown again, comes home as the same ship with two flights).
+- **Three code reviews** (a separate agent reading the code fresh each time, the last two over the older 0.1.0
+  code too) found about 20 problems, all fixed and listed in the CHANGELOG. The ones that shaped the design:
+  - **Which parts are hangar hardware in the VAB** is decided only from what the suite gave out (a hangar ship
+    loaded, a bin part matched, a queued build opened), never from the serials a craft happens to carry. KSP
+    brings back the ship just launched when you return to the VAB, and its serials are still flying.
+  - **A price is checked again when Build is pressed:** if a bin part or hangar ship it counted on has been
+    sold, taken apart or put in another build, the build is refused and priced again.
+  - **Which piece is the ship** when pieces come home separately: the piece holding the launched ship's root
+    part keeps its name, number and log. The others are ships of their own.
+  - **A record knows its vessel** (KSP's persistent id), so going back to a ship on the pad doesn't count
+    another flight. KSP reuses vessel ids, so a record also has to share serials with the ship.
+  - **Destroyed parts:** a part destroyed while attached counts as lost from its ship only if the ship survives
+    it (a fin lost on landing). A stage that crashes whole loses nothing "from" anything. Launch clamps letting
+    go never count.
+  - **Harmony patches** are applied one at a time, so a KSP change that breaks one hook leaves the rest working.
 
 ## Open questions
 

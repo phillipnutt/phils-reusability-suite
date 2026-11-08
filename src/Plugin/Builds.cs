@@ -390,6 +390,7 @@ namespace PhilsReusabilitySuite
 
         void Update()
         {
+            SettleDeaths(false);
             if (!HighLogic.LoadedSceneHasPlanetarium || Planetarium.fetch == null) return;
             double now = Planetarium.GetUniversalTime();
             if (lastUT < 0 || now < lastUT) { lastUT = now; return; }

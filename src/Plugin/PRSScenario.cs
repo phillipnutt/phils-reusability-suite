@@ -183,6 +183,8 @@ namespace PhilsReusabilitySuite
             Part child = joint != null ? joint.Child : null;
             string s = PRSPart.SerialOf(child);
             if (s == null || BrokeOff.Contains(s)) return;
+            // Launch clamps letting go at launch stay on the pad by design: never "lost" from the ship.
+            if (child.FindModuleImplementing<LaunchClamp>() != null) return;
             if (separatedFrame.TryGetValue(child, out int frame) && frame == Time.frameCount) return;
             // KSP also reports joint breaks that aren't, for example landing legs when a ship unpacks on the
             // pad. So only count it if the part really came away.
@@ -202,21 +204,47 @@ namespace PhilsReusabilitySuite
 
         IEnumerator ConfirmBreak(Part part, string serial, Vessel was)
         {
-            float until = Time.realtimeSinceStartup + 0.5f;
+            string title = part != null && part.partInfo != null ? part.partInfo.title : "A part";
+            float until = Time.realtimeSinceStartup + 1.5f;
             while (Time.realtimeSinceStartup < until) yield return null;
             // Broken off means it came away on its own: it is now the root of a ship of its own, or gone. (A part
             // that only moved to a new ship along with its neighbours, when a decoupler fired, didn't break.)
             bool gone = part == null || part.vessel == null || (part.vessel != was && part.parent == null && part.vessel.rootPart == part);
-            if (!gone) { Log.Info("Ignored a joint break on " + part.partInfo.title + ": it's still attached"); yield break; }
-            if (BrokeOff.Add(serial)) Log.Info((part != null ? part.partInfo.title : "A part") + " broke off " + (was != null ? was.vesselName : "a ship"));
+            if (!gone) { Log.Info("Ignored a joint break on " + title + ": it's still attached"); yield break; }
+            // A part that went down with the rest of its ship (a dropped stage crashing) wasn't lost from anything
+            // that survives: only a ship that lives on (a booster that lost a fin landing) is missing it.
+            if (was == null || was.parts == null || was.parts.Count == 0) { Log.Info(title + " was destroyed with the rest of its ship: not counted as lost from it"); yield break; }
+            if (BrokeOff.Add(serial)) Log.Info(title + " broke off " + was.vesselName);
         }
+
+        /// <summary>A part destroyed while attached, waiting to see whether its ship survived it.</summary>
+        sealed class PendingDeath { public string Serial; public string Title; public Vessel Vessel; public float At; }
+        readonly List<PendingDeath> pendingDeaths = new List<PendingDeath>();
 
         void OnPartDie(Part p)
         {
             if (!HighLogic.LoadedSceneIsFlight || p == null) return;
             string s = PRSPart.SerialOf(p);
-            // Only a part destroyed while still attached to others counts as lost from its ship.
-            if (s != null && (p.parent != null || p.children.Count > 0)) BrokeOff.Add(s);
+            // Only a part destroyed while still attached to others can be lost from its ship, and only if the ship
+            // lives on: a fin lost on landing is; a dropped stage crashing (every part destroyed) isn't.
+            if (s != null && (p.parent != null || p.children.Count > 0))
+                pendingDeaths.Add(new PendingDeath { Serial = s, Title = p.partInfo != null ? p.partInfo.title : "A part", Vessel = p.vessel, At = Time.realtimeSinceStartup });
+        }
+
+        /// <summary>About a second after a part was destroyed (or at once, with all, before a recovery): did its ship survive?</summary>
+        void SettleDeaths(bool all)
+        {
+            if (pendingDeaths.Count == 0) return;
+            float now = Time.realtimeSinceStartup;
+            foreach (PendingDeath d in pendingDeaths.Where(x => all || now - x.At >= 1f).ToList())
+            {
+                pendingDeaths.Remove(d);
+                if (d.Vessel != null && d.Vessel.parts != null && d.Vessel.parts.Count > 0)
+                {
+                    if (BrokeOff.Add(d.Serial)) Log.Info(d.Title + " was destroyed and lost from " + d.Vessel.vesselName);
+                }
+                else Log.Info(d.Title + " was destroyed with the rest of its ship: not counted as lost from another");
+            }
         }
 
         // ---- Recovery ----
@@ -225,6 +253,7 @@ namespace PhilsReusabilitySuite
         {
             if (pv == null) return;
             if (Krash.SimActive) { Log.Info("KRASH simulation: recovery of " + pv.vesselName + " ignored"); return; }
+            SettleDeaths(true);   // a part lost just before this recovery still counts
             if (!recoveredThisScene.Add(pv.persistentId)) return;
             try { Recover(pv); }
             catch (Exception ex) { Log.Error("Recovering " + pv.vesselName + " failed: " + ex); }

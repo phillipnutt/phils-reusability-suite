@@ -162,6 +162,9 @@ namespace PhilsReusabilitySuite
                 }
                 else Check(binned == oSerials.Count, oName + ": went to the parts bin (" + binned + " of " + oSerials.Count + " parts)");
             }
+            // Whole ships destroyed (above, after each was recovered) don't count their parts as broken off from anything.
+            yield return new WaitForSeconds(2f);
+            Check(sc.BrokeOff.Count == (finSerial != null ? 1 : 0), "destroying whole ships counted none of their parts as broken off (" + sc.BrokeOff.Count + " broken off in all)");
 
             // Save, go to the VAB, and load each hangar ship.
             GamePersistence.SaveGame("persistent", HighLogic.SaveFolder, SaveMode.OVERWRITE);
