@@ -201,6 +201,13 @@ namespace PhilsReusabilitySuite
             ship.shipName = KSP.Localization.Localizer.Format("#autoLOC_900530");
             EditorAddon.Instance.OpenBuildPanel();
             Check(EditorAddon.Instance.Panel.ShipName == DesignName, "a ship called '" + KSP.Localization.Localizer.Format("#autoLOC_900530") + "' that is all one design is built as " + EditorAddon.Instance.Panel.ShipName);
+            // Two designs (a payload on a launcher): the name comes from the design at the top, the root part.
+            PRSPart lastPart = PRSPart.Of(ship.parts.Last());
+            lastPart.design = "another-design";
+            EditorAddon.Instance.OpenBuildPanel();
+            Check(EditorAddon.Instance.Panel.ShipName == DesignName, "a ship of two designs takes the name of its root part's design (" + EditorAddon.Instance.Panel.ShipName + ")");
+            lastPart.design = d.Id;
+            EditorAddon.Instance.OpenBuildPanel();
             BuildPanel panel = EditorAddon.Instance.Panel;
             Check(!panel.Unfiled, "a filed design shows no 'Not filed' warning");
             Check(panel.ReadyCopy == null, "nothing ready in the hangar to offer yet");
@@ -247,6 +254,23 @@ namespace PhilsReusabilitySuite
             var inVab = EditorLogic.fetch.ship.parts.Select(PRSPart.SerialOf).ToList();
             Check(inVab.Count == ready.Placed.Count && inVab.All(ready.Placed.Contains), "its parts carry the ready ship's serials");
             panel.Showing = false;
+
+            // Leaving with KSP's own exit button and clicking the VAB again: KSP brings the ship back from its
+            // cache, and it must still be the ready hangar ship, not new parts.
+            typeof(EditorLogic).GetMethod("onExitConfirm", BindingFlags.Instance | BindingFlags.NonPublic).Invoke(EditorLogic.fetch, null);
+            yield return WaitFor(() => HighLogic.LoadedScene == GameScenes.SPACECENTER && PRSScenario.Instance != null, 90, "KSP's exit button went to the Space Center");
+            yield return new WaitForSeconds(3f);
+            var vabBuilding = FindObjectOfType<VehicleAssemblyBuilding>();
+            Check(vabBuilding != null, "found the VAB building at the Space Center");
+            if (vabBuilding == null) yield break;
+            typeof(VehicleAssemblyBuilding).GetMethod("OnClicked", BindingFlags.Instance | BindingFlags.NonPublic).Invoke(vabBuilding, null);
+            yield return WaitFor(() => HighLogic.LoadedScene == GameScenes.EDITOR && EditorLogic.fetch != null && EditorAddon.Instance != null && EditorLogic.fetch.ship != null && EditorLogic.fetch.ship.parts.Count > 0, 90, "clicking the VAB brought the ship back");
+            yield return new WaitForSeconds(3f);
+            var back = EditorLogic.fetch.ship.parts.Select(PRSPart.SerialOf).ToList();
+            Check(back.Count == ready.Placed.Count && back.All(ready.Placed.Contains), "back in the VAB, it's still the ready ship's own parts (" + back.Count(ready.Placed.Contains) + " of " + ready.Placed.Count + ")");
+            EditorAddon.Instance.OpenBuildPanel();
+            Check(EditorAddon.Instance.Panel.ReadyShip != null && EditorAddon.Instance.Panel.ReadyShip.Id == readyId, "and the Build panel still knows it as the ready " + ready.DisplayName);
+            EditorAddon.Instance.Panel.Showing = false;
 
             // 5. Fly it, lose the chute, bring the rest home: a flown copy that's short one part.
             yield return ToSpaceCenter();
@@ -331,6 +355,48 @@ namespace PhilsReusabilitySuite
             sc = PRSScenario.Instance;
             Check(!sc.Hangar.Any(h => h.Placed.Any(plainSerials.Contains)) && sc.Hangar.Count == hangarBefore, "the unfiled ship didn't come home to the hangar");
             Check(sc.Bin.Count(b => plainSerials.Contains(b.Serial)) == plainSerials.Count, "all " + plainSerials.Count + " of its parts went to the parts bin");
+
+            // 7b. A ship that comes down while you watch from the Tracking Station is still judged and recovered.
+            yield return ToEditor();
+            EditorLogic.LoadShipFromFile(StockFlea);
+            yield return new WaitForSeconds(2f);
+            EditorAddon.Instance.OpenBuildPanel();
+            panel = EditorAddon.Instance.Panel;
+            sc = PRSScenario.Instance;
+            Check(panel.Confirm(), "building a Flea to drop " + panel.Error);
+            jobId = sc.Jobs.LastOrDefault()?.Id;
+            yield return ToSpaceCenter();
+            sc = PRSScenario.Instance;
+            job = sc.Jobs.FirstOrDefault(j => j.Id == jobId);
+            if (job != null) sc.Outsource(job, out err);
+            HangarShip dropper = sc.Hangar.FirstOrDefault(h => h.Ready);
+            Check(dropper != null, "the Flea to drop is ready");
+            if (dropper == null) yield break;
+            yield return ToPad(dropper);
+            Vessel dv = FlightGlobals.ActiveVessel;
+            uint dropId = dv.persistentId;
+            var dropSerials = dv.parts.Select(PRSPart.SerialOf).Where(s => s != null).ToList();
+            // KSP's own "set orbit" cheat: up at 80 km over Kerbin and falling (periapsis deep underground).
+            CelestialBody kerbin = FlightGlobals.GetHomeBody();
+            double rA = kerbin.Radius + 80000, rP = kerbin.Radius - 300000;
+            FlightGlobals.fetch.SetShipOrbit(kerbin.flightGlobalsIndex, (rA - rP) / (rA + rP), (rA + rP) / 2, 0, 0, Math.PI, 0, 0);
+            yield return new WaitForSeconds(3f);
+            Check(!dv.LandedOrSplashed && dv.altitude > 70000, "the Flea is up at " + Math.Round(dv.altitude / 1000) + " km and falling");
+            GamePersistence.SaveGame("persistent", HighLogic.SaveFolder, SaveMode.OVERWRITE);
+            HighLogic.LoadScene(GameScenes.TRACKSTATION);
+            yield return WaitFor(() => HighLogic.LoadedScene == GameScenes.TRACKSTATION && StageReturns.Instance != null && PRSScenario.Instance != null, 90, "the Tracking Station opened");
+            yield return new WaitForSeconds(2f);
+            int outcomesBefore = StageReturns.Instance.Outcomes.Count;
+            TimeWarp.SetRate(3, true, false);
+            yield return WaitFor(() => !FlightGlobals.Vessels.Any(x => x != null && x.persistentId == dropId), 120, "KSP deleted the falling Flea in the Tracking Station");
+            TimeWarp.SetRate(0, true, false);
+            yield return new WaitForSeconds(2f);
+            string outcome = StageReturns.Instance != null ? StageReturns.Instance.Outcomes.Skip(outcomesBefore).FirstOrDefault() : null;
+            Check(outcome != null, "the suite judged its landing in the Tracking Station: " + (outcome ?? "nothing"));
+            sc = PRSScenario.Instance;
+            bool lostIt = outcome != null && outcome.Contains(" was lost");
+            Check(outcome != null && (lostIt || sc.Bin.Count(b => dropSerials.Contains(b.Serial)) == dropSerials.Count), "it came home to the parts bin (it was never filed), or was reported lost");
+            Check(outcome == null || lostIt || outcome.Contains("filed in Phil's Builds"), "the message says why it went to the bin");
 
             // 8. The VAB landing check on the stock Kerbal X: launch clamps stay on the pad, and the same ship
             // measures the same every time it's checked.

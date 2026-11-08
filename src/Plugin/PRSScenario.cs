@@ -207,9 +207,13 @@ namespace PhilsReusabilitySuite
             catch (Exception ex) { Log.Error("Recovering " + pv.vesselName + " failed: " + ex); }
         }
 
+        /// <summary>Why the last recovered piece went to the parts bin, or null if it went to the hangar (for messages).</summary>
+        public string LastBinReason;
+
         void Recover(ProtoVessel pv)
         {
             RecoveriesHandled++;
+            LastBinReason = null;
             var serials = new List<string>();
             var info = new Dictionary<string, ProtoPartSnapshot>();
             foreach (ProtoPartSnapshot ps in pv.protoPartSnapshots)
@@ -234,6 +238,7 @@ namespace PhilsReusabilitySuite
             LaunchRecord rec = FindRecord(serials);
             if (rec == null)
             {
+                LastBinReason = "it has no launch record";
                 foreach (string s in serials) ToBin(s, info);
                 Log.Info("Recovered " + pv.vesselName + ": no launch record, " + serials.Count + " parts to the parts bin");
                 return;
@@ -243,6 +248,7 @@ namespace PhilsReusabilitySuite
             List<string> problems = r.Craft != null ? Pieces.Validate(r.Craft) : new List<string> { "nothing placed" };
             if (r.Craft == null || r.Placed.Count == 0 || problems.Count > 0)
             {
+                LastBinReason = "it couldn't be rebuilt as a ship";
                 if (problems.Count > 0) Log.Error("Rebuilt " + pv.vesselName + " isn't valid (" + string.Join("; ", problems.Take(3).ToArray()) + "); its parts go to the parts bin");
                 foreach (string s in serials) ToBin(s, info);
                 return;
@@ -252,6 +258,7 @@ namespace PhilsReusabilitySuite
             Craft recCraft = Core.Craft.Read(rec.Craft);
             if (!RecoveryValue.CanFly(r.Placed.Select(s => info[s].partName)))
             {
+                LastBinReason = "it has no engine or probe core";
                 foreach (string s in serials) ToBin(s, info, recCraft);
                 Log.Info("Recovered " + pv.vesselName + ": no engine or probe core, so its " + serials.Count + " parts went to the parts bin");
                 Changed();
@@ -260,6 +267,7 @@ namespace PhilsReusabilitySuite
             // Phil's rule: a piece of a ship that was never filed as a design in Phil's Builds is just parts.
             if (S.RequireDesign && !r.Placed.Any(s => !string.IsNullOrEmpty(info[s].modules.FirstOrDefault(x => x.moduleName == Core.Craft.ModuleName)?.moduleValues?.GetValue("design"))))
             {
+                LastBinReason = "it wasn't built from a design filed in Phil's Builds";
                 foreach (string s in serials) ToBin(s, info, recCraft);
                 Log.Info("Recovered " + pv.vesselName + ": not built from a design filed in Phil's Builds, so its " + serials.Count + " parts went to the parts bin");
                 Changed();

@@ -12,7 +12,8 @@ namespace PhilsReusabilitySuite
     /// parts broken off by a hard landing. Drag is measured from the stage's own parts while it is still close
     /// by, which keeps resized (TweakScale) parts right. Steps aside while StageRecovery is installed.
     /// </summary>
-    [KSPAddon(KSPAddon.Startup.Flight, false)]
+    // Every scene where time passes: KSP deletes a falling ship in the Space Center and the Tracking Station too.
+    [KSPAddon(KSPAddon.Startup.AllGameScenes, false)]
     public class StageReturns : MonoBehaviour
     {
         public static StageReturns Instance { get; private set; }
@@ -41,6 +42,7 @@ namespace PhilsReusabilitySuite
             GameEvents.onVesselWillDestroy.Add(OnVesselWillDestroy);
             GameEvents.onVesselGoOnRails.Add(OnGoOnRails);
             GameEvents.onPartDeCoupleNewVesselComplete.Add(OnNewVessel);
+            GameEvents.onGameSceneLoadRequested.Add(OnLeavingScene);
         }
 
         void OnDestroy()
@@ -48,7 +50,25 @@ namespace PhilsReusabilitySuite
             GameEvents.onVesselWillDestroy.Remove(OnVesselWillDestroy);
             GameEvents.onVesselGoOnRails.Remove(OnGoOnRails);
             GameEvents.onPartDeCoupleNewVesselComplete.Remove(OnNewVessel);
+            GameEvents.onGameSceneLoadRequested.Remove(OnLeavingScene);
             if (Instance == this) Instance = null;
+        }
+
+        /// <summary>
+        /// Leaving flight: every ship still in the air is measured, including the one being flown, since it may
+        /// come down while you're at the Space Center or the Tracking Station.
+        /// </summary>
+        void OnLeavingScene(GameScenes next)
+        {
+            if (!HighLogic.LoadedSceneIsFlight) return;
+            foreach (Vessel v in FlightGlobals.Vessels.Where(x => x != null && x.loaded && !x.LandedOrSplashed).ToList()) Remember(v);
+        }
+
+        /// <summary>The ship's speed over the ground, worked out from its orbit as KSP does (it works on rails too).</summary>
+        public static double SurfaceSpeed(Vessel v)
+        {
+            try { return (v.orbit.GetVel() - v.mainBody.getRFrmVelOrbit(v.orbit)).magnitude; }
+            catch (Exception) { return v.srfSpeed; }
         }
 
         // ---- Measuring while close by ----
@@ -172,11 +192,15 @@ namespace PhilsReusabilitySuite
 
         bool ShouldHandle(Vessel v)
         {
-            if (v == null || !HighLogic.LoadedSceneIsFlight || v == FlightGlobals.ActiveVessel || v.isEVA || handled.Contains(v.persistentId)) return false;
+            GameScenes scene = HighLogic.LoadedScene;
+            if (scene != GameScenes.FLIGHT && scene != GameScenes.SPACECENTER && scene != GameScenes.TRACKSTATION) return false;
+            if (v == null || v.isEVA || handled.Contains(v.persistentId)) return false;
+            if (scene == GameScenes.FLIGHT && v == FlightGlobals.ActiveVessel) return false;
             if (PRSScenario.Instance == null || Krash.SimActive) return false;
             if (v.loaded && !v.packed) return false;                 // destroyed in physics range: a real crash
             if (v.LandedOrSplashed) return false;                    // landed ships are recovered with the Recover button
-            if (v.mainBody != FlightGlobals.GetHomeBody() || v.mainBody.GetPressure(v.altitude) <= 0) return false;
+            double altitude = !v.loaded && v.orbit != null ? v.orbit.altitude : v.altitude;   // on rails, from its orbit
+            if (v.mainBody != FlightGlobals.GetHomeBody() || v.mainBody.GetPressure(altitude) <= 0) return false;
             if (v.situation != Vessel.Situations.FLYING && v.situation != Vessel.Situations.SUB_ORBITAL && v.situation != Vessel.Situations.ORBITING) return false;
             ProtoVessel pv = v.protoVessel;
             return pv != null && pv.protoPartSnapshots.Any(ps => !string.IsNullOrEmpty(SerialOf(ps)));
@@ -205,10 +229,10 @@ namespace PhilsReusabilitySuite
                 how = "with a landing burn";
             }
 
-            double ablatorLeft = Fraction(pv, "Ablator");
-            if (rng.NextDouble() < Landing.BurnUpChance(v.srfSpeed, ablatorLeft))
+            double ablatorLeft = Fraction(pv, "Ablator"), speed = SurfaceSpeed(v);
+            if (rng.NextDouble() < Landing.BurnUpChance(speed, ablatorLeft))
             {
-                Lost(v, "burned up coming in at " + Math.Round(v.srfSpeed) + " m/s");
+                Lost(v, "burned up coming in at " + Math.Round(speed) + " m/s");
                 return;
             }
             if (landing > Landing.LostSpeed)
@@ -258,7 +282,7 @@ namespace PhilsReusabilitySuite
                        + (broke.Count > 0 ? " Lost " + broke.Count + (broke.Count == 1 ? " outer part." : " outer parts.") : "")
                        + money + " In the hangar, now " + h.Flights + (h.Flights == 1 ? " flight." : " flights.");
             else
-                text = Name(v) + " came down at " + landing.ToString("0.0") + " m/s " + how + ", " + where + ": no engine or probe core, so its parts went to the parts bin." + money;
+                text = Name(v) + " came down at " + landing.ToString("0.0") + " m/s " + how + ", " + where + ": " + (sc.LastBinReason ?? "it has no engine or probe core") + ", so its parts went to the parts bin." + money;
             Outcomes.Add(text);
             Log.Info("Stage recovery: " + text + (prof.FromLiveParts ? "" : " (drag from default part sizes: it was never measured close by)"));
             Suite.Message(text, 8f);

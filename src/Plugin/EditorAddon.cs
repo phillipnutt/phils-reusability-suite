@@ -29,6 +29,7 @@ namespace PhilsReusabilitySuite
             if (EditorDriver.StartupBehaviour == EditorDriver.StartupBehaviours.LOAD_FROM_CACHE) PRSPart.EditorTrusted.UnionWith(PRSPart.EditorCarry);
             GameEvents.onEditorShipModified.Add(OnShipModified);
             GameEvents.onEditorLoad.Add(OnEditorLoad);
+            GameEvents.onGameSceneLoadRequested.Add(OnLeavingScene);
             window = gameObject.AddComponent<SuiteWindow>();
             StartCoroutine(HookLaunchButton());
         }
@@ -37,14 +38,7 @@ namespace PhilsReusabilitySuite
         {
             GameEvents.onEditorShipModified.Remove(OnShipModified);
             GameEvents.onEditorLoad.Remove(OnEditorLoad);
-            ShipConstruct ship = EditorLogic.fetch != null ? EditorLogic.fetch.ship : null;
-            PRSPart.EditorCarry.Clear();
-            if (ship != null)
-                foreach (Part p in ship.parts)
-                {
-                    string s = PRSPart.SerialOf(p);
-                    if (s != null && PRSPart.EditorTrusted.Contains(s)) PRSPart.EditorCarry.Add(s);
-                }
+            GameEvents.onGameSceneLoadRequested.Remove(OnLeavingScene);
             if (stockLaunch != null && EditorLogic.fetch != null && EditorLogic.fetch.launchBtn != null) EditorLogic.fetch.launchBtn.onClick = stockLaunch;
             if (Instance == this) Instance = null;
         }
@@ -75,6 +69,23 @@ namespace PhilsReusabilitySuite
 
         void OnEditorLoad(ShipConstruct ship, CraftBrowserDialog.LoadType type) { Check(ship); }
         void OnShipModified(ShipConstruct ship) { Check(ship); }
+        void OnLeavingScene(GameScenes next) { Remember(EditorLogic.fetch != null ? EditorLogic.fetch.ship : null); }
+
+        /// <summary>
+        /// Notes which of the editor ship's parts are hangar hardware. KSP brings the ship back from its cache
+        /// when you return to the editor, and those parts must stay hangar hardware. This is kept up to date as
+        /// the ship changes, because by the time the editor closes its ship is already gone.
+        /// </summary>
+        internal static void Remember(ShipConstruct ship)
+        {
+            if (ship == null) return;
+            PRSPart.EditorCarry.Clear();
+            foreach (Part p in ship.parts)
+            {
+                string s = PRSPart.SerialOf(p);
+                if (s != null && PRSPart.EditorTrusted.Contains(s)) PRSPart.EditorCarry.Add(s);
+            }
+        }
 
         /// <summary>
         /// Designs never carry specific hardware: any serial the editor didn't give out or load from the hangar
@@ -98,6 +109,7 @@ namespace PhilsReusabilitySuite
                 }
             }
             if (renewed > 0) Log.Info("Gave " + renewed + " parts new serial numbers (new parts, not hangar hardware)");
+            Remember(ship);
         }
 
         /// <summary>Loads a craft into the editor, keeping its parts' serials (a hangar ship or a queued build).</summary>
@@ -221,11 +233,13 @@ namespace PhilsReusabilitySuite
             Craft = KspNodes.FromKsp(ship.SaveShip());
             ShipName = KSP.Localization.Localizer.Format(ship.shipName);
             // A launcher picked up into an empty VAB keeps KSP's "Untitled Space Craft". A ship that is all one
-            // design is built under that design's name instead, so it comes home as "Kopje 005 #1".
-            string onlyDesign = BuildsLink.SingleDesign(ship.parts.Select(p => PRSPart.Of(p)?.design));
-            if (ShipName == KSP.Localization.Localizer.Format("#autoLOC_900530") && onlyDesign != null)
+            // design is built under that design's name instead, so it comes home as "Kopje 005 #1"; a payload
+            // stacked on a launcher takes the name of the design at its top (its root part), "Seeker I".
+            string nameFrom = BuildsLink.SingleDesign(ship.parts.Select(p => PRSPart.Of(p)?.design))
+                              ?? PRSPart.Of(ship.parts.FirstOrDefault(p => p.parent == null))?.design;
+            if (ShipName == KSP.Localization.Localizer.Format("#autoLOC_900530") && !string.IsNullOrEmpty(nameFrom))
             {
-                string designName = BuildsLink.NameOf(onlyDesign);
+                string designName = BuildsLink.NameOf(nameFrom);
                 if (!string.IsNullOrEmpty(designName)) { ShipName = designName; Craft.Set("ship", designName); }
             }
             Facility = ship.shipFacility == EditorFacility.SPH ? "SPH" : "VAB";
@@ -304,6 +318,7 @@ namespace PhilsReusabilitySuite
                 m.hull = hm.Get("hull") ?? "";
                 PRSPart.EditorTrusted.Add(m.serial);
             }
+            EditorAddon.Remember(EditorLogic.fetch.ship);
             Log.Info("Using the ready " + ReadyCopy.DisplayName + " from the hangar in this build");
             Refresh();
         }
