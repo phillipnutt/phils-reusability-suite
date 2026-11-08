@@ -34,6 +34,13 @@ Fixed:
   numbers unless they're hangar hardware, instead of sharing serials with the ship still flying.
 - A build can't be started from an old price: if a bin part or hangar ship it uses was sold, taken apart or put
   in another build since it was priced, the build is refused (nothing charged) and priced again.
+- After building with parts from the bin, the ship left in the VAB no longer matched its build: changing it and
+  pressing Build started a second build at full price. It now takes the bin parts' serials and stays the build.
+- One bin part could stand in for two parts of a build (two parts with the same serial). A bin part already in the
+  ship is no longer matched again.
+- "Update build" on a build that had just been finished or cancelled reserved parts for a build that no longer
+  existed. It's refused and the panel prices the ship again.
+- A multi-mode engine (a RAPIER) counted its thrust once per mode when judging a landing burn.
 - "Back to the queue" in the library list threw an error; the "Take apart" and "Sell for scrap" links showed
   "<u>" tags; landing-check lines were cut off when they wrapped.
 - KSP's pre-launch warnings during a build say "Build anyway" instead of "Launch anyway".

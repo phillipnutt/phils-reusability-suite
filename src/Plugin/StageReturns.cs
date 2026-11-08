@@ -409,11 +409,9 @@ namespace PhilsReusabilitySuite
         static double PropellantToKeep(List<Part> piece, double emptyMass, double cdA, double rho, out bool tooWeak)
         {
             double thrust = 0, flowIsp = 0;
-            foreach (ModuleEngines e in piece.SelectMany(p => p.FindModulesImplementing<ModuleEngines>()))
+            foreach (ModuleEngines e in piece.Select(LandingEngine).Where(x => x != null))
             {
-                if (e.propellants.Any(pr => pr.name == "SolidFuel")) continue;
                 double isp = e.atmosphereCurve.Evaluate(1);
-                if (isp <= 0) continue;
                 thrust += e.maxThrust;
                 flowIsp += e.maxThrust / isp;
             }
@@ -520,6 +518,15 @@ namespace PhilsReusabilitySuite
         /// SAS), have liquid engines with thrust-to-weight of at least 1, and carry the propellant to slow from
         /// its falling speed with a 1.5× margin. The propellant is used up.
         /// </summary>
+        /// <summary>
+        /// The engine a part would land on: its strongest liquid (not solid) mode with thrust at sea level. A
+        /// multi-mode engine (a RAPIER) has one module per mode and is counted once, not once per mode.
+        /// </summary>
+        static ModuleEngines LandingEngine(Part p) =>
+            p.FindModulesImplementing<ModuleEngines>()
+                .Where(e => !e.propellants.Any(pr => pr.name == "SolidFuel") && e.atmosphereCurve.Evaluate(1) > 0)
+                .OrderByDescending(e => e.maxThrust).FirstOrDefault();
+
         static bool TryPoweredLanding(ProtoVessel pv, double mass, double speed) => PoweredLanding(pv, mass, speed, true);
 
         /// <summary>Whether a powered landing would work; with burn, the propellant it takes is used up.</summary>
@@ -535,11 +542,10 @@ namespace PhilsReusabilitySuite
             {
                 Part prefab = ps.partInfo?.partPrefab;
                 if (prefab == null) continue;
-                foreach (ModuleEngines e in prefab.FindModulesImplementing<ModuleEngines>())
+                ModuleEngines e = LandingEngine(prefab);
+                if (e != null)
                 {
-                    if (e.propellants.Any(pr => pr.name == "SolidFuel")) continue;
                     double isp = e.atmosphereCurve.Evaluate(1);
-                    if (isp <= 0) continue;
                     thrust += e.maxThrust;
                     flowIsp += e.maxThrust / isp;
                     foreach (Propellant pr in e.propellants) if (!pr.ignoreForIsp) propellants.Add(pr.name);

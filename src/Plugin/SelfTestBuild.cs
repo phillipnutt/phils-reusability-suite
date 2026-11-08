@@ -299,6 +299,25 @@ namespace PhilsReusabilitySuite
             Check(sc.Bin.All(b => b.ReservedBy == binJob?.Id), "the bin parts are reserved by the build");
             string binJobId = binJob?.Id;
 
+            // 9b. Change the queued build in the VAB (half its solid fuel): it's still that build, the difference is
+            // refunded, and its bin parts stay its own.
+            yield return new WaitForSeconds(1f);
+            Part srb = EditorLogic.fetch.ship.parts.FirstOrDefault(p => p.Resources.Contains("SolidFuel"));
+            Check(srb != null, "the Flea in the VAB has its solid booster");
+            if (srb != null && binJob != null)
+            {
+                srb.Resources["SolidFuel"].amount = srb.Resources["SolidFuel"].maxAmount / 2;
+                GameEvents.onEditorShipModified.Fire(EditorLogic.fetch.ship);
+                yield return new WaitForSeconds(0.5f);
+                EditorAddon.Instance.OpenBuildPanel();
+                panel = EditorAddon.Instance.Panel;
+                Check(panel.Editing == binJob, "the changed ship is still the queued build");
+                double paidBefore = binJob.Paid, fEdit = Funds, newTotal = panel.Quote.Total;
+                Check(panel.Confirm(), "updating the queued build " + panel.Error);
+                Check(newTotal < paidBefore && Near(binJob.Paid, newTotal, 1) && Near(Funds - fEdit, paidBefore - newTotal, 1), "the build now costs " + Pricing.Funds(newTotal) + " and the difference came back (" + Pricing.Funds(Funds - fEdit) + ")");
+                Check(sc.Jobs.Contains(binJob) && sc.Bin.All(b => b.ReservedBy == binJob.Id), "it's the same queued build, and its bin parts are still its own");
+            }
+
             // 10. Finish it, launch it, and Sell it from the Recover prompt: the scrap money, nothing to the hangar.
             yield return ToSpaceCenter();
             sc = PRSScenario.Instance;

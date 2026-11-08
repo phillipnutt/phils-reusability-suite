@@ -56,16 +56,17 @@ namespace PhilsReusabilitySuite
 
         public Quote QuoteFor(Node craft, string name, BuildJob editing)
         {
-            return Quotes.Make(craft, name, s => OwnerOf(s, editing), KspCosts.Instance, CameBackOf, S, BinMatcher(editing));
+            return Quotes.Make(craft, name, s => OwnerOf(s, editing), KspCosts.Instance, CameBackOf, S, BinMatcher(editing, craft));
         }
 
         /// <summary>
         /// Matches a new part to a loose part in the bin, as ScrapYard did: the same part at the same price (so
         /// the same variant and options), not taken by another build, each bin part used once.
         /// </summary>
-        Func<Node, Owner> BinMatcher(BuildJob editing)
+        Func<Node, Owner> BinMatcher(BuildJob editing, Node craft)
         {
-            var used = new HashSet<string>();
+            // A bin part already in the ship (its own serial is in the craft) can't also stand in for a new part.
+            var used = new HashSet<string>(craft.Children("PART").Select(Core.Craft.SerialOf).Where(s => !string.IsNullOrEmpty(s)));
             var dryCache = new Dictionary<string, double>();
             return part =>
             {
@@ -174,6 +175,8 @@ namespace PhilsReusabilitySuite
         public string StaleQuote(Quote q, BuildJob editing, string fromShipId)
         {
             string mine = editing?.Id;
+            if (editing != null && !Jobs.Contains(editing)) return "that build has been finished or cancelled";
+            if (q.BinSerials.Count != q.BinSerials.Distinct().Count()) return "a part from the parts bin was counted twice";
             foreach (string s in q.BinSerials)
             {
                 BinPart b = Bin.FirstOrDefault(x => x.Serial == s);

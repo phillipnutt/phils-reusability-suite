@@ -42,8 +42,8 @@ namespace PhilsReusabilitySuite
         /// </summary>
         IEnumerator CheckShipAlreadyThere()
         {
-            float t0 = Time.realtimeSinceStartup;
-            while (Time.realtimeSinceStartup - t0 < 5f)
+            // Counted in frames, and the ship looked at before the limit, so one slow frame can't skip the check.
+            for (int frame = 0; frame < 300; frame++)
             {
                 ShipConstruct ship = EditorLogic.fetch != null ? EditorLogic.fetch.ship : null;
                 if (ship != null && ship.parts.Count > 0)
@@ -130,7 +130,7 @@ namespace PhilsReusabilitySuite
             pendingCarry = null;
         }
 
-        static void Check(ShipConstruct ship)
+        internal static void Check(ShipConstruct ship)
         {
             if (ship == null) return;
             ApplyCarry();
@@ -270,6 +270,7 @@ namespace PhilsReusabilitySuite
             Error = null;
             PRSScenario sc = PRSScenario.Instance;
             ShipConstruct ship = EditorLogic.fetch.ship;
+            EditorAddon.Check(ship);   // serials are right before pricing, whatever KSP restored
             Craft = KspNodes.FromKsp(ship.SaveShip());
             ShipName = KSP.Localization.Localizer.Format(ship.shipName);
             // A launcher picked up into an empty VAB keeps KSP's "Untitled Space Craft". A ship that is all one
@@ -418,8 +419,28 @@ namespace PhilsReusabilitySuite
                 if (job == null) { Error = error; return false; }
                 if (Chosen != Pace.Outsource) Suite.Message(ShipName + " is being built: " + Pricing.Duration(job.SecondsLeft(S), S));
             }
+            AdoptBinSerials(Quote);
             Showing = false;
             return true;
+        }
+
+        /// <summary>
+        /// The build is made of the bin's own parts (their serials), so the ship left in the editor takes those
+        /// serials too. Otherwise it no longer matched its own build: changing it and pressing Build started a
+        /// second build at full price instead of changing the first.
+        /// </summary>
+        void AdoptBinSerials(Quote q)
+        {
+            if (q == null || q.BinSwaps.Count == 0 || EditorLogic.fetch == null || EditorLogic.fetch.ship == null) return;
+            foreach (Part p in EditorLogic.fetch.ship.parts)
+            {
+                PRSPart m = PRSPart.Of(p);
+                if (m == null || string.IsNullOrEmpty(m.serial) || !q.BinSwaps.TryGetValue(m.serial, out Owner b)) continue;
+                m.serial = b.BinSerial;
+                m.flights = System.Math.Max(0, b.Flights);
+                PRSPart.EditorTrusted.Add(m.serial);
+            }
+            EditorAddon.Remember(EditorLogic.fetch.ship);
         }
 
         double Extra(Pace p)
