@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="15.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <Import Project="$(MSBuildExtensionsPath)\$(MSBuildToolsVersion)\Microsoft.Common.props" Condition="Exists('$(MSBuildExtensionsPath)\$(MSBuildToolsVersion)\Microsoft.Common.props')" />
+  <PropertyGroup>
+    <Configuration Condition=" '$(Configuration)' == '' ">Release</Configuration>
+    <Platform Condition=" '$(Platform)' == '' ">AnyCPU</Platform>
+    <OutputType>Library</OutputType>
+    <RootNamespace>PhilsReusabilitySuite</RootNamespace>
+    <AssemblyName>PhilsReusabilitySuite</AssemblyName>
+    <TargetFrameworkVersion>v4.7.2</TargetFrameworkVersion>
+    <LangVersion>latest</LangVersion>
+    <Deterministic>true</Deterministic>
+    <!-- Where KSP is installed. Override on the command line: msbuild /p:KspDir="D:\KSP" -->
+    <KspDir Condition=" '$(KspDir)' == '' ">C:\Program Files (x86)\Steam\steamapps\common\Kerbal Space Program</KspDir>
+    <KspManaged>$(KspDir)\KSP_x64_Data\Managed</KspManaged>
+    <!-- Set to true to copy the mod into $(KspDir)\GameData after building. -->
+    <InstallToGame Condition=" '$(InstallToGame)' == '' ">false</InstallToGame>
+  </PropertyGroup>
+  <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Release|AnyCPU' ">
+    <DebugType>none</DebugType>
+    <Optimize>true</Optimize>
+    <OutputPath>bin\Release\</OutputPath>
+    <WarningLevel>4</WarningLevel>
+  </PropertyGroup>
+  <ItemGroup>
+    <Reference Include="System" />
+    <Reference Include="System.Core" />
+    <Reference Include="Assembly-CSharp"><HintPath>$(KspManaged)\Assembly-CSharp.dll</HintPath><Private>False</Private></Reference>
+    <Reference Include="Assembly-CSharp-firstpass"><HintPath>$(KspManaged)\Assembly-CSharp-firstpass.dll</HintPath><Private>False</Private></Reference>
+    <Reference Include="UnityEngine"><HintPath>$(KspManaged)\UnityEngine.dll</HintPath><Private>False</Private></Reference>
+    <Reference Include="UnityEngine.CoreModule"><HintPath>$(KspManaged)\UnityEngine.CoreModule.dll</HintPath><Private>False</Private></Reference>
+    <Reference Include="UnityEngine.AnimationModule"><HintPath>$(KspManaged)\UnityEngine.AnimationModule.dll</HintPath><Private>False</Private></Reference>
+    <Reference Include="UnityEngine.IMGUIModule"><HintPath>$(KspManaged)\UnityEngine.IMGUIModule.dll</HintPath><Private>False</Private></Reference>
+    <Reference Include="UnityEngine.PhysicsModule"><HintPath>$(KspManaged)\UnityEngine.PhysicsModule.dll</HintPath><Private>False</Private></Reference>
+  </ItemGroup>
+  <ItemGroup>
+    <Compile Include="src\**\*.cs" />
+  </ItemGroup>
+  <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
+  <!-- Put the DLL into the repo's GameData folder, then (only when asked) copy the mod into the game. -->
+  <Target Name="StageAndInstall" AfterTargets="Build">
+    <Copy SourceFiles="$(OutputPath)PhilsReusabilitySuite.dll" DestinationFolder="GameData\PhilsReusabilitySuite\Plugins" />
+    <ItemGroup>
+      <ModFiles Include="GameData\PhilsReusabilitySuite\**\*.*" />
+    </ItemGroup>
+    <Copy Condition=" '$(InstallToGame)' == 'true' " SourceFiles="@(ModFiles)" DestinationFiles="@(ModFiles->'$(KspDir)\GameData\PhilsReusabilitySuite\%(RecursiveDir)%(Filename)%(Extension)')" />
+  </Target>
+</Project>

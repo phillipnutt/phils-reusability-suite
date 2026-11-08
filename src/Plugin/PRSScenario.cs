@@ -1,0 +1,347 @@
+using System;
+using System.Collections;
+using System.Collections.Generic;
+using System.Linq;
+using PhilsReusabilitySuite.Core;
+using UnityEngine;
+
+namespace PhilsReusabilitySuite
+{
+    /// <summary>
+    /// The suite's save data and its flight hooks: records each launch as it leaves the pad, notices parts
+    /// breaking off, and turns recovered ships into hangar ships by crossing off what didn't come home.
+    /// Everything lives in the save, so KRASH's revert undoes a simulation's effects.
+    /// </summary>
+    [KSPScenario(ScenarioCreationOptions.AddToAllGames, GameScenes.SPACECENTER, GameScenes.EDITOR, GameScenes.FLIGHT, GameScenes.TRACKSTATION)]
+    public class PRSScenario : ScenarioModule
+    {
+        public static PRSScenario Instance { get; private set; }
+
+        public readonly List<LaunchRecord> Launches = new List<LaunchRecord>();
+        public readonly List<HangarShip> Hangar = new List<HangarShip>();
+        public readonly List<BinPart> Bin = new List<BinPart>();
+        /// <summary>Serials of parts that broke off (not decoupled) since their last launch.</summary>
+        public readonly HashSet<string> BrokeOff = new HashSet<string>();
+        /// <summary>Last hangar number given out per ship name, so numbers are never reused.</summary>
+        readonly Dictionary<string, int> lastNumber = new Dictionary<string, int>();
+
+        readonly Dictionary<Part, int> separatedFrame = new Dictionary<Part, int>();
+        readonly HashSet<uint> recoveredThisScene = new HashSet<uint>();
+        /// <summary>How many recoveries this scene handled (the self-test reads it).</summary>
+        public int RecoveriesHandled;
+
+        public override void OnAwake()
+        {
+            base.OnAwake();
+            Instance = this;
+            GameEvents.OnVesselRollout.Add(OnRollout);
+            GameEvents.onFlightReady.Add(OnFlightReady);
+            GameEvents.onVesselRecovered.Add(OnRecovered);
+            GameEvents.onPartJointBreak.Add(OnPartJointBroke);
+            GameEvents.onPartDeCouple.Add(OnSeparated);
+            GameEvents.onPartUndock.Add(OnSeparated);
+            GameEvents.onPartDie.Add(OnPartDie);
+        }
+
+        void OnDestroy()
+        {
+            GameEvents.OnVesselRollout.Remove(OnRollout);
+            GameEvents.onFlightReady.Remove(OnFlightReady);
+            GameEvents.onVesselRecovered.Remove(OnRecovered);
+            GameEvents.onPartJointBreak.Remove(OnPartJointBroke);
+            GameEvents.onPartDeCouple.Remove(OnSeparated);
+            GameEvents.onPartUndock.Remove(OnSeparated);
+            GameEvents.onPartDie.Remove(OnPartDie);
+            if (Instance == this) Instance = null;
+        }
+
+        // ---- Launches ----
+
+        void OnRollout(ShipConstruct ship)
+        {
+            if (ship != null) RecordLaunch(ship.parts, KSP.Localization.Localizer.Format(ship.shipName), "rollout");
+        }
+
+        /// <summary>Backstop in case the rollout event came before this module woke up.</summary>
+        void OnFlightReady()
+        {
+            Vessel v = FlightGlobals.ActiveVessel;
+            if (v == null || v.situation != Vessel.Situations.PRELAUNCH || v.missionTime > 0) return;
+            if (IsRecordedNow(v.parts)) return;
+            RecordLaunch(v.parts, v.vesselName, "flight ready");
+        }
+
+        bool IsRecordedNow(List<Part> parts)
+        {
+            double now = Planetarium.GetUniversalTime();
+            foreach (Part p in parts)
+            {
+                string s = PRSPart.SerialOf(p);
+                if (s != null && Launches.Any(r => Math.Abs(r.UT - now) < 10 && r.Serials.Contains(s))) return true;
+            }
+            return false;
+        }
+
+        void RecordLaunch(List<Part> parts, string name, string how)
+        {
+            if (Krash.SimActive) { Log.Info("KRASH simulation: launch of " + name + " not recorded"); return; }
+            if (parts == null || parts.Count == 0) return;
+            if (IsRecordedNow(parts)) return;
+            var mods = parts.Select(PRSPart.Of).ToList();
+            foreach (PRSPart m in mods)
+            {
+                if (m == null) continue;
+                if (string.IsNullOrEmpty(m.serial)) m.serial = PRSPart.NewSerial();
+                m.flights++;
+                BrokeOff.Remove(m.serial);   // a fresh flight
+            }
+
+            ConfigNode cfg = ShipConstruction.ShipConfig;
+            if (cfg == null) { Log.Warn("No launched-ship config for " + name + "; launch not recorded"); return; }
+            Node craft = KspNodes.FromKsp(cfg);
+            List<Node> partNodes = craft.Children("PART").ToList();
+            if (partNodes.Count != parts.Count) { Log.Warn("Launched-ship config of " + name + " has " + partNodes.Count + " parts, the ship " + parts.Count + "; launch not recorded"); return; }
+            for (int i = 0; i < parts.Count; i++)
+            {
+                string want = parts[i].partInfo != null ? parts[i].partInfo.name : null;
+                string have = partNodes[i].Get("part") ?? "";
+                if (want != null && !have.StartsWith(want + "_", StringComparison.Ordinal))
+                {
+                    Log.Warn("Launched-ship config of " + name + " doesn't match its parts (" + have + " vs " + want + "); launch not recorded");
+                    return;
+                }
+                if (mods[i] != null) Stamp(partNodes[i], mods[i]);
+            }
+
+            var rec = new LaunchRecord { Id = Guid.NewGuid().ToString("N"), UT = Planetarium.GetUniversalTime(), Ship = name, Craft = craft };
+            rec.IndexSerials();
+            Launches.Add(rec);
+            Log.Info("Launch recorded (" + how + "): " + name + ", " + rec.Serials.Count + " parts");
+        }
+
+        static void Stamp(Node partNode, PRSPart m)
+        {
+            Node mod = partNode.Children("MODULE").FirstOrDefault(x => x.Get("name") == Core.Craft.ModuleName);
+            if (mod == null)
+            {
+                mod = partNode.AddNode("MODULE");
+                mod.Add("name", Core.Craft.ModuleName);
+                mod.Add("isEnabled", "True");
+            }
+            mod.Set("serial", m.serial);
+            mod.Set("flights", m.flights.ToString());
+        }
+
+        /// <summary>The launch these serials flew on: most serials in common, then the latest.</summary>
+        public LaunchRecord FindRecord(ICollection<string> serials)
+        {
+            LaunchRecord best = null;
+            int bestCount = 0;
+            foreach (LaunchRecord r in Launches)
+            {
+                int n = serials.Count(r.Serials.Contains);
+                if (n > bestCount || (n == bestCount && n > 0 && best != null && r.UT > best.UT)) { best = r; bestCount = n; }
+            }
+            return best;
+        }
+
+        // ---- Parts breaking off ----
+
+        // How KSP 1.12 reports separations (read from its code):
+        //  - a decoupler or undocking announces itself first (onPartDeCouple / onPartUndock), then removes the
+        //    part's joint, which KSP also reports as a joint break;
+        //  - a joint that physics snaps is reported as a joint break first, and KSP decouples the part after.
+        // So a joint break counts only if nothing announced a separation of that part in the same frame.
+        // (Not named OnJointBreak: Unity would take that for its own one-argument message.)
+        void OnPartJointBroke(PartJoint joint, float force)
+        {
+            Part child = joint != null ? joint.Child : null;
+            string s = PRSPart.SerialOf(child);
+            if (s == null || BrokeOff.Contains(s)) return;
+            if (separatedFrame.TryGetValue(child, out int frame) && frame == Time.frameCount) return;
+            // KSP also reports joint breaks that aren't, for example landing legs when a ship unpacks on the
+            // pad. So only count it if the part really came away.
+            StartCoroutine(ConfirmBreak(child, s, child.vessel));
+        }
+
+        void OnSeparated(Part p)
+        {
+            if (p == null) return;
+            if (separatedFrame.Count > 500)
+            {
+                foreach (Part old in separatedFrame.Keys.Where(k => k == null || separatedFrame[k] != Time.frameCount).ToList())
+                    separatedFrame.Remove(old);
+            }
+            separatedFrame[p] = Time.frameCount;
+        }
+
+        IEnumerator ConfirmBreak(Part part, string serial, Vessel was)
+        {
+            float until = Time.realtimeSinceStartup + 0.5f;
+            while (Time.realtimeSinceStartup < until) yield return null;
+            bool gone = part == null || part.vessel == null || part.vessel != was;
+            if (!gone) { Log.Info("Ignored a joint break on " + part.partInfo.title + ": it's still attached"); yield break; }
+            if (BrokeOff.Add(serial)) Log.Info((part != null ? part.partInfo.title : "A part") + " broke off " + (was != null ? was.vesselName : "a ship"));
+        }
+
+        void OnPartDie(Part p)
+        {
+            if (!HighLogic.LoadedSceneIsFlight || p == null) return;
+            string s = PRSPart.SerialOf(p);
+            // Only a part destroyed while still attached to others counts as lost from its ship.
+            if (s != null && (p.parent != null || p.children.Count > 0)) BrokeOff.Add(s);
+        }
+
+        // ---- Recovery ----
+
+        void OnRecovered(ProtoVessel pv, bool quick)
+        {
+            if (pv == null) return;
+            if (Krash.SimActive) { Log.Info("KRASH simulation: recovery of " + pv.vesselName + " ignored"); return; }
+            if (!recoveredThisScene.Add(pv.persistentId)) return;
+            try { Recover(pv); }
+            catch (Exception ex) { Log.Error("Recovering " + pv.vesselName + " failed: " + ex); }
+        }
+
+        void Recover(ProtoVessel pv)
+        {
+            RecoveriesHandled++;
+            var serials = new List<string>();
+            var info = new Dictionary<string, ProtoPartSnapshot>();
+            foreach (ProtoPartSnapshot ps in pv.protoPartSnapshots)
+            {
+                ProtoPartModuleSnapshot m = ps.modules.FirstOrDefault(x => x.moduleName == Core.Craft.ModuleName);
+                string s = m?.moduleValues?.GetValue("serial");
+                if (string.IsNullOrEmpty(s) || info.ContainsKey(s)) continue;
+                serials.Add(s);
+                info[s] = ps;
+            }
+            if (serials.Count == 0) return;
+
+            LaunchRecord rec = FindRecord(serials);
+            if (rec == null)
+            {
+                foreach (string s in serials) ToBin(s, info);
+                Log.Info("Recovered " + pv.vesselName + ": no launch record, " + serials.Count + " parts to the parts bin");
+                return;
+            }
+
+            PieceResult r = Pieces.Build(rec.Craft, serials, BrokeOff);
+            List<string> problems = r.Craft != null ? Pieces.Validate(r.Craft) : new List<string> { "nothing placed" };
+            if (r.Craft == null || r.Placed.Count == 0 || problems.Count > 0)
+            {
+                if (problems.Count > 0) Log.Error("Rebuilt " + pv.vesselName + " isn't valid (" + string.Join("; ", problems.Take(3).ToArray()) + "); its parts go to the parts bin");
+                foreach (string s in serials) ToBin(s, info);
+                return;
+            }
+
+            string name = pv.vesselName;
+            lastNumber.TryGetValue(name, out int last);
+            var h = new HangarShip
+            {
+                Id = Guid.NewGuid().ToString("N"),
+                Name = name,
+                Number = last + 1,
+                UT = Planetarium.GetUniversalTime(),
+                LaunchId = rec.Id,
+                RootSerial = r.RootSerial,
+                Craft = r.Craft,
+                Fuel = FuelLeft(r.Placed, info),
+            };
+            lastNumber[name] = h.Number;
+            h.Placed.AddRange(r.Placed);
+            h.Missing.AddRange(r.Missing);
+            h.Flights = r.Placed.Select(s => FlightsOf(info[s])).DefaultIfEmpty(0).Max();
+            Hangar.Add(h);
+            // Broken-off parts stay noted even when they come home on their own: the ship they came off is
+            // still missing them. The note clears when the part next launches.
+            foreach (string s in r.Unplaced.Concat(r.Dropped)) ToBin(s, info);
+            Log.Info("Recovered " + name + ": " + r.Placed.Count + " parts to the hangar as " + h.DisplayName
+                     + (r.Missing.Count > 0 ? ", " + r.Missing.Count + " missing" : "")
+                     + (r.Unplaced.Count + r.Dropped.Count > 0 ? ", " + (r.Unplaced.Count + r.Dropped.Count) + " to the parts bin" : ""));
+        }
+
+        void ToBin(string serial, Dictionary<string, ProtoPartSnapshot> info)
+        {
+            if (serial == null || !info.TryGetValue(serial, out ProtoPartSnapshot ps)) return;
+            Bin.Add(new BinPart { Serial = serial, Part = ps.partName, Flights = FlightsOf(ps) });
+        }
+
+        static int FlightsOf(ProtoPartSnapshot ps)
+        {
+            ProtoPartModuleSnapshot m = ps.modules.FirstOrDefault(x => x.moduleName == Core.Craft.ModuleName);
+            return int.TryParse(m?.moduleValues?.GetValue("flights"), out int f) ? f : 0;
+        }
+
+        static double FuelLeft(IEnumerable<string> placed, Dictionary<string, ProtoPartSnapshot> info)
+        {
+            double amount = 0, max = 0;
+            foreach (string s in placed)
+            {
+                if (!info.TryGetValue(s, out ProtoPartSnapshot ps)) continue;
+                foreach (ProtoPartResourceSnapshot res in ps.resources)
+                {
+                    PartResourceDefinition def = PartResourceLibrary.Instance.GetDefinition(res.resourceName);
+                    if (def == null || def.density <= 0) continue;
+                    amount += res.amount;
+                    max += res.maxAmount;
+                }
+            }
+            return max > 0 ? amount / max : 1;
+        }
+
+        // ---- Tidying ----
+
+        /// <summary>Drops launch records none of whose parts still exist in flight.</summary>
+        void Prune()
+        {
+            FlightState fs = HighLogic.CurrentGame?.flightState;
+            if (fs == null) return;
+            var live = new HashSet<string>();
+            foreach (ProtoVessel pv in fs.protoVessels)
+                foreach (ProtoPartSnapshot ps in pv.protoPartSnapshots)
+                {
+                    ProtoPartModuleSnapshot m = ps.modules.FirstOrDefault(x => x.moduleName == Core.Craft.ModuleName);
+                    string s = m?.moduleValues?.GetValue("serial");
+                    if (!string.IsNullOrEmpty(s)) live.Add(s);
+                }
+            int before = Launches.Count;
+            Launches.RemoveAll(r => !r.Serials.Any(live.Contains));
+            var known = new HashSet<string>(Launches.SelectMany(r => r.Serials));
+            BrokeOff.RemoveWhere(s => !known.Contains(s));
+            if (Launches.Count != before) Log.Info("Dropped " + (before - Launches.Count) + " finished launch records");
+        }
+
+        // ---- Saving ----
+
+        public override void OnSave(ConfigNode node)
+        {
+            base.OnSave(node);
+            foreach (LaunchRecord r in Launches) r.Save(node.AddNode("LAUNCH"));
+            foreach (HangarShip h in Hangar) h.Save(node.AddNode("HANGAR_SHIP"));
+            foreach (BinPart b in Bin) b.Save(node.AddNode("BIN_PART"));
+            ConfigNode broke = node.AddNode("BROKE_OFF");
+            foreach (string s in BrokeOff) broke.AddValue("serial", s);
+            foreach (KeyValuePair<string, int> kv in lastNumber)
+            {
+                ConfigNode n = node.AddNode("NUMBER");
+                n.AddValue("name", kv.Key);
+                n.AddValue("last", kv.Value);
+            }
+        }
+
+        public override void OnLoad(ConfigNode node)
+        {
+            base.OnLoad(node);
+            Launches.Clear(); Hangar.Clear(); Bin.Clear(); BrokeOff.Clear(); lastNumber.Clear();
+            foreach (ConfigNode n in node.GetNodes("LAUNCH")) { LaunchRecord r = LaunchRecord.Load(n); if (r != null) Launches.Add(r); }
+            foreach (ConfigNode n in node.GetNodes("HANGAR_SHIP")) { HangarShip h = HangarShip.Load(n); if (h != null) Hangar.Add(h); }
+            foreach (ConfigNode n in node.GetNodes("BIN_PART")) Bin.Add(BinPart.Load(n));
+            ConfigNode broke = node.GetNode("BROKE_OFF");
+            if (broke != null) foreach (string s in broke.GetValues("serial")) BrokeOff.Add(s);
+            foreach (ConfigNode n in node.GetNodes("NUMBER"))
+                if (int.TryParse(n.GetValue("last"), out int last) && n.GetValue("name") != null) lastNumber[n.GetValue("name")] = last;
+            if (HighLogic.LoadedScene == GameScenes.SPACECENTER) Prune();
+        }
+    }
+}

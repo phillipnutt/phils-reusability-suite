@@ -1,0 +1,8 @@
+bin/
+obj/
+*.user
+.vs/
+# Built at release time, not committed.
+GameData/PhilsReusabilitySuite/Plugins/*.dll
+# Release zips.
+*.zip
