@@ -61,7 +61,8 @@ Fixed:
   clamps letting go at launch no longer count as broken off.
 - Settings.cfg accepts 0 for overtime and outsourcing prices, refit shares and scrap value.
 - "Back to the queue" in the library list threw an error; the "Take apart" and "Sell for scrap" links showed
-  "<u>" tags; landing-check lines were cut off when they wrapped.
+  "<u>" tags; landing-check lines were cut off when they wrapped; prices in the Build panel's piece list lost the
+  tail of their comma, so 16,303 read as "16.303".
 - KSP's pre-launch warnings during a build say "Build anyway" instead of "Launch anyway".
 - Messages say why a piece went to the parts bin.
 
