@@ -294,6 +294,12 @@ namespace PhilsReusabilitySuite
                 if (left.Count > 0) h.CameBack[s] = left;
             }
             Hangar.Add(h);
+            // The ship's flight log: when, what it flew as, and how it came home.
+            double km = RecoveryValue.DistanceKm(pv);
+            string landed = NextLandingNote ?? (km < 2 ? "recovered at KSC" : "recovered " + Math.Round(km).ToString("N0") + " km from KSC");
+            AddToLog(h.Hull, h.Flights + " · " + KSPUtil.PrintDateCompact(rec.UT, false) + " · " + rec.Ship + " · " + landed
+                     + (r.Missing.Count > 0 ? ", lost " + r.Missing.Count + (r.Missing.Count == 1 ? " part" : " parts") : ""));
+            NextLandingNote = null;
             // Broken-off parts stay noted even when they come home on their own: the ship they came off is
             // still missing them. The note clears when the part next launches.
             foreach (string s in r.Unplaced.Concat(r.Dropped)) ToBin(s, info, recCraft);
@@ -306,6 +312,21 @@ namespace PhilsReusabilitySuite
 
         /// <summary>Serials that broke off in a hard landing, set by stage recovery just before it recovers.</summary>
         public readonly HashSet<string> LeftBehindOnNextRecovery = new HashSet<string>();
+
+        /// <summary>How the next recovered piece landed ("312 km downrange, 5.8 m/s on 3 chutes"), set by stage recovery.</summary>
+        public string NextLandingNote;
+
+        /// <summary>Each hangar ship's flight log, by identity ("Name|Number"), newest first.</summary>
+        public readonly Dictionary<string, List<string>> FlightLogs = new Dictionary<string, List<string>>();
+
+        public List<string> LogOf(HangarShip h) => FlightLogs.TryGetValue(h.Hull, out List<string> l) ? l : new List<string>();
+
+        void AddToLog(string hull, string entry)
+        {
+            if (!FlightLogs.TryGetValue(hull, out List<string> l)) FlightLogs[hull] = l = new List<string>();
+            l.Insert(0, entry);
+            if (l.Count > 30) l.RemoveRange(30, l.Count - 30);
+        }
 
         /// <summary>
         /// KSP has just paid its recovery refund (<paramref name="paid"/>: the value times the distance factor).
@@ -388,6 +409,12 @@ namespace PhilsReusabilitySuite
             foreach (BinPart b in Bin) b.Save(node.AddNode("BIN_PART"));
             foreach (BuildJob j in Jobs) j.Save(node.AddNode("BUILD"));
             node.AddValue("lastUT", lastUT.ToString("R", System.Globalization.CultureInfo.InvariantCulture));
+            foreach (KeyValuePair<string, List<string>> kv in FlightLogs)
+            {
+                ConfigNode fl = node.AddNode("FLIGHT_LOG");
+                fl.AddValue("ship", kv.Key);
+                foreach (string e in kv.Value) fl.AddValue("flight", e);
+            }
             ConfigNode broke = node.AddNode("BROKE_OFF");
             foreach (string s in BrokeOff) broke.AddValue("serial", s);
             foreach (KeyValuePair<string, int> kv in lastNumber)
@@ -401,7 +428,9 @@ namespace PhilsReusabilitySuite
         public override void OnLoad(ConfigNode node)
         {
             base.OnLoad(node);
-            Launches.Clear(); Hangar.Clear(); Bin.Clear(); BrokeOff.Clear(); lastNumber.Clear(); Jobs.Clear();
+            Launches.Clear(); Hangar.Clear(); Bin.Clear(); BrokeOff.Clear(); lastNumber.Clear(); Jobs.Clear(); FlightLogs.Clear();
+            foreach (ConfigNode fl in node.GetNodes("FLIGHT_LOG"))
+                if (fl.GetValue("ship") != null) FlightLogs[fl.GetValue("ship")] = fl.GetValues("flight").ToList();
             foreach (ConfigNode n in node.GetNodes("LAUNCH")) { LaunchRecord r = LaunchRecord.Load(n); if (r != null) Launches.Add(r); }
             foreach (ConfigNode n in node.GetNodes("HANGAR_SHIP")) { HangarShip h = HangarShip.Load(n); if (h != null) Hangar.Add(h); }
             foreach (ConfigNode n in node.GetNodes("BIN_PART")) Bin.Add(BinPart.Load(n));

@@ -163,6 +163,47 @@ static class CoreTests
         }
     }
 
+    // A stock craft as a "design": a piece of it came home (a first stage), and completing it to the design
+    // gives the whole craft back, with the flown parts in their own slots and every other slot new.
+    static void CompletionChecks(string name, Node craft, Craft c, CraftPart realRoot)
+    {
+        var design = craft.Clone();
+        int slot = 0;
+        foreach (Node p in design.Children("PART"))
+        {
+            Node m = p.Children("MODULE").First(x => x.Get("name") == Craft.ModuleName);
+            m.Set("serial", "");      // a design file carries no hardware
+            m.Set("design", "D1");
+            m.Set("slot", (slot++).ToString());
+        }
+        // The flown piece: the subtree under some part, as it was built from the design (stamped slots).
+        CraftPart top = c.Parts.Where(p => p != realRoot && !p.IsCompound).OrderByDescending(p => Subtree(p).Count).FirstOrDefault();
+        if (top == null) return;
+        var flown = new List<Node>();
+        foreach (CraftPart p in Subtree(top))
+        {
+            Node n = p.Node.Clone();
+            Node m = n.Children("MODULE").First(x => x.Get("name") == Craft.ModuleName);
+            m.Set("design", "D1");
+            m.Set("slot", p.Index.ToString());
+            m.Set("flights", "3");
+            m.Set("hull", "Oak 005|4");
+            flown.Add(n);
+        }
+        CompletionResult r = Completion.Complete(design, "D1", flown);
+        string label = name + ": completing a flown piece";
+        Check(r.Craft.Children("PART").Count() == c.Parts.Count, label + " gives the whole design back");
+        Check(r.Used.Count == flown.Count && r.NewSlots.Count == c.Parts.Count - flown.Count, label + ": " + r.Used.Count + " flown parts, " + r.NewSlots.Count + " new");
+        List<Node> parts = r.Craft.Children("PART").ToList();
+        bool slotsRight = Subtree(top).All(p => Craft.SerialOf(parts[p.Index]) == p.Serial);
+        Check(slotsRight, label + ": each flown part sits in its own slot");
+        Check(r.NewSlots.All(i => Craft.SerialOf(parts[i]) == ""), label + ": new slots carry no serial");
+        Check(parts.Where((p, i) => !r.NewSlots.Contains(i)).All(p => p.Children("MODULE").First(x => x.Get("name") == Craft.ModuleName).Get("hull") == "Oak 005|4"), label + ": flown parts keep their ship");
+        Check(Pieces.Validate(r.Craft).Count == 0, label + ": the completed craft is valid");
+        // A different design's parts don't fill this one.
+        Check(Completion.Complete(design, "D2", flown).Used.Count == 0, label + ": parts from another design aren't used");
+    }
+
     static List<CraftPart> Subtree(CraftPart p)
     {
         var list = new List<CraftPart> { p };
@@ -186,6 +227,8 @@ static class CoreTests
         Check(Craft.SerialOf(all.Craft.Children("PART").First()) == realRoot.Serial, name + ": root is written first");
         Check(Pieces.Validate(all.Craft).Count == 0, name + ": whole craft rebuilt valid");
         Check(Node.Parse(all.Craft.WriteContents()).Children("PART").Count() == c.Parts.Count, name + ": whole craft survives write and parse");
+
+        CompletionChecks(name, craft, c, realRoot);
 
         var rng = new Random(name.GetHashCode() & 0x7fffffff);
         int tried = 1;

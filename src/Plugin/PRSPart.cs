@@ -13,6 +13,10 @@ namespace PhilsReusabilitySuite
         [KSPField(isPersistant = true)] public int flights = 0;
         /// <summary>The hangar ship this part belongs to, "Name|Number" (empty for a new or loose part).</summary>
         [KSPField(isPersistant = true)] public string hull = "";
+        /// <summary>The Phil's Builds design this part was placed from (its stable id), and its slot in that
+        /// design's file. Empty and -1 for a part added by hand.</summary>
+        [KSPField(isPersistant = true)] public string design = "";
+        [KSPField(isPersistant = true)] public int slot = -1;
 
         /// <summary>Serials the editor may keep this session: ones it gave out, and hangar parts it loaded.</summary>
         public static readonly HashSet<string> EditorTrusted = new HashSet<string>();
@@ -37,6 +41,9 @@ namespace PhilsReusabilitySuite
         {
             base.OnCopy(fromModule);
             MakeNew();
+            // A copy made by hand isn't part of any design.
+            design = "";
+            slot = -1;
         }
 
         public void MakeNew()

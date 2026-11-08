@@ -236,6 +236,7 @@ namespace PhilsReusabilitySuite
             PRSScenario sc = PRSScenario.Instance;
             sc.LeftBehindOnNextRecovery.Clear();
             sc.LeftBehindOnNextRecovery.UnionWith(broke);
+            sc.NextLandingNote = (km < 2 ? "landed at KSC" : "landed " + Math.Round(km).ToString("N0") + " km from KSC") + ", " + landing.ToString("0.0") + " m/s " + how;
             RecoverGate.Choices[pv.persistentId] = RecoverChoice.Hangar;
             var serials = pv.protoPartSnapshots.Select(SerialOf).Where(s => s != null).ToList();
             // KSP is part-way through deleting this vessel, so recover it without deleting anything ourselves:

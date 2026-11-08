@@ -289,6 +289,13 @@ namespace PhilsReusabilitySuite
                 Line("Refit", h.Ready ? "done" : Pricing.Funds(q.RefitPrice));
                 Line("Fuel back to launch levels", h.Ready ? "full" : Pricing.Funds(q.FuelPrice));
                 Line("Total · refit time", h.Ready ? "launch now" : Pricing.Funds(q.Total) + " · " + Pricing.Duration(q.Seconds, S));
+                List<string> log = sc.LogOf(h);
+                if (log.Count > 0)
+                {
+                    GUILayout.Space(8);
+                    GUILayout.Label("FLIGHTS", Look.Section);
+                    foreach (string e in log.Take(6)) GUILayout.Label(e, Look.Meta);
+                }
                 GUILayout.FlexibleSpace();
                 string err;
                 if (h.Ready)
