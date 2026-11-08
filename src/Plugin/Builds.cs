@@ -322,7 +322,10 @@ namespace PhilsReusabilitySuite
         {
             Jobs.Remove(job);
             var serials = new HashSet<string>(job.Serials());
-            foreach (HangarShip h in Hangar.Where(x => x.ReservedBy == job.Id && x.Id != job.FromShipId).ToList())
+            // A build made from hangar ships (Argo I #1 stacked on Rockall 002 #1) stays the ship at its top: same
+            // name, number and flight log, with the others under it. Phil, 2026-11-08: keep the top piece's identity.
+            string keepId = job.FromShipId ?? TopShipOf(job)?.Id;
+            foreach (HangarShip h in Hangar.Where(x => x.ReservedBy == job.Id && x.Id != keepId).ToList())
             {
                 // Parts taken off a stored ship in the VAB go to the parts bin.
                 Craft c = Core.Craft.Read(h.Craft);
@@ -332,7 +335,7 @@ namespace PhilsReusabilitySuite
             }
             Bin.RemoveAll(b => b.ReservedBy == job.Id);
 
-            HangarShip ready = job.FromShipId != null ? Hangar.FirstOrDefault(x => x.Id == job.FromShipId) : null;
+            HangarShip ready = keepId != null ? Hangar.FirstOrDefault(x => x.Id == keepId) : null;
             if (ready == null)
             {
                 lastNumber.TryGetValue(job.Name, out int last);
@@ -342,8 +345,8 @@ namespace PhilsReusabilitySuite
             }
             else
             {
-                // A ship rebuilt as itself (restored to its design, which can leave out a part added by hand):
-                // anything not in the new build goes to the parts bin.
+                // A ship rebuilt as itself (restored to its design, which can leave out a part added by hand, or
+                // built on as the top of a stack): anything not in the new build goes to the parts bin.
                 Craft old = Core.Craft.Read(ready.Craft);
                 foreach (string s in ready.Placed.Where(x => !serials.Contains(x)))
                     if (old.BySerial.TryGetValue(s, out CraftPart cp)) Bin.Add(BinPartFrom(cp));
@@ -365,6 +368,18 @@ namespace PhilsReusabilitySuite
             Suite.Message(ready.DisplayName + " is ready in the hangar");
             if (TimeWarp.fetch != null && TimeWarp.CurrentRateIndex > 0) TimeWarp.SetRate(0, true, false);
             Changed();
+        }
+
+        /// <summary>
+        /// The hangar ship a build is built on top of: the one taken into the build that holds its root part, under
+        /// the same name. Null when the root part is new, or the ship was given a name of its own.
+        /// </summary>
+        HangarShip TopShipOf(BuildJob job)
+        {
+            if (job.Craft == null) return null;
+            string root = Core.Craft.Read(job.Craft).Parts.FirstOrDefault(p => p.Parent == null)?.Serial;
+            if (string.IsNullOrEmpty(root)) return null;
+            return Hangar.FirstOrDefault(h => h.ReservedBy == job.Id && h.Placed.Contains(root) && h.Name == job.Name);
         }
 
         static int FlightsIn(Node part)

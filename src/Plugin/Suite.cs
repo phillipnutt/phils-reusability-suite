@@ -20,6 +20,9 @@ namespace PhilsReusabilitySuite
             }
         }
 
+        /// <summary>"1 part", "27 parts".</summary>
+        public static string Parts(int n) => n + (n == 1 ? " part" : " parts");
+
         public static bool Career => HighLogic.CurrentGame != null && HighLogic.CurrentGame.Mode == Game.Modes.CAREER && Funding.Instance != null;
 
         public static double Funds => Career ? Funding.Instance.Funds : double.PositiveInfinity;

@@ -269,9 +269,10 @@ namespace PhilsReusabilitySuite
             sc = PRSScenario.Instance;
             job2 = sc.Jobs.FirstOrDefault(j => j.Id == job2Id);
             Check(job2 != null && sc.Outsource(job2, out err), "outsourcing the second one " + err);
-            Check(!sc.Hangar.Any(h => h.Id == flownId), "the flown pod left the hangar list as its own ship: it's part of the new one now");
             HangarShip second = sc.Hangar.FirstOrDefault(h => h.Ready && h.Placed.Any(flownSerials.Contains));
             Check(second != null && second.Placed.Count == designParts, "the second one is ready, with the flown pod in it (" + second?.DisplayName + ")");
+            // The pod is the launcher's top (its root part), so the rebuilt launcher is still that ship.
+            Check(second != null && second.Id == flownId && second.DisplayName == flownName && sc.Hangar.Count(h => h.Placed.Any(flownSerials.Contains)) == 1, "built on the flown pod, it's still " + flownName + ", not a new ship (" + second?.DisplayName + ")");
             if (second == null) yield break;
             int clampsOnPad = ShipConstruction.FindVesselsLandedAt(HighLogic.CurrentGame.flightState, "LaunchPad").Count;
             int binBefore = sc.Bin.Count;

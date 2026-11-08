@@ -456,7 +456,7 @@ namespace PhilsReusabilitySuite
             double rho = home != null ? home.atmDensityASL : 1.225;
             var byKey = new Dictionary<string, EditorPiece>();
             RefreshDrag(ship.parts);   // the whole ship, since a piece's drag depends on the parts it touches
-            foreach (Part d in ship.parts.Where(p => p.FindModuleImplementing<ModuleDecouplerBase>() != null && p.parent != null))
+            foreach (Part d in ship.parts.Where(p => Separates(p) && p.parent != null))
             {
                 var piece = new List<Part>();
                 Collect(d, piece);
@@ -470,7 +470,7 @@ namespace PhilsReusabilitySuite
                                && piece.SelectMany(p => p.FindModulesImplementing<ModuleEngines>()).Any(e => !e.propellants.Any(pr => pr.name == "SolidFuel"));
                 string key = string.Join(",", piece.Select(p => p.partInfo.name).OrderBy(n => n).ToArray()) + "|" + Math.Round(vt, 1);
                 if (byKey.TryGetValue(key, out EditorPiece same)) { same.Count++; continue; }
-                var e2 = new EditorPiece { Label = "Piece with " + biggest.partInfo.title, Parts = piece.Count, Speed = vt, Chutes = prof.Chutes, CanBurn = canBurn, Names = piece.Select(p => p.partInfo.name).ToList() };
+                var e2 = new EditorPiece { Label = "Stage with " + biggest.partInfo.title, Parts = piece.Count, Speed = vt, Chutes = prof.Chutes, CanBurn = canBurn, Names = piece.Select(p => p.partInfo.name).ToList() };
                 if (canBurn && vt > Landing.SafeSpeed)
                 {
                     e2.BurnPropellant = PropellantToKeep(piece, mass, prof.CdA, rho, out bool weak);
@@ -516,7 +516,18 @@ namespace PhilsReusabilitySuite
         {
             into.Add(p);
             foreach (Part c in p.children)
-                if (c.FindModuleImplementing<ModuleDecouplerBase>() == null && c.FindModuleImplementing<LaunchClamp>() == null) Collect(c, into);
+                if (!Separates(c) && c.FindModuleImplementing<LaunchClamp>() == null) Collect(c, into);
+        }
+
+        /// <summary>
+        /// A part that drops what hangs under it when it's staged. A heat shield carries a decoupler for jettisoning
+        /// it, but it isn't in the staging unless the player turns that on, so it stays with its pod and isn't a
+        /// piece of its own (Phil's Argo, 2026-11-08).
+        /// </summary>
+        static bool Separates(Part p)
+        {
+            ModuleDecouplerBase d = p.FindModuleImplementing<ModuleDecouplerBase>();
+            return d != null && d.stagingEnabled;
         }
 
         static string Name(Vessel v) => KSP.Localization.Localizer.Format(v.vesselName);

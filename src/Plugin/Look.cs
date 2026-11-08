@@ -94,9 +94,6 @@ namespace PhilsReusabilitySuite
             RowValAmber = Text(Display, 15, Amber, FontStyle.Bold, TextAnchor.MiddleRight);
             RowTotalKey = Text(Body, 14, Ink, FontStyle.Bold);
             RowTotal = Text(Display, 20, Ink, FontStyle.Bold, TextAnchor.MiddleRight);
-            // Bahnschrift's comma hangs below the line, and at some sizes clipping cut its tail off, so "16,303"
-            // read as "16.303". These are single-line, right-aligned numbers: let them draw past their box.
-            foreach (GUIStyle n in new[] { Price, PriceFree, RowVal, RowValGood, RowValAmber, RowTotal }) n.clipping = TextClipping.Overflow;
 
             Seg = Button(Round(Rail, Line2, 8), Round(Rail, Color.Lerp(Line2, Amber, 0.6f), 8), 8, Text(Body, 13, Ink2, align: TextAnchor.MiddleCenter));
             SegOn = Button(Round(Color.Lerp(Rail, Amber, 0.12f), Amber, 8), null, 8, Text(Body, 13, Amber, FontStyle.Bold, TextAnchor.MiddleCenter));
@@ -175,9 +172,11 @@ namespace PhilsReusabilitySuite
         {
             // A little larger than PIP's sizes, with room above and below each line so GUILayout doesn't pack
             // lines on top of each other.
+            // Not clipped: the OS fonts' letters that hang below the line (g, p, q, y, a comma) fall outside the box
+            // GUILayout gives a line, and clipping cut them off ("Argo" read "Arao", 16,303 read "16.303").
             var s = new GUIStyle
             {
-                font = font, fontSize = size + 1, fontStyle = style, alignment = align, wordWrap = wrap, clipping = TextClipping.Clip, richText = true,
+                font = font, fontSize = size + 1, fontStyle = style, alignment = align, wordWrap = wrap, clipping = TextClipping.Overflow, richText = true,
                 padding = new RectOffset(0, 0, 3, 5), margin = new RectOffset(0, 0, 1, 1),
             };
             s.normal.textColor = s.hover.textColor = s.active.textColor = s.focused.textColor = color;

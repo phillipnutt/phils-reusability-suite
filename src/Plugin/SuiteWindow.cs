@@ -180,7 +180,9 @@ namespace PhilsReusabilitySuite
             {
                 GUILayout.BeginVertical(Look.CardReuse);
                 GUILayout.Label(h.DisplayName, Look.Name);
-                GUILayout.Label(Suite.FacilityOf(h.Craft) + " · " + h.Placed.Count + " parts" + (h.Flights > 0 ? " · " + h.Flights + (h.Flights == 1 ? " flight" : " flights") : " · never flown"), Look.Meta);
+                string under = BuildsLink.Under(h);
+                if (under != null) GUILayout.Label("on " + under, Look.Meta);
+                GUILayout.Label(Suite.FacilityOf(h.Craft) + " · " + Suite.Parts(h.Placed.Count) + (h.Flights > 0 ? " · " + h.Flights + (h.Flights == 1 ? " flight" : " flights") : " · never flown"), Look.Meta);
                 if (GUILayout.Button("Launch", Look.Go, GUILayout.Height(32))) Launch(sc, h);
                 GUILayout.EndVertical();
                 GUILayout.Space(6);
@@ -268,7 +270,7 @@ namespace PhilsReusabilitySuite
             GUILayout.Label(Pricing.Funds(q.Total + extra) + " · " + (seconds <= 0 ? "ready now" : Pricing.Duration(seconds, S)), Look.Name, GUILayout.ExpandWidth(false));
             GUILayout.EndHorizontal();
             GUILayout.BeginHorizontal();
-            GUILayout.Label(item.KindLabel + " · " + item.Parts + " parts" + (item.Blocked != null ? "\n<color=#ff8a7a>" + item.Blocked + "</color>" : ""), Look.Meta);
+            GUILayout.Label(item.KindLabel + " · " + Suite.Parts(item.Parts) + (item.Blocked != null ? "\n<color=#ff8a7a>" + item.Blocked + "</color>" : ""), Look.Meta);
             GUILayout.FlexibleSpace();
             bool can = item.Blocked == null;
             if (GUILayout.Button(can ? "Build" : "Can't build", can ? Look.Go : Look.GoOff, GUILayout.Height(30), GUILayout.Width(120)) && can)
@@ -395,7 +397,9 @@ namespace PhilsReusabilitySuite
             GUILayout.BeginHorizontal(sel ? Look.CardSel : Look.Card);
             GUILayout.BeginVertical();
             GUILayout.Label(h.DisplayName, Look.Name);
-            string meta = h.Placed.Count + " parts · " + (h.Flights == 0 ? "never flown" : h.Flights + (h.Flights == 1 ? " flight" : " flights"));
+            string under = BuildsLink.Under(h);
+            if (under != null) GUILayout.Label("on " + under, Look.Meta);
+            string meta = Suite.Parts(h.Placed.Count) + " · " + (h.Flights == 0 ? "never flown" : h.Flights + (h.Flights == 1 ? " flight" : " flights"));
             if (!h.Ready) meta += " · fuel " + Mathf.RoundToInt((float)(h.Fuel * 100)) + "%";
             GUILayout.Label(meta, Look.Meta);
             if (h.Missing.Count > 0) GUILayout.Label("Missing " + h.Missing.Count + (h.Missing.Count == 1 ? " part" : " parts"), Look.MetaWarn);
@@ -412,7 +416,9 @@ namespace PhilsReusabilitySuite
         {
             GUILayout.Label(GroupOf(h).ToUpperInvariant(), Look.Section);
             GUILayout.Label(h.DisplayName, Look.H2);
-            GUILayout.Label(h.Placed.Count + " parts · " + (h.Flights == 0 ? "never flown" : h.Flights + (h.Flights == 1 ? " flight" : " flights")) + (h.Missing.Count > 0 ? " · missing " + h.Missing.Count : ""), Look.Meta);
+            string under = BuildsLink.Under(h);
+            if (under != null) GUILayout.Label("on " + under, Look.Meta);
+            GUILayout.Label(Suite.Parts(h.Placed.Count) + " · " + (h.Flights == 0 ? "never flown" : h.Flights + (h.Flights == 1 ? " flight" : " flights")) + (h.Missing.Count > 0 ? " · missing " + h.Missing.Count : ""), Look.Meta);
             GUILayout.Space(8);
             if (h.ReservedBy == null)
             {

@@ -180,6 +180,8 @@ namespace PhilsReusabilitySuite
         // (Not named OnJointBreak: Unity would take that for its own one-argument message.)
         void OnPartJointBroke(PartJoint joint, float force)
         {
+            // Only in flight: the VAB and SPH remove joints too, as parts are moved or deleted.
+            if (!HighLogic.LoadedSceneIsFlight) return;
             Part child = joint != null ? joint.Child : null;
             string s = PRSPart.SerialOf(child);
             if (s == null || BrokeOff.Contains(s)) return;

@@ -54,7 +54,10 @@ namespace PhilsReusabilitySuite
         void OnPlaced(Placed p)
         {
             Stamp(p.Design, p.Parts);
-            Log.Info("Phil's Builds placed " + p.Design?.Name + " (" + p.How + ", " + p.Parts?.Count + " parts): parts stamped with their design slots");
+            // Placed from the design's file (not a hangar copy): new parts, whatever serials the file carried.
+            int renewed = p.How == PlaceHow.Copy ? 0 : EditorAddon.Renew(p.Parts);
+            Log.Info("Phil's Builds placed " + p.Design?.Name + " (" + p.How + ", " + p.Parts?.Count + " parts): parts stamped with their design slots"
+                + (renewed > 0 ? ", " + renewed + " new serial numbers" : ""));
         }
 
         void OnSaved(Saved s)
@@ -88,6 +91,34 @@ namespace PhilsReusabilitySuite
         }
 
         static string DesignIn(Node part) => part.Children("MODULE").FirstOrDefault(m => m.Get("name") == Core.Craft.ModuleName)?.Get("design");
+
+        static readonly Dictionary<string, KeyValuePair<Node, string>> underCache = new Dictionary<string, KeyValuePair<Node, string>>();
+
+        /// <summary>
+        /// What a hangar ship is stacked on (Phil: "could the UI show that it's the Argo on a Rockall?"): another
+        /// hangar ship's own hardware by its name and number ("Rockall 002 #1"), or a design built new with it
+        /// ("Rockall 002"). Null for a ship of one piece. Parts added by hand don't count.
+        /// </summary>
+        public static string Under(HangarShip h)
+        {
+            if (h?.Craft == null) return null;
+            if (underCache.TryGetValue(h.Id, out var cached) && ReferenceEquals(cached.Key, h.Craft)) return cached.Value;
+            var parts = h.Craft.Children("PART").ToList();
+            string rootDesign = parts.Count > 0 ? DesignIn(parts[0]) : null;
+            var labels = new List<string>();
+            foreach (Node p in parts)
+            {
+                Node m = p.Children("MODULE").FirstOrDefault(x => x.Get("name") == Core.Craft.ModuleName);
+                if (m == null) continue;
+                string hull = m.Get("hull"), design = m.Get("design"), label = null;
+                if (!string.IsNullOrEmpty(hull) && hull != h.Hull && HangarShip.ParseHull(hull, out string name, out int number)) label = name + " #" + number;
+                else if (!string.IsNullOrEmpty(design) && design != rootDesign) label = NameOf(design);
+                if (label != null && !labels.Contains(label)) labels.Add(label);
+            }
+            string under = labels.Count == 0 ? null : string.Join(" and ", labels);
+            underCache[h.Id] = new KeyValuePair<Node, string>(h.Craft, under);
+            return under;
+        }
 
         /// <summary>The design's file, read fresh (cached while the file doesn't change).</summary>
         static readonly Dictionary<string, KeyValuePair<DateTime, Node>> designFiles = new Dictionary<string, KeyValuePair<DateTime, Node>>();

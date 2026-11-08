@@ -24,6 +24,12 @@ namespace PhilsReusabilitySuite
         /// <summary>Trusted serials of the ship left in the editor, kept for when KSP restores it on return.</summary>
         public static readonly HashSet<string> EditorCarry = new HashSet<string>();
 
+        /// <summary>
+        /// Serials the suite itself is bringing into the editor with the next load (a hangar ship, a queued build).
+        /// Every other serial in a loaded file is a design's, and gets replaced.
+        /// </summary>
+        public static readonly HashSet<string> EditorExplicit = new HashSet<string>();
+
         public static string NewSerial()
         {
             string s = Guid.NewGuid().ToString("N");

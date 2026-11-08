@@ -19,6 +19,22 @@ New:
 - **Each dropping stage says at once whether it will come home**: on its chutes, with a landing burn, hard, or
   not at all. Stages dropping together make one message ("6 × … won't survive the landing").
 
+From Phil's second play-test (the morning after):
+- **Building a design could quietly use up a hangar ship.** Craft files saved in the VAB keep their parts'
+  serial numbers, so a design saved from parts that were later built (Harris Hawk II saved from the I's parts)
+  brought that hangar ship's hardware back in when loaded in the same VAB visit, and the build took the ship.
+  A design loaded, merged or picked up from a file now always comes in as new parts. Only the suite's own
+  hangar actions (Load from the hangar, "Use it", editing a queued build, picking a hangar copy in Phil's
+  Builds) bring real hardware into the editor.
+- **A ship built from hangar ships keeps the top ship's identity.** A ready Argo I #1 stacked on a ready
+  Rockall 002 #1 is built as Argo I #1, with its flight log, not a new Argo I #2. Hangar cards say what a ship
+  is stacked on: "on Rockall 002 #1" (that ship's own hardware) or "on Rockall 002" (built new with it).
+- The landing check calls each piece a stage ("Stage with LV-909 Terrier"), and a heat shield is no longer a
+  piece of its own: its jettison isn't in the staging unless you turn it on, so it stays with its pod.
+- Letters that hang below the line (g, p, q, y, commas) were cut off in the suite's windows: "Argo" read "Arao".
+- "1 parts" now reads "1 part".
+- Moving or deleting parts in the VAB no longer writes "destroyed with the rest of its ship" to the log.
+
 Fixed:
 - Stage recovery now works while you're at the Space Center or the Tracking Station. A ship left falling there
   used to vanish with no landing check and no message.

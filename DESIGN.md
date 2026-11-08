@@ -599,6 +599,26 @@ push code, no release). Phil's Builds worked alongside on its own findings from 
     go never count.
   - **Harmony patches** are applied one at a time, so a KSP change that breaks one hook leaves the rest working.
 
+**Phil's second play-test (2026-11-08 morning)** in his own career on the test install: a capsule (Argo I) and a
+launcher (Rockall 002) built apart and stacked in the VAB, which worked (two "Use it" offers, nothing to pay, no
+build time). Fixed from what he found:
+- **Serials in saved craft files.** Craft files saved in the editor keep each part's serial. The editor trusted
+  every serial it had given out during a visit, so a design saved from parts that were then built (Harris Hawk
+  II, saved from the I's parts) brought the hangar ship's hardware back when loaded in the same visit, and the
+  next build quietly used that ship up (three times in a row in his log). Now trust follows the ship, not the
+  serial: a load that replaces the ship resets trust to what the suite itself is loading (`EditorExplicit`: a
+  hangar ship, a queued build); a merge and Phil's Builds placing a design file (Load, Merge, PickUp, but not a
+  hangar Copy) give the placed parts new serials. KSP fires `onEditorLoad` during the load, with the whole new
+  ship for a normal load and only the merged parts for a merge (read from `EditorLogic.ShipToLoadSelected`).
+- **A build made from hangar ships keeps the top ship's identity** (Phil: "your pick"): the hangar ship that holds
+  the build's root part, under the same name, stays that ship (number and flight log). The others join it.
+  Hangar cards say what a ship sits on, from its parts' hulls ("on Rockall 002 #1") or designs ("on Rockall 002").
+- **The landing check** splits only at decouplers in the staging, so a heat shield (its jettison is unstaged by
+  default) stays with its pod; pieces are called stages.
+- **Text:** IMGUI clipping cut off the OS fonts' descenders ("Arao" for "Argo", "16.303"); styles don't clip now.
+- Phil's Builds' own findings (Load underground, saving over a launcher, stage names of a deleted launcher, a stale
+  "Built on") went to its session.
+
 ## Open questions
 
 - None for the design. The money numbers get tuned in play.

@@ -233,6 +233,15 @@ namespace PhilsReusabilitySuite
             foreach (string id in new[] { d.Id, d.Id, "" }) StampedPart(handAdded.Craft, id);
             Check(BuildsLink.DesignOf(mixed) == null, "a ship made of two designs (a payload on a launcher) is a copy of neither");
             Check(BuildsLink.DesignOf(handAdded) == d.Id, "a copy with a part added by hand is still a copy of its design");
+            // What a stacked ship is on, for its hangar card: a design built new with it, or another ship's hardware.
+            var onDesign = new HangarShip { Id = "under-test-1", Name = "Top", Number = 1, Craft = new Node("SHIP") };
+            foreach (string id in new[] { "another-design", d.Id }) StampedPart(onDesign.Craft, id);
+            Check(BuildsLink.Under(onDesign) == DesignName, "a payload built new on a launcher is 'on' the launcher's design (" + BuildsLink.Under(onDesign) + ")");
+            var onShip = new HangarShip { Id = "under-test-2", Name = "Top", Number = 1, Craft = new Node("SHIP") };
+            foreach (string id in new[] { "another-design", d.Id }) StampedPart(onShip.Craft, id);
+            onShip.Craft.Children("PART").Last().Children("MODULE").First().Set("hull", "Rockall 002|1");
+            Check(BuildsLink.Under(onShip) == "Rockall 002 #1", "stacked on a hangar ship's own hardware, it names that ship (" + BuildsLink.Under(onShip) + ")");
+            Check(BuildsLink.Under(ready) == null, "a ship of one piece isn't 'on' anything");
             string readyId = ready.Id;
             rows = Link.CopiesOf(d);
             CopyRow readyRow = rows.FirstOrDefault(r => r.Id == readyId);
@@ -295,6 +304,46 @@ namespace PhilsReusabilitySuite
             EditorAddon.Instance.OpenBuildPanel();
             Check(EditorAddon.Instance.Panel.ReadyShip != null && EditorAddon.Instance.Panel.ReadyShip.Id == readyId, "and the Build panel still knows it as the ready " + ready.DisplayName);
             EditorAddon.Instance.Panel.Showing = false;
+
+            // 4b. A design saved from parts that are now a hangar ship (Phil's Harris Hawk II was saved from the I's
+            // parts): loading it gives new parts. It must never quietly take the hangar ship's hardware.
+            string copyPath = Path.Combine(SuiteFiles.SaveDir, "test-saved-from-hangar-parts.craft");
+            EditorLogic.fetch.ship.SaveShip().Save(copyPath);
+            Check(File.ReadAllText(copyPath).Contains(ready.Placed[0]), "a craft saved in the VAB keeps its parts' serials (this one carries the ready Hopper's)");
+            EditorLogic.LoadShipFromFile(copyPath);
+            yield return new WaitForSeconds(2f);
+            var loaded = EditorLogic.fetch.ship.parts.Select(PRSPart.SerialOf).ToList();
+            Check(loaded.Count == ready.Placed.Count && !loaded.Any(ready.Placed.Contains), "loading that craft gives new parts: " + loaded.Count(ready.Placed.Contains) + " of " + loaded.Count + " carry the ready ship's serials");
+            RaisePlaced(d, PlaceHow.Load, EditorLogic.fetch.ship.parts, null);
+            EditorAddon.Instance.OpenBuildPanel();
+            panel = EditorAddon.Instance.Panel;
+            Check(panel.ReadyShip == null && panel.Editing == null && panel.Quote != null && panel.Quote.Lines.All(l => l.Kind == OwnerKind.New), "the Build panel prices it as all new parts, not the hangar ship");
+            Check(panel.ReadyCopy != null && panel.ReadyCopy.Id == readyId, "and offers the ready Hopper with Use it instead");
+            panel.Showing = false;
+            HangarShip readyNow = PRSScenario.Instance.Hangar.FirstOrDefault(h => h.Id == readyId);
+            Check(readyNow != null && readyNow.ReservedBy == null, "the ready Hopper is still in the hangar, free");
+            if (readyNow == null) yield break;
+            // The hangar's own Load keeps a hangar ship's parts; a design merged into it comes in as new parts.
+            EditorAddon.LoadHangarShip(readyNow);
+            yield return new WaitForSeconds(2f);
+            var ownParts = new HashSet<Part>(EditorLogic.fetch.ship.parts);
+            Check(ownParts.Count == ready.Placed.Count && ownParts.All(p => ready.Placed.Contains(PRSPart.SerialOf(p))), "the hangar's own Load keeps the ready ship's serials");
+            MethodInfo toLoad = typeof(EditorLogic).GetMethods(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)
+                .FirstOrDefault(m => m.Name == "ShipToLoadSelected" && m.GetParameters().Length == 2 && m.GetParameters()[0].ParameterType == typeof(string));
+            Check(toLoad != null, "found KSP's Merge");
+            if (toLoad != null)
+            {
+                toLoad.Invoke(EditorLogic.fetch, new object[] { copyPath, KSP.UI.Screens.CraftBrowserDialog.LoadType.Merge });
+                yield return new WaitForSeconds(2f);
+                var all = new HashSet<Part>(EditorLogic.fetch.ship.parts);
+                Part held = EditorLogic.SelectedPart;
+                if (held != null) { all.Add(held); foreach (Part c in held.FindChildParts<Part>(true)) all.Add(c); }
+                var merged = all.Where(p => !ownParts.Contains(p)).Select(PRSPart.SerialOf).ToList();
+                Check(merged.Count == ready.Placed.Count && !merged.Any(ready.Placed.Contains), "the merged design came in as new parts (" + merged.Count + " parts, " + merged.Count(ready.Placed.Contains) + " with the ready ship's serials)");
+                Check(ownParts.All(p => p != null && ready.Placed.Contains(PRSPart.SerialOf(p))), "and the hangar ship already in the VAB kept its own");
+                EditorAddon.LoadHangarShip(readyNow);    // drops the merged copy
+                yield return new WaitForSeconds(2f);
+            }
 
             // 5. Fly it, lose the chute, bring the rest home: a flown copy that's short one part.
             yield return ToSpaceCenter();
@@ -479,6 +528,10 @@ namespace PhilsReusabilitySuite
             List<StageReturns.EditorPiece> first = StageReturns.CheckEditorShip(kx);
             foreach (StageReturns.EditorPiece pc in first) Note("landing check: " + pc.Count + " × " + pc.Label + " (" + pc.Parts + " parts): " + pc.Speed.ToString("0.0") + " m/s");
             Check(clampNames.Count > 0 && first.Count > 0 && first.All(pc => !pc.Names.Any(clampNames.Contains)), "no dropping piece includes a launch clamp (" + kx.parts.Count(p => clampNames.Contains(p.partInfo.name)) + " clamps on the ship)");
+            // Its heat shield's jettison isn't staged, so the shield stays with the pod (Phil's Argo showed it as a
+            // one-part piece of its own).
+            Check(kx.parts.Any(p => p.partInfo.name == "HeatShield2") && !first.Any(pc => pc.Names.Contains("HeatShield2")), "the heat shield isn't a dropping piece of its own: its jettison isn't staged");
+            Check(first.All(pc => pc.Label.StartsWith("Stage with ")), "pieces are called stages (" + first.FirstOrDefault()?.Label + ")");
             bool same = true;
             for (int i = 0; i < 4; i++)
             {

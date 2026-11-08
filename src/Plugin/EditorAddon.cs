@@ -25,7 +25,9 @@ namespace PhilsReusabilitySuite
             Instance = this;
             Look.Init();
             PRSPart.EditorTrusted.Clear();
+            PRSPart.EditorExplicit.Clear();
             pendingCarry = EditorDriver.StartupBehaviour == EditorDriver.StartupBehaviours.LOAD_FROM_CACHE ? new HashSet<string>(PRSPart.EditorCarry) : null;
+            restoring = pendingCarry != null;
             ApplyCarry();
             GameEvents.onEditorShipModified.Add(OnShipModified);
             GameEvents.onEditorLoad.Add(OnEditorLoad);
@@ -50,11 +52,16 @@ namespace PhilsReusabilitySuite
                 {
                     yield return null;
                     Check(ship);
+                    restoring = false;
                     yield break;
                 }
                 yield return null;
             }
+            restoring = false;
         }
+
+        /// <summary>KSP is bringing back the ship left in the editor: its hangar parts aren't a loaded design.</summary>
+        static bool restoring;
 
         void OnDestroy()
         {
@@ -97,7 +104,50 @@ namespace PhilsReusabilitySuite
 
         // ---- Serials ----
 
-        void OnEditorLoad(ShipConstruct ship, CraftBrowserDialog.LoadType type) { Check(ship); }
+        void OnEditorLoad(ShipConstruct ship, CraftBrowserDialog.LoadType type)
+        {
+            FromFile(ship, type == CraftBrowserDialog.LoadType.Merge);
+            Check(ship);
+        }
+
+        /// <summary>
+        /// A ship loaded or merged from a file is a design, even if its parts carry serials: a craft saved in the
+        /// editor keeps them, so a design saved from parts that were later built would bring that hangar ship's
+        /// hardware back in, and the build would quietly use it up (Phil's Harris Hawk I and II, 2026-11-08). Only
+        /// serials the suite itself is loading (a hangar ship, a queued build) are kept. A load that replaces the ship
+        /// also forgets every serial trusted for the ship it replaced. KSP fires the load event during the load,
+        /// with the whole new ship, or with only the merged parts for a merge.
+        /// </summary>
+        internal static void FromFile(ShipConstruct ship, bool merge)
+        {
+            if (ship == null || restoring) return;
+            if (merge)
+            {
+                int renewed = Renew(ship.parts);
+                if (renewed > 0) Log.Info("Merged a design: " + renewed + " parts are new parts with new serial numbers");
+            }
+            else
+            {
+                PRSPart.EditorTrusted.Clear();
+                PRSPart.EditorTrusted.UnionWith(PRSPart.EditorExplicit);
+            }
+            PRSPart.EditorExplicit.Clear();
+        }
+
+        /// <summary>Gives new serials to parts placed from a design file, except ones the suite is loading itself.</summary>
+        internal static int Renew(IEnumerable<Part> parts)
+        {
+            int renewed = 0;
+            if (parts == null) return 0;
+            foreach (Part p in parts)
+            {
+                PRSPart m = PRSPart.Of(p);
+                if (m == null || (!string.IsNullOrEmpty(m.serial) && PRSPart.EditorExplicit.Contains(m.serial))) continue;
+                m.MakeNew();
+                renewed++;
+            }
+            return renewed;
+        }
         void OnShipModified(ShipConstruct ship) { Check(ship); }
         void OnLeavingScene(GameScenes next) { Remember(EditorLogic.fetch != null ? EditorLogic.fetch.ship : null); }
 
@@ -167,8 +217,10 @@ namespace PhilsReusabilitySuite
             c.SetValue("ship", shipName, true);
             string path = System.IO.Path.Combine(SuiteFiles.SaveDir, fileTag + ".craft");
             c.Save(path);
-            // Trusted before loading, so it doesn't matter when the editor's load events fire.
-            foreach (string s in serials) PRSPart.EditorTrusted.Add(s);
+            // Trusted before loading, so it doesn't matter when the editor's load events fire, and named as the
+            // suite's own load so the load doesn't treat them as a design's.
+            PRSPart.EditorExplicit.Clear();
+            foreach (string s in serials) { PRSPart.EditorTrusted.Add(s); PRSPart.EditorExplicit.Add(s); }
             EditorLogic.LoadShipFromFile(path);
         }
 
@@ -383,7 +435,7 @@ namespace PhilsReusabilitySuite
             // column was cut off where it ran longer than the other.
             foreach (StageReturns.EditorPiece p in Landings)
             {
-                GUILayout.Label((p.Count > 1 ? p.Count + " × " : "") + p.Label + " <color=#7d88a3>(" + p.Parts + " parts)</color>", Look.Meta);
+                GUILayout.Label((p.Count > 1 ? p.Count + " × " : "") + p.Label + " <color=#7d88a3>(" + Suite.Parts(p.Parts) + ")</color>", Look.Meta);
                 string how = p.Chutes > 0 ? " on " + p.Chutes + (p.Chutes == 1 ? " chute" : " chutes") : " with no chutes";
                 if (p.Speed <= Core.Landing.SafeSpeed) GUILayout.Label("    comes home: " + p.Speed.ToString("0.0") + " m/s" + how, Look.MetaGood);
                 else if (p.Speed <= Core.Landing.LostSpeed) GUILayout.Label("    comes home hard: " + p.Speed.ToString("0.0") + " m/s" + how, Look.MetaWarn);

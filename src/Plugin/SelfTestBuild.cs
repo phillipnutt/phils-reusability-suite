@@ -399,6 +399,41 @@ namespace PhilsReusabilitySuite
             Check(fin != null && padSerials.Count == heldSerials.Count - 1, "the saved craft is the ready Flea less a fin (" + padSerials.Count + " parts)");
             Check(!padSerials.Any(heldSerials.Contains), "launched from a saved file, its parts got new serials: none shared with the ready hangar ship (" + padSerials.Count(heldSerials.Contains) + " shared)");
             Check(sc.Hangar.Any(h => h.Id == held.Id && h.Ready), "the ready hangar ship is untouched");
+
+            // 12. A build made from two ready hangar ships (Phil stacked a ready Argo I #1 on a ready Rockall 002 #1)
+            // is the ship at its top: same name, number and flight log, and its card says what it's on.
+            yield return ToSpaceCenter();
+            sc = PRSScenario.Instance;
+            HangarShip top = sc.Hangar.FirstOrDefault(h => h.Id == held.Id);
+            if (top == null) { Check(false, "the ready Flea is still in the hangar for the stack test"); yield break; }
+            Node baseCraft = top.Craft.Clone();
+            foreach (Node p in baseCraft.Children("PART"))
+            {
+                Node m = p.Children("MODULE").FirstOrDefault(x => x.Get("name") == Core.Craft.ModuleName);
+                if (m == null) continue;
+                m.Set("serial", Guid.NewGuid().ToString("N"));
+                m.Set("hull", "");
+                m.Set("flights", "0");
+            }
+            Quote qBase = sc.QuoteFor(baseCraft, "Stack Base", null);
+            BuildJob baseJob = sc.StartBuild(baseCraft, "Stack Base", "VAB", qBase, false, true, null, out err);
+            HangarShip under = sc.Hangar.FirstOrDefault(h => h.Ready && h.Name == "Stack Base");
+            Check(baseJob != null && under != null, "a second ready ship to stack under it (" + under?.DisplayName + ") " + err);
+            if (under == null) yield break;
+            int hangarBefore = sc.Hangar.Count;
+            string topId = top.Id, topName = top.DisplayName, underId = under.Id, underName = under.DisplayName;
+            int parts = top.Placed.Count + under.Placed.Count;
+            Node stack = top.Craft.Clone();
+            foreach (Node p in under.Craft.Children("PART")) stack.Nodes.Add(p.Clone());
+            Quote qs = sc.QuoteFor(stack, top.Name, null);
+            Check(qs.BuildPrice == 0 && qs.Lines.Count == 2 && qs.Lines.All(l => l.Kind == OwnerKind.Hangar), "both pieces are ready hangar ships: nothing to build (" + qs.Lines.Count + " pieces, " + Pricing.Funds(qs.BuildPrice) + ")");
+            BuildJob stackJob = sc.StartBuild(stack, top.Name, "VAB", qs, false, false, null, out err);
+            HangarShip result = sc.Hangar.FirstOrDefault(h => h.Id == topId);
+            Check(stackJob != null && !sc.Jobs.Contains(stackJob) && result != null && result.Ready, "with nothing to build, it's finished at once " + err);
+            if (result == null) yield break;
+            Check(result.DisplayName == topName && result.Placed.Count == parts, "it's still " + topName + ", now with " + result.Placed.Count + " parts, not a new number (" + result.DisplayName + ")");
+            Check(!sc.Hangar.Any(h => h.Id == underId) && sc.Hangar.Count == hangarBefore - 1, "the ship under it joined it: one ship fewer in the hangar");
+            Check(BuildsLink.Under(result) == underName, "its card says it's on " + underName + " (" + BuildsLink.Under(result) + ")");
         }
     }
 }
