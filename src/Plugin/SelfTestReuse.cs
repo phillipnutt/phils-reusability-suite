@@ -262,7 +262,7 @@ namespace PhilsReusabilitySuite
             double podWear = PRSScenario.Instance.Hangar.First(h => h.Id == flownId).Wear;
             Note("the flown pod came home at " + Core.Wear.Percent(podWear) + " wear");
             Check(podWear > 0 && Near(q2.RefurbishPrice, wantRefurbish, 2), "the reused parts cost their refurbish by wear (" + Pricing.Funds(q2.RefurbishPrice) + " of " + Pricing.Funds(wantRefurbish) + ")");
-            Check(panel.ReadyCopy == null && !panel.Unfiled, "no 'Use it' offer and no 'Not filed' warning");
+            Check(panel.HangarCopy == null && !panel.Unfiled, "no 'Use it' offer and no 'Not filed' warning");
             sc = PRSScenario.Instance;
             Check(panel.Confirm(), "building the second one " + panel.Error);
             BuildJob job2 = sc.Jobs.LastOrDefault();

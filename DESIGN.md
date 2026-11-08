@@ -670,6 +670,9 @@ what's stored. Pick up stays the whole design; Open in the VAB is the "just what
 - **The Build panel's breakdown** is a list, not cards: "8 flown parts from Gallant I #1", "7 new parts".
 - **Scrap:** the Recover prompt says what the maths does: half of what it's worth where it landed (KSP's distance
   rule first, then half), not "half its price, less the haul".
+- **The Build panel offers flown copies too** (Phil: "Yes, point it out"): a design loaded as new parts with a hangar
+  copy of it that fits (each of the copy's parts has its slot here, same part) gets "Use it": a ready, complete copy
+  first, then the copy with the most parts, then the least worn. Its parts take their slots, the rest stay new.
 - **Whole-craft pick-ups into an empty VAB are named after the design** (Phil's Builds' rule, now for every kind of
   design, not only launchers and upper stages).
 

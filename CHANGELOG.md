@@ -51,6 +51,10 @@ From Phil's third play-test (Gallant I, the afternoon after):
 - **The Build panel's breakdown is a list,** not cards to pick from: "8 flown parts from Gallant I #1",
   "7 new parts".
 - The Recover prompt's scrap line says what the sum does: half of what it's worth where it landed.
+- **The Build panel points out flown copies too.** Load the plain Gallant I with a flown Gallant I #1 in the hangar
+  and the panel says so: "Gallant I #1 is in the hangar: 8 of its 15 parts, at 23% wear. Build from it for 1,303
+  instead of 4,881?" "Use it" builds from it (its parts refurbished, only the missing ones new), and it stays
+  Gallant I #1. A ready, complete copy is still offered first; before, only those were offered.
 
 From Phil's second play-test (the morning after):
 - **Building a design could quietly use up a hangar ship.** Craft files saved in the VAB keep their parts'

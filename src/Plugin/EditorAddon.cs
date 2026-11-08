@@ -347,7 +347,7 @@ namespace PhilsReusabilitySuite
                                                                           && (h.ReservedBy == null || h.ReservedBy == Editing?.Id));
             try { Landings = StageReturns.CheckEditorShip(ship); }
             catch (System.Exception ex) { Landings = new List<StageReturns.EditorPiece>(); Log.Warn("Landing check failed: " + ex.Message); }
-            FindReadyCopy(ship);
+            FindHangarCopy(ship);
             try
             {
                 bool anyUnstamped = ship.parts.Any(p => PRSPart.Of(p) != null && string.IsNullOrEmpty(PRSPart.Of(p).design));
@@ -358,34 +358,64 @@ namespace PhilsReusabilitySuite
 
         /// <summary>The ship (or part of it) isn't from a design filed in Phil's Builds.</summary>
         public bool Unfiled;
-        /// <summary>A ready, never-changed hangar copy of a design that's in the editor as new parts.</summary>
-        public HangarShip ReadyCopy;
-        string readyCopyDesign;
+        /// <summary>
+        /// A hangar copy of a design that's in the editor as new parts, to build from instead ("Use it"): a ready,
+        /// complete copy first (it costs nothing), otherwise a flown one, even with parts missing. Phil, 2026-11-08:
+        /// loading the plain Gallant I said nothing about the flown Gallant I #1 in the hangar. Its own parts are
+        /// refurbished, and only what it's missing is built new.
+        /// </summary>
+        public HangarShip HangarCopy;
+        /// <summary>What the build costs with that copy in it.</summary>
+        public Quote CopyQuote;
+        /// <summary>The copy has every part of the design that's in the editor (else some are built new).</summary>
+        public bool CopyWhole;
+        int copyParts, designParts;
+        string copyDesign;
 
-        void FindReadyCopy(ShipConstruct ship)
+        void FindHangarCopy(ShipConstruct ship)
         {
-            ReadyCopy = null;
-            readyCopyDesign = null;
+            HangarCopy = null; CopyQuote = null; copyDesign = null; CopyWhole = false;
             PRSScenario sc = PRSScenario.Instance;
-            if (sc == null || ReadyShip != null) return;
+            if (sc == null || ReadyShip != null || AsIs != null || Craft == null) return;
             // Designs in the editor whose parts are all new (not already hangar hardware).
             var groups = ship.parts.Select(PRSPart.Of).Where(m => m != null && !string.IsNullOrEmpty(m.design))
                 .GroupBy(m => m.design).ToList();
             foreach (var g in groups)
             {
                 if (g.Any(m => sc.OwnerOf(m.serial, Editing) != null)) continue;
-                var slots = new HashSet<int>(g.Select(m => m.slot));
-                foreach (HangarShip h in sc.Hangar.Where(x => x.Ready && x.ReservedBy == null && BuildsLink.DesignOf(x) == g.Key))
-                {
-                    var hSlots = new HashSet<int>(h.Craft.Children("PART").Select(SlotIn).Where(s => s >= 0));
-                    if (hSlots.SetEquals(slots) && hSlots.Count == g.Count())
-                    {
-                        ReadyCopy = h;
-                        readyCopyDesign = g.Key;
-                        return;
-                    }
-                }
+                var here = new Dictionary<int, string>();
+                foreach (PRSPart m in g) if (m.slot >= 0) here[m.slot] = m.part.partInfo?.name;
+                // Copies whose every part from the design has its slot here, holding the same part.
+                var fits = sc.Hangar.Where(h => h.ReservedBy == null && BuildsLink.DesignOf(h) == g.Key)
+                    .Select(h => new { h, slots = DesignSlots(h, g.Key) })
+                    .Where(c => c.slots.Count > 0 && c.slots.All(kv => here.TryGetValue(kv.Key, out string n) && n == kv.Value))
+                    .OrderByDescending(c => c.h.Ready && c.slots.Count == here.Count)
+                    .ThenByDescending(c => c.slots.Count)
+                    .ThenBy(c => c.h.Wear)
+                    .FirstOrDefault();
+                if (fits == null) continue;
+                HangarCopy = fits.h;
+                copyDesign = g.Key;
+                copyParts = fits.slots.Count;
+                designParts = here.Count;
+                CopyWhole = copyParts == designParts;
+                CopyQuote = sc.QuoteFor(WithCopy(Craft), ShipName, Editing);
+                return;
             }
+        }
+
+        /// <summary>A hangar ship's parts placed from this design: slot to part name.</summary>
+        static Dictionary<int, string> DesignSlots(HangarShip h, string design)
+        {
+            var slots = new Dictionary<int, string>();
+            foreach (Node p in h.Craft.Children("PART"))
+            {
+                Node m = p.Children("MODULE").FirstOrDefault(x => x.Get("name") == Core.Craft.ModuleName);
+                if (m == null || m.Get("design") != design || SlotIn(p) < 0) continue;
+                string r = p.Get("part") ?? "";
+                slots[SlotIn(p)] = r.Contains("_") ? r.Substring(0, r.LastIndexOf('_')) : r;
+            }
+            return slots;
         }
 
         static int SlotIn(Node part)
@@ -394,30 +424,51 @@ namespace PhilsReusabilitySuite
             return int.TryParse(m?.Get("slot"), out int s) ? s : -1;
         }
 
-        /// <summary>
-        /// "Use it": the parts in the editor built from that design become the ready hangar copy's own parts,
-        /// slot by slot (same design, same slots), so the build takes the finished ship instead of new parts.
-        /// </summary>
-        public void UseReadyCopy()
+        /// <summary>The copy's own part module for each slot of its design.</summary>
+        Dictionary<int, Node> CopyModules()
         {
-            if (ReadyCopy == null || readyCopyDesign == null) return;
             var bySlot = new Dictionary<int, Node>();
-            foreach (Node p in ReadyCopy.Craft.Children("PART"))
+            foreach (Node p in HangarCopy.Craft.Children("PART"))
             {
                 Node m = p.Children("MODULE").FirstOrDefault(x => x.Get("name") == Core.Craft.ModuleName);
-                if (m != null && m.Get("design") == readyCopyDesign) bySlot[SlotIn(p)] = m;
+                if (m != null && m.Get("design") == copyDesign) bySlot[SlotIn(p)] = m;
             }
+            return bySlot;
+        }
+
+        /// <summary>The editor's craft as it would be with the copy's parts in their slots (for its price).</summary>
+        Node WithCopy(Node craft)
+        {
+            Dictionary<int, Node> bySlot = CopyModules();
+            Node c = craft.Clone();
+            foreach (Node p in c.Children("PART"))
+            {
+                Node m = p.Children("MODULE").FirstOrDefault(x => x.Get("name") == Core.Craft.ModuleName);
+                if (m == null || m.Get("design") != copyDesign || !bySlot.TryGetValue(SlotIn(p), out Node hm)) continue;
+                foreach (string key in new[] { "serial", "flights", "hull", "wear" }) m.Set(key, hm.Get(key) ?? (key == "hull" ? "" : "0"));
+            }
+            return c;
+        }
+
+        /// <summary>
+        /// "Use it": the editor's parts from that design become the hangar copy's own parts, slot by slot, so the build
+        /// takes that hardware (refurbished) instead of new parts. Slots the copy is missing stay new.
+        /// </summary>
+        public void UseHangarCopy()
+        {
+            if (HangarCopy == null || copyDesign == null) return;
+            Dictionary<int, Node> bySlot = CopyModules();
             foreach (Part part in EditorLogic.fetch.ship.parts)
             {
                 PRSPart m = PRSPart.Of(part);
-                if (m == null || m.design != readyCopyDesign || !bySlot.TryGetValue(m.slot, out Node hm)) continue;
+                if (m == null || m.design != copyDesign || !bySlot.TryGetValue(m.slot, out Node hm)) continue;
                 m.serial = hm.Get("serial");
                 m.flights = int.TryParse(hm.Get("flights"), out int f) ? f : 0;
                 m.hull = hm.Get("hull") ?? "";
                 m.wear = (float)Core.Wear.In(hm);
                 EditorAddon.Claim(new[] { m.serial });
             }
-            Log.Info("Using the ready " + ReadyCopy.DisplayName + " from the hangar in this build");
+            Log.Info("Using " + HangarCopy.DisplayName + " from the hangar in this build (" + copyParts + " of " + designParts + " parts of its design)");
             Refresh();
         }
 
@@ -553,12 +604,17 @@ namespace PhilsReusabilitySuite
                                      : "<b>" + AsIs.DisplayName + "</b> is exactly as it came home, at " + Core.Wear.Percent(AsIs.Wear) + " wear. Launch it as it is (it's refuelled first), or refurbish it back to 0% wear.", worn ? Look.Notice : Look.NoticeGood);
                 GUILayout.Space(6);
             }
-            if (ReadyCopy != null && Quote != null)
+            if (HangarCopy != null && Quote != null && CopyQuote != null)
             {
+                string wear = HangarCopy.Wear >= 0.005 ? ", at " + Core.Wear.Percent(HangarCopy.Wear) + " wear" : "";
+                string offer = HangarCopy.Ready && CopyWhole
+                    ? "A ready <b>" + HangarCopy.DisplayName + "</b> is in the hangar, " + (wear == "" ? "built and never changed" : "complete" + wear) + ". Use it instead of building new parts?"
+                    : "<b>" + HangarCopy.DisplayName + "</b> is in the hangar" + (CopyWhole ? "" : ": " + copyParts + " of its " + designParts + " parts") + wear
+                      + ". Build from it for <b>" + Pricing.Funds(CopyQuote.Total) + "</b> instead of " + Pricing.Funds(Quote.Total) + "?";
                 GUILayout.BeginHorizontal(Look.NoticeGood);
-                GUILayout.Label("A ready <b>" + ReadyCopy.DisplayName + "</b> is in the hangar, " + (ReadyCopy.Wear >= 0.005 ? "complete, at " + Core.Wear.Percent(ReadyCopy.Wear) + " wear" : "built and never changed") + ". Use it instead of building new parts?", Look.Meta, GUILayout.Width(430));
+                GUILayout.Label(offer, Look.Meta, GUILayout.Width(430));
                 GUILayout.FlexibleSpace();
-                if (GUILayout.Button("Use it", Look.Go, GUILayout.Height(30), GUILayout.Width(90))) UseReadyCopy();
+                if (GUILayout.Button("Use it", Look.Go, GUILayout.Height(30), GUILayout.Width(90))) UseHangarCopy();
                 GUILayout.EndHorizontal();
                 GUILayout.Space(6);
             }

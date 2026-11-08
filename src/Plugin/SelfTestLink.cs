@@ -210,7 +210,7 @@ namespace PhilsReusabilitySuite
             EditorAddon.Instance.OpenBuildPanel();
             BuildPanel panel = EditorAddon.Instance.Panel;
             Check(!panel.Unfiled, "a filed design shows no 'Not filed' warning");
-            Check(panel.ReadyCopy == null, "nothing ready in the hangar to offer yet");
+            Check(panel.HangarCopy == null, "nothing ready in the hangar to offer yet");
             PRSScenario sc = PRSScenario.Instance;
             Check(panel.Confirm(), "building the Hopper " + panel.Error);
             string jobId = sc.Jobs.LastOrDefault()?.Id;
@@ -278,11 +278,11 @@ namespace PhilsReusabilitySuite
             yield return Place(d);
             EditorAddon.Instance.OpenBuildPanel();
             panel = EditorAddon.Instance.Panel;
-            Check(panel.ReadyCopy != null && panel.ReadyCopy.Id == readyId, "the Build panel offers the ready Hopper");
+            Check(panel.HangarCopy != null && panel.HangarCopy.Id == readyId, "the Build panel offers the ready Hopper");
             yield return new WaitForSeconds(1f);
             Shot("build_panel_use_it");
             yield return new WaitForSeconds(1f);
-            panel.UseReadyCopy();
+            panel.UseHangarCopy();
             Check(panel.ReadyShip != null && panel.ReadyShip.Id == readyId, "after Use it, the VAB ship is the ready hangar ship");
             var inVab = EditorLogic.fetch.ship.parts.Select(PRSPart.SerialOf).ToList();
             Check(inVab.Count == ready.Placed.Count && inVab.All(ready.Placed.Contains), "its parts carry the ready ship's serials");
@@ -318,7 +318,7 @@ namespace PhilsReusabilitySuite
             EditorAddon.Instance.OpenBuildPanel();
             panel = EditorAddon.Instance.Panel;
             Check(panel.ReadyShip == null && panel.Editing == null && panel.Quote != null && panel.Quote.Lines.All(l => l.Kind == OwnerKind.New), "the Build panel prices it as all new parts, not the hangar ship");
-            Check(panel.ReadyCopy != null && panel.ReadyCopy.Id == readyId, "and offers the ready Hopper with Use it instead");
+            Check(panel.HangarCopy != null && panel.HangarCopy.Id == readyId, "and offers the ready Hopper with Use it instead");
             panel.Showing = false;
             HangarShip readyNow = PRSScenario.Instance.Hangar.FirstOrDefault(h => h.Id == readyId);
             Check(readyNow != null && readyNow.ReservedBy == null, "the ready Hopper is still in the hangar, free");
@@ -405,6 +405,25 @@ namespace PhilsReusabilitySuite
             yield return ToEditor();
             sc = PRSScenario.Instance;
             flown = sc.Hangar.FirstOrDefault(h => h.Id == flownId);
+
+            // 5b. The plain design loaded in the VAB (Phil, 2026-11-08: loading Gallant I said nothing about the flown
+            // Gallant I #1): the Build panel points out the flown copy, short its chute, and "Use it" builds from it,
+            // its own parts refurbished and only the chute new. Built, it would stay that ship.
+            yield return Place(d);
+            EditorAddon.Instance.OpenBuildPanel();
+            BuildPanel bp = EditorAddon.Instance.Panel;
+            double allNew = bp.Quote?.Total ?? 0, offered = bp.CopyQuote?.Total ?? 0;
+            Check(bp.HangarCopy?.Id == flownId && !bp.CopyWhole && bp.CopyQuote != null && offered < allNew, "the Build panel offers the flown Hopper, short its chute, for " + Pricing.Funds(offered) + " instead of " + Pricing.Funds(allNew));
+            yield return new WaitForSeconds(1f);
+            Shot("build_panel_flown_copy");
+            bp.UseHangarCopy();
+            Quote uq = bp.Quote;
+            Check(uq != null && uq.HangarShips.Contains(flownId) && uq.RefurbishPrice > 0 && (uq.NewPrice < 1 || Near(uq.NewPrice, chutePrice, 1)) && Near(uq.Total, offered, 1),
+                  "Use it: the flown parts refurbished (" + Pricing.Funds(uq?.RefurbishPrice ?? 0) + "), only the chute new (" + Pricing.Funds(uq?.NewPrice ?? 0) + "), the price it offered");
+            Check(bp.Kept?.Id == flownId && bp.HangarCopy == null, "built from it, it would stay " + flownDisplay + " (" + bp.Kept?.DisplayName + "), and nothing more is offered");
+            MethodInfo clearVab = typeof(EditorLogic).GetMethod("OnNewShipConfirm", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+            clearVab?.Invoke(EditorLogic.fetch, null);
+            yield return new WaitForSeconds(2f);
             flownRow = Link.CopiesOf(d).FirstOrDefault(r => r.Id == flownId);
             ShipConstruct got = null;
             bool called = false;
