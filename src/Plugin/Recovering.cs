@@ -244,9 +244,9 @@ namespace PhilsReusabilitySuite
             GUILayout.Label(where + (factor < 1 ? " · stock would give back " + Math.Round(factor * 100) + "%" : ""), Look.Meta);
             GUILayout.Space(10);
             string home = canFly ? "To the hangar" : "To the parts bin";
-            string homeSub = canFly ? "Keep the hardware. It flies again after a refit." : "No engine or probe core, so its parts go to the parts bin.";
+            string homeSub = canFly ? "Keep the hardware. It can fly again as it is, or be refurbished first." : "No engine or probe core, so its parts go to the parts bin.";
             Option(RecoverChoice.Hangar, home, homeSub, Suite.Career ? TransportText : "");
-            if (Suite.Career) Option(RecoverChoice.Sell, "Sell for scrap", "Half its price, less the haul from where it landed.", "+" + Pricing.Funds(Scrap));
+            if (Suite.Career) Option(RecoverChoice.Sell, "Sell for scrap", "Half of what it's worth where it landed: the farther from KSC, the less.", "+" + Pricing.Funds(Scrap));
             GUILayout.Space(6);
             GUILayout.Label("Either way the crew come home and their science is credited. Not worth either? Cancel, and it stays where it is: recover it later from the Tracking Station.", Look.Hint);
             GUILayout.EndVertical(); GUILayout.Space(18); GUILayout.EndHorizontal();

@@ -17,12 +17,15 @@ it hasn't had much real play yet. Back up your saves. The design is in [DESIGN.m
   twice as fast, or **Outsource** to have it now. Each VAB or SPH level gives one build line. No facility
   upgrade times, no research times, no upgrade points.
 - **A hangar.** Finished builds wait in the hangar, ready, and launch at no extra cost. Recovered ships come
-  back to the hangar exactly as they landed, a lost fin and all, and fly again after a cheap refit.
-  Refitting costs 10% of a part's price, plus 1% for every flight it has made. A flown first stage, or a ship
+  back to the hangar exactly as they landed, a lost fin and all.
+- **Wear and refurbishing.** Each craft has one wear number, from how hard its flights were: top speed, how
+  close its hottest part came to its heat limit, and G. Fly it again as it is (it's only refuelled), or
+  **refurbish** it back to 0% wear whenever you like: the price follows its wear, up to half the price of new.
+  At 100% it must be refurbished first. Wear does nothing else: no failures. A flown first stage, or a ship
   that came back short of a part, can be **restored to its design** from the hangar: its own parts plus new ones
   for whatever it's missing, and it stays the same ship.
 - **Recovery that asks.** The Recover button offers **To the hangar** (you pay the transport home, more the
-  farther away it landed) or **Sell for scrap** (half its price, less the haul). Cancel leaves it where it
+  farther away it landed) or **Sell for scrap** (half of what it's worth where it landed). Cancel leaves it where it
   is.
 - **Stage recovery.** Stages that fall out of range come home on their own if they would land safely, on
   parachutes or with a landing burn. Landing between 6 and 12 m/s breaks off outer parts; faster than that,
@@ -30,12 +33,13 @@ it hasn't had much real play yet. Back up your saves. The design is in [DESIGN.m
   stage says as it drops whether it will come home. It works while you watch from the Space Center or the
   Tracking Station too.
 - **A parts bin.** Loose parts, from ships you take apart or pieces with no engine or probe core, are used
-  automatically in new builds at refit price.
+  automatically in new builds at their refurbish price.
 - **Build ahead from the Space Center.** "Build from Phil's Builds…" in the Build queue tab queues any filed
   launcher or craft without opening the VAB or SPH, and says why if it can't be built yet.
 - **A flown booster under a new payload.** Phil's Builds' library window lists the hangar copies under
-  each launcher. Pick a flown first stage and the whole launcher goes on the cursor: that exact stage plus
-  a new upper stage from the design. Attach it under your payload. Only the new parts cost full price and
+  each launcher. Load a flown first stage and the whole launcher comes in: that exact stage plus a new
+  upper stage from the design (onto the cursor if the editor already has a craft, to attach under your
+  payload). "Load as stored" brings only what's in the hangar. Only the new parts cost full price and
   full build time.
 - **Built from designs.** Only ships built from a design filed in Phil's Builds come home to the hangar.
   Pieces of anything else go to the parts bin, and the Build panel warns you first. If a design you load
@@ -67,7 +71,7 @@ than the hangar.
 ## Settings
 
 Every number is in `GameData/PhilsReusabilitySuite/Settings.cfg`: the build-time curve, overtime and
-outsourcing prices, refit prices, scrap value, build lines per level, and `requireDesign` (set it to
+outsourcing prices, the wear rule and refurbish price, scrap value, build lines per level, and `requireDesign` (set it to
 `false` to let unfiled ships come home to the hangar too).
 
 ## Building

@@ -16,7 +16,7 @@ namespace PhilsReusabilitySuite
     /// PRSSelfTestReuse event. In a throwaway career save (zz_PRSSelfTestReuse) the stock Kerbal X is filed in
     /// Phil's Builds as a launcher. It is built and flown; high over Kerbin everything drops away and its crew pod
     /// comes home on its chute to the hangar. That flown piece is picked up as the whole design (the flown pod
-    /// plus everything else new, with matching parts from the bin), priced at refit for the flown parts, built,
+    /// plus everything else new, with matching parts from the bin), priced at their refurbish (by wear) for the flown parts, built,
     /// and flown again: the same pod comes home a second time as the same ship, with two flights in its log.
     /// </summary>
     class SelfTestReuse : MonoBehaviour
@@ -188,7 +188,7 @@ namespace PhilsReusabilitySuite
             BuildPanel panel = EditorAddon.Instance.Panel;
             Quote q1 = panel.Quote;
             Note("first build: " + designParts + " parts, new " + Pricing.Funds(q1.NewPrice) + ", fuel " + Pricing.Funds(q1.FuelPrice));
-            Check(q1.NewPrice > 0 && q1.RefitPrice == 0, "the first build is all new parts");
+            Check(q1.NewPrice > 0 && q1.RefurbishPrice == 0, "the first build is all new parts");
             PRSScenario sc = PRSScenario.Instance;
             Check(panel.Confirm(), "building the first one " + panel.Error);
             string jobId = sc.Jobs.LastOrDefault()?.Id;
@@ -253,10 +253,15 @@ namespace PhilsReusabilitySuite
             Quote q2 = panel.Quote;
             var reusedEditorSerials = new HashSet<string>(c.Used.Concat(q2.BinSwaps.Keys));
             double dryReused = panel.Craft.Children("PART").Where(p => reusedEditorSerials.Contains(Core.Craft.SerialOf(p))).Sum(p => KspCosts.Instance.Cost(p).Dry);
-            Note("second build: new " + Pricing.Funds(q2.NewPrice) + ", refit " + Pricing.Funds(q2.RefitPrice) + ", fuel " + Pricing.Funds(q2.FuelPrice) + "; reused parts' price " + Pricing.Funds(dryReused) + " (" + q2.BinSwaps.Count + " from the bin)");
+            Note("second build: new " + Pricing.Funds(q2.NewPrice) + ", refurbish " + Pricing.Funds(q2.RefurbishPrice) + ", fuel " + Pricing.Funds(q2.FuelPrice) + "; reused parts' price " + Pricing.Funds(dryReused) + " (" + q2.BinSwaps.Count + " from the bin)");
             Check(q2.HangarShips.Contains(flownId), "the Build panel prices the flown pod as the hangar's own " + flownName);
             Check(Near(q2.NewPrice + dryReused, q1.NewPrice, 2), "new parts cost the design less the reused parts (" + Pricing.Funds(q2.NewPrice) + " + " + Pricing.Funds(dryReused) + " = " + Pricing.Funds(q1.NewPrice) + ")");
-            Check(Near(q2.RefitPrice, dryReused * Pricing.RefitShare(1, S), 2), "the reused parts cost their refit after one flight (" + Pricing.Funds(q2.RefitPrice) + ")");
+            // Each reused part costs its price × its craft's wear × half: the pod's wear from its flight, a bin part's its own.
+            double wantRefurbish = panel.Craft.Children("PART").Where(p => reusedEditorSerials.Contains(Core.Craft.SerialOf(p))).Sum(p =>
+                KspCosts.Instance.Cost(p).Dry * Pricing.RefurbishShare(q2.BinSwaps.TryGetValue(Core.Craft.SerialOf(p), out Owner bo) ? bo.Wear : Core.Wear.In(p.Children("MODULE").FirstOrDefault(m => m.Get("name") == Core.Craft.ModuleName)), S));
+            double podWear = PRSScenario.Instance.Hangar.First(h => h.Id == flownId).Wear;
+            Note("the flown pod came home at " + Core.Wear.Percent(podWear) + " wear");
+            Check(podWear > 0 && Near(q2.RefurbishPrice, wantRefurbish, 2), "the reused parts cost their refurbish by wear (" + Pricing.Funds(q2.RefurbishPrice) + " of " + Pricing.Funds(wantRefurbish) + ")");
             Check(panel.ReadyCopy == null && !panel.Unfiled, "no 'Use it' offer and no 'Not filed' warning");
             sc = PRSScenario.Instance;
             Check(panel.Confirm(), "building the second one " + panel.Error);

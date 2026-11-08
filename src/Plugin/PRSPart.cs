@@ -18,6 +18,12 @@ namespace PhilsReusabilitySuite
         /// design's file. Empty and -1 for a part added by hand.</summary>
         [KSPField(isPersistant = true)] public string design = "";
         [KSPField(isPersistant = true)] public int slot = -1;
+        /// <summary>The wear of the craft this part belongs to, 0 to 1: one number per craft, set when it comes home
+        /// and back to 0 when it's refurbished or built into a new craft.</summary>
+        [KSPField(isPersistant = true)] public float wear = 0;
+        /// <summary>This flight's hardest moments so far (surface speed, hottest part as a share of its limit, G),
+        /// kept on every part so a piece that comes off takes its own record home. Cleared at launch.</summary>
+        [KSPField(isPersistant = true)] public float peakSpeed = 0, peakHeat = 0, peakG = 0;
 
         public static string NewSerial() => Guid.NewGuid().ToString("N");
 
@@ -45,7 +51,11 @@ namespace PhilsReusabilitySuite
             serial = NewSerial();
             flights = 0;
             hull = "";
+            wear = 0;
+            ClearPeaks();
         }
+
+        public void ClearPeaks() { peakSpeed = peakHeat = peakG = 0; }
 
         public override string GetInfo() { return ""; }
 

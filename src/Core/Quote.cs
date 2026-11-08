@@ -13,11 +13,12 @@ namespace PhilsReusabilitySuite.Core
         public OwnerKind Kind;
         public string ShipId;
         public string Label;
-        /// <summary>A hangar ship that is ready to fly: already refitted and refuelled.</summary>
-        public bool RefitDone;
-        /// <summary>For a bin part swapped in for a new one: its serial and flights.</summary>
+        /// <summary>A hangar ship that is ready to fly: fuelled (its parts still cost their refurbish, by wear, in a build).</summary>
+        public bool Ready;
+        /// <summary>For a bin part swapped in for a new one: its serial, flights and wear.</summary>
         public string BinSerial;
         public int Flights = -1;
+        public double Wear;
         public static readonly Owner NewPart = new Owner { Kind = OwnerKind.New };
     }
 
@@ -43,15 +44,17 @@ namespace PhilsReusabilitySuite.Core
         public double Price;
         public double Fuel;
         public int MaxFlights;
-        public bool RefitDone;
+        /// <summary>The wear of the reused parts on this line (one craft's, so one number).</summary>
+        public double Wear;
+        public bool Ready;
     }
 
     /// <summary>What a build costs and how long it takes, piece by piece.</summary>
     public sealed class Quote
     {
         public readonly List<QuoteLine> Lines = new List<QuoteLine>();
-        public double NewPrice, RefitPrice, FuelPrice;
-        public double BuildPrice => NewPrice + RefitPrice;
+        public double NewPrice, RefurbishPrice, FuelPrice;
+        public double BuildPrice => NewPrice + RefurbishPrice;
         public double Total => BuildPrice + FuelPrice;
         public double Seconds;
         public int PartCount;
@@ -73,6 +76,7 @@ namespace PhilsReusabilitySuite.Core
                 if (serial == null || !BinSwaps.TryGetValue(serial, out Owner b)) continue;
                 mod.Set("serial", b.BinSerial);
                 mod.Set("flights", Math.Max(0, b.Flights).ToString(CultureInfo.InvariantCulture));
+                mod.Set("wear", b.Wear.ToString("R", CultureInfo.InvariantCulture));
             }
             return c;
         }
@@ -94,6 +98,7 @@ namespace PhilsReusabilitySuite.Core
                 q.PartCount++;
                 Node mod = part.Children("MODULE").FirstOrDefault(m => m.Get("name") == Craft.ModuleName);
                 string serial = mod?.Get("serial");
+                double wear = Wear.In(mod);
                 int flights = int.TryParse(mod?.Get("flights"), NumberStyles.Integer, CultureInfo.InvariantCulture, out int f) ? f : 0;
                 Owner owner = (string.IsNullOrEmpty(serial) ? null : ownerOf(serial)) ?? Owner.NewPart;
                 if (owner.Kind == OwnerKind.New && binMatch != null && !string.IsNullOrEmpty(serial))
@@ -103,6 +108,7 @@ namespace PhilsReusabilitySuite.Core
                     {
                         owner = b;
                         flights = Math.Max(0, b.Flights);
+                        wear = b.Wear;
                         q.BinSwaps[serial] = b;
                     }
                 }
@@ -111,15 +117,16 @@ namespace PhilsReusabilitySuite.Core
 
                 double price;
                 if (owner.Kind == OwnerKind.New) price = cost.Dry;
-                else price = owner.RefitDone ? 0 : cost.Dry * Pricing.RefitShare(flights, s);
+                else price = cost.Dry * Pricing.RefurbishShare(wear, s);
 
                 // Fuel: a new part is filled from empty; a reused one only tops up what it came back with; a
-                // ready ship is already full.
+                // ready ship is already full. Reused hardware is refurbished in any build, a ready ship too: the
+                // built craft leaves at 0% wear (Phil: one wear number per craft).
                 double fuel = 0;
-                IDictionary<string, double> left = owner.Kind == OwnerKind.Hangar && !owner.RefitDone ? cameBack(serial) : null;
+                IDictionary<string, double> left = owner.Kind == OwnerKind.Hangar && !owner.Ready ? cameBack(serial) : null;
                 foreach (KeyValuePair<string, double> res in cost.Amounts)
                 {
-                    double have = owner.RefitDone ? res.Value : (left != null && left.TryGetValue(res.Key, out double l) ? l : 0);
+                    double have = owner.Ready ? res.Value : (left != null && left.TryGetValue(res.Key, out double l) ? l : 0);
                     fuel += Math.Max(0, res.Value - have) * costs.UnitCost(res.Key);
                 }
 
@@ -130,7 +137,7 @@ namespace PhilsReusabilitySuite.Core
                     {
                         Kind = owner.Kind,
                         ShipId = owner.ShipId,
-                        RefitDone = owner.RefitDone,
+                        Ready = owner.Ready,
                         Label = owner.Kind == OwnerKind.New ? shipName : owner.Kind == OwnerKind.Bin ? "From the parts bin" : owner.Label,
                     };
                     lines[key] = line;
@@ -139,7 +146,8 @@ namespace PhilsReusabilitySuite.Core
                 line.Price += price;
                 line.Fuel += fuel;
                 line.MaxFlights = Math.Max(line.MaxFlights, flights);
-                if (owner.Kind == OwnerKind.New) q.NewPrice += price; else q.RefitPrice += price;
+                if (owner.Kind != OwnerKind.New) line.Wear = Math.Max(line.Wear, wear);
+                if (owner.Kind == OwnerKind.New) q.NewPrice += price; else q.RefurbishPrice += price;
                 q.FuelPrice += fuel;
                 if (owner.Kind == OwnerKind.Hangar) q.HangarShips.Add(owner.ShipId);
                 if (owner.Kind == OwnerKind.Bin) q.BinSerials.Add(owner.BinSerial ?? serial);

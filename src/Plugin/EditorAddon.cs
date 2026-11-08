@@ -25,7 +25,10 @@ namespace PhilsReusabilitySuite
             Instance = this;
             Look.Init();
             placed.Clear();
-            loading = null;
+            // A hangar ship opened from the Space Center comes in as the editor starts: its hardware is the ship.
+            loading = arriving;
+            if (arriving != null) placed.UnionWith(arriving);
+            arriving = null;
             adoptRestored = EditorDriver.StartupBehaviour == EditorDriver.StartupBehaviours.LOAD_FROM_CACHE;
             GameEvents.onEditorShipModified.Add(OnShipModified);
             GameEvents.onEditorLoad.Add(OnEditorLoad);
@@ -108,6 +111,8 @@ namespace PhilsReusabilitySuite
         static readonly HashSet<string> placed = new HashSet<string>();
         /// <summary>Hardware the suite is loading as the whole ship (a hangar ship, a queued build).</summary>
         static HashSet<string> loading;
+        /// <summary>Hardware of a hangar ship opened from the Space Center, for the editor about to start.</summary>
+        static HashSet<string> arriving;
         /// <summary>Back in the editor, KSP is bringing back the ship that was there: what's still stored of it is
         /// the hardware it was (the ship just launched is flying now, so its parts aren't).</summary>
         static bool adoptRestored;
@@ -190,6 +195,21 @@ namespace PhilsReusabilitySuite
             Log.Info("Loaded " + h.DisplayName + " from the hangar (" + h.Placed.Count + " parts)");
         }
 
+        /// <summary>"Open in the VAB": the hangar ship exactly as it's stored, in the editor. From the Space Center it goes
+        /// to its own building (VAB or SPH) and opens it there.</summary>
+        public static void OpenHangarShip(HangarShip h)
+        {
+            if (HighLogic.LoadedSceneIsEditor) { LoadHangarShip(h); return; }
+            string facility = Suite.FacilityOf(h.Craft);
+            ConfigNode c = KspNodes.ToKsp(h.Craft, "");
+            c.SetValue("ship", h.DisplayName, true);
+            string path = System.IO.Path.Combine(SuiteFiles.SaveDir, "hangar-" + h.Id + ".craft");
+            c.Save(path);
+            arriving = new HashSet<string>(h.Placed);
+            Log.Info("Opening " + h.DisplayName + " from the hangar in the " + facility + " (" + h.Placed.Count + " parts)");
+            EditorDriver.StartAndLoadVessel(path, facility == "SPH" ? EditorFacility.SPH : EditorFacility.VAB);
+        }
+
         // ---- Build panel ----
 
         public BuildPanel Panel { get; private set; }
@@ -268,6 +288,10 @@ namespace PhilsReusabilitySuite
         public Quote Quote;
         public BuildJob Editing;
         public HangarShip ReadyShip;
+        /// <summary>The editor's ship is exactly a hangar ship that isn't fuelled yet: it can launch as it is.</summary>
+        public HangarShip AsIs;
+        /// <summary>The hangar ship whose name, number and flight log this build keeps (it's built on top of it).</summary>
+        public HangarShip Kept;
         public Pace Chosen = Pace.Normal;
         public string Error;
 
@@ -305,9 +329,19 @@ namespace PhilsReusabilitySuite
             }
             Facility = ship.shipFacility == EditorFacility.SPH ? "SPH" : "VAB";
             var serials = ship.parts.Select(PRSPart.SerialOf).Where(s => s != null).ToList();
+            // A hangar ship opened in the editor is called "Gallant I #1". Built, it stays that ship (same name, number
+            // and flight log), so the build is called "Gallant I": built as "Gallant I #1" it came home as
+            // "Gallant I #1 #1" (Phil's play-test, 2026-11-08).
+            HangarShip named = sc?.Hangar.FirstOrDefault(h => h.DisplayName == ShipName && h.Placed.Any(serials.Contains));
+            if (named != null) { ShipName = named.Name; Craft.Set("ship", named.Name); }
             ReadyShip = sc?.ReadyShipOf(serials);
+            AsIs = ReadyShip == null && serials.Count == ship.parts.Count ? sc?.HangarShipOf(serials) : null;
             Editing = ReadyShip == null ? sc?.JobOf(serials) : null;
             Quote = sc?.QuoteFor(Craft, ShipName, Editing);
+            // The hangar ship whose identity the build keeps: the one holding its root part, under the same name.
+            string rootSerial = PRSPart.SerialOf(ship.parts.FirstOrDefault(p => p.parent == null));
+            Kept = rootSerial == null ? null : sc?.Hangar.FirstOrDefault(h => h.Name == ShipName && h.Placed.Contains(rootSerial)
+                                                                          && (h.ReservedBy == null || h.ReservedBy == Editing?.Id));
             try { Landings = StageReturns.CheckEditorShip(ship); }
             catch (System.Exception ex) { Landings = new List<StageReturns.EditorPiece>(); Log.Warn("Landing check failed: " + ex.Message); }
             FindReadyCopy(ship);
@@ -377,6 +411,7 @@ namespace PhilsReusabilitySuite
                 m.serial = hm.Get("serial");
                 m.flights = int.TryParse(hm.Get("flights"), out int f) ? f : 0;
                 m.hull = hm.Get("hull") ?? "";
+                m.wear = (float)Core.Wear.In(hm);
                 EditorAddon.Claim(new[] { m.serial });
             }
             Log.Info("Using the ready " + ReadyCopy.DisplayName + " from the hangar in this build");
@@ -457,6 +492,7 @@ namespace PhilsReusabilitySuite
                 if (m == null || string.IsNullOrEmpty(m.serial) || !q.BinSwaps.TryGetValue(m.serial, out Owner b)) continue;
                 m.serial = b.BinSerial;
                 m.flights = System.Math.Max(0, b.Flights);
+                m.wear = (float)b.Wear;
             }
         }
 
@@ -504,13 +540,20 @@ namespace PhilsReusabilitySuite
 
             if (ReadyShip != null) { DrawReady(); EndBody(); return; }
 
-            GUILayout.Label(Editing != null ? "Update build" : "Ready to build", Look.Eyebrow);
-            GUILayout.Label(ShipName, Look.H2);
+            GUILayout.Label(Editing != null ? "Update build" : AsIs != null ? "In the hangar as it is" : "Ready to build", Look.Eyebrow);
+            GUILayout.Label(Kept?.DisplayName ?? ShipName, Look.H2);
             GUILayout.Space(6);
+            if (AsIs != null)
+            {
+                bool worn = Core.Wear.WornOut(AsIs.Wear);
+                GUILayout.Label(worn ? "<b>" + AsIs.DisplayName + "</b> is worn out (100% wear): it must be refurbished before it flies again."
+                                     : "<b>" + AsIs.DisplayName + "</b> is exactly as it came home, at " + Core.Wear.Percent(AsIs.Wear) + " wear. Launch it as it is (it's refuelled first), or refurbish it back to 0% wear.", worn ? Look.Notice : Look.NoticeGood);
+                GUILayout.Space(6);
+            }
             if (ReadyCopy != null && Quote != null)
             {
                 GUILayout.BeginHorizontal(Look.NoticeGood);
-                GUILayout.Label("A ready <b>" + ReadyCopy.DisplayName + "</b> is in the hangar, built and never changed. Use it instead of building new parts?", Look.Meta, GUILayout.Width(430));
+                GUILayout.Label("A ready <b>" + ReadyCopy.DisplayName + "</b> is in the hangar, " + (ReadyCopy.Wear >= 0.005 ? "complete, at " + Core.Wear.Percent(ReadyCopy.Wear) + " wear" : "built and never changed") + ". Use it instead of building new parts?", Look.Meta, GUILayout.Width(430));
                 GUILayout.FlexibleSpace();
                 if (GUILayout.Button("Use it", Look.Go, GUILayout.Height(30), GUILayout.Width(90))) UseReadyCopy();
                 GUILayout.EndHorizontal();
@@ -531,16 +574,18 @@ namespace PhilsReusabilitySuite
             }
             if (Quote == null) { GUILayout.Label("The suite's save data isn't loaded.", Look.MetaBad); EndBody(); return; }
 
-            scroll = GUILayout.BeginScrollView(scroll, GUILayout.MaxHeight(330), GUILayout.MinHeight(Mathf.Min(330, 70 * Quote.Lines.Count)));
+            // What the build is made of: one build, broken down (Phil read these as cards to pick from).
+            GUILayout.Label("WHAT GOES INTO IT", Look.Section);
+            scroll = GUILayout.BeginScrollView(scroll, GUILayout.MaxHeight(300), GUILayout.MinHeight(Mathf.Min(300, 48 * Quote.Lines.Count)));
             foreach (QuoteLine line in Quote.Lines) DrawLine(line);
             GUILayout.EndScrollView();
-            GUILayout.Label("Reused parts cost only their refit. New parts cost their full price.", Look.Hint);
+            GUILayout.Label("Flown parts cost only their refurbish, which follows their wear. New parts cost their full price.", Look.Hint);
             DrawLandings();
 
             GUILayout.Space(8);
             GUILayout.BeginVertical(Look.Notice);
             Row("New parts", Quote.NewPrice, Look.RowVal);
-            Row("Refit of reused parts", Quote.RefitPrice, Look.RowVal);
+            Row("Refurbishing reused parts", Quote.RefurbishPrice, Look.RowVal);
             Row("Fuel", Quote.FuelPrice, Look.RowVal);
             if (Chosen != Pace.Normal) Row(Chosen == Pace.Overtime ? "Overtime" : "Outsourcing", Extra(Chosen), Look.RowValAmber, "+");
             if (Editing != null) Row("Already paid", -Editing.Paid, Look.RowValGood);
@@ -576,37 +621,38 @@ namespace PhilsReusabilitySuite
             GUILayout.Label("Ready in the hangar", Look.Eyebrow);
             GUILayout.Label(ReadyShip.DisplayName, Look.H2);
             GUILayout.Space(8);
-            GUILayout.Label(ReadyShip.DisplayName + " is built and ready, so launching it costs nothing. Change anything and it becomes a build again.", Look.NoticeGood);
+            GUILayout.Label(ReadyShip.DisplayName + " is fuelled and ready, so launching it costs nothing" + (ReadyShip.Wear >= 0.005 ? " (wear " + Core.Wear.Percent(ReadyShip.Wear) + "; you can refurbish it first)" : "") + ". Change anything and it becomes a build again.", Look.NoticeGood);
         }
 
+        /// <summary>One line of the build's breakdown: where these parts come from, what's done to them, and the price.</summary>
         void DrawLine(QuoteLine line)
         {
-            bool reused = line.Kind != OwnerKind.New;
-            GUILayout.BeginHorizontal(reused ? Look.CardReuse : Look.Card);
-            GUILayout.BeginVertical();
+            string parts = Suite.Parts(line.Parts);
+            string title, note;
+            if (line.Kind == OwnerKind.New) { title = parts.Replace(" part", " new part"); note = "built new"; }
+            else
+            {
+                string wear = "wear " + Core.Wear.Percent(line.Wear);
+                bool nothing = line.Price < 0.5 && line.Fuel < 0.5;
+                if (line.Kind == OwnerKind.Bin) title = parts + " from the parts bin";
+                else title = (line.MaxFlights > 0 ? parts.Replace(" part", " flown part") : parts) + " from " + line.Label;
+                note = nothing ? (line.Ready ? "fuelled and like new: nothing to do" : "nothing to do")
+                     : wear + " · refurbished to 0%" + (line.Fuel >= 0.5 ? " and refuelled" : "");
+            }
             GUILayout.BeginHorizontal();
-            GUILayout.Label(line.Label, Look.Name, GUILayout.ExpandWidth(false));
-            GUILayout.Space(6);
-            if (line.Kind == OwnerKind.New) Look.Chip("New", Look.ChipNew);
-            else if (line.Kind == OwnerKind.Bin) Look.Chip("From the bin", Look.ChipReuse);
-            else if (line.RefitDone) Look.Chip("In the hangar", Look.ChipReuse);
-            else Look.Chip("Reused · " + line.MaxFlights + (line.MaxFlights == 1 ? " flight" : " flights"), Look.ChipReuse);
-            GUILayout.FlexibleSpace();
-            GUILayout.EndHorizontal();
-            string meta = line.Parts + (line.Parts == 1 ? " part" : " parts");
-            if (line.Kind == OwnerKind.Hangar && line.RefitDone) meta += " · ready, nothing to build";
-            else if (line.Kind != OwnerKind.New) meta += " · refit " + Mathf.RoundToInt((float)(Pricing.RefitShare(line.MaxFlights, S) * 100)) + "%: " + Mathf.RoundToInt((float)(S.RefitBase * 100)) + "% plus " + Mathf.RoundToInt((float)(S.RefitPerFlight * 100)) + "% for each flight";
-            else meta += " · built new";
-            GUILayout.Label(meta, Look.Meta);
+            GUILayout.BeginVertical();
+            GUILayout.Label(title, Look.Name);
+            GUILayout.Label(note, Look.Meta);
             GUILayout.EndVertical();
+            GUILayout.FlexibleSpace();
             GUILayout.BeginVertical(GUILayout.Width(120));
-            if (reused && line.Price < 0.5) GUILayout.Label("No cost", Look.PriceFree);
+            if (line.Kind != OwnerKind.New && line.Price < 0.5) GUILayout.Label("No cost", Look.PriceFree);
             else GUILayout.Label(Pricing.Funds(line.Price), Look.Price);
-            if (line.Kind != OwnerKind.New && !line.RefitDone) GUILayout.Label("refit", Look.PriceSub);
             if (line.Fuel >= 0.5) GUILayout.Label("+ fuel " + Pricing.Funds(line.Fuel), Look.PriceSub);
             GUILayout.EndVertical();
             GUILayout.EndHorizontal();
-            GUILayout.Space(6);
+            Look.Fill(GUILayoutUtility.GetRect(1, 1, GUILayout.ExpandWidth(true)), Look.Line);
+            GUILayout.Space(4);
         }
 
         static void Row(string key, double value, GUIStyle style, string sign = "")
@@ -650,6 +696,9 @@ namespace PhilsReusabilitySuite
             GUILayout.Space(8);
             if (ReadyShip != null)
             {
+                // Refurbishing is optional (Phil): a fuelled ship with wear can still be refurbished first.
+                if (ReadyShip.Wear >= 0.005 && Quote != null && GUILayout.Button("Refurbish · " + Pricing.Funds(DueNow), Look.Ghost, GUILayout.Height(38))) Build();
+                GUILayout.Space(8);
                 if (GUILayout.Button("Launch", Look.Go, GUILayout.Height(38), GUILayout.MinWidth(140)))
                 {
                     Showing = false;
@@ -658,16 +707,34 @@ namespace PhilsReusabilitySuite
             }
             else
             {
-                string verb = Editing != null ? "Update build" : Chosen == Pace.Outsource ? "Outsource" : Chosen == Pace.Overtime ? "Build with overtime" : "Build";
-                string label = verb + " · " + (DueNow < 0 ? "refund " + Pricing.Funds(-DueNow) : Pricing.Funds(DueNow));
-                if (GUILayout.Button(label, Look.Go, GUILayout.Height(38), GUILayout.MinWidth(180)))
+                if (AsIs != null && !Core.Wear.WornOut(AsIs.Wear))
                 {
-                    // KSP's own checks first; its dialogs explain any problem. Then build.
-                    Showing = false;
-                    BuildChecks.Run(() => { if (!Confirm()) Showing = true; }, () => Showing = true);
+                    double fuel = PRSScenario.Instance != null ? PRSScenario.Instance.RefuelPrice(AsIs) : 0;
+                    if (GUILayout.Button("Launch as it is · " + (fuel < 0.5 ? "free" : "fuel " + Pricing.Funds(fuel)), Look.Ghost, GUILayout.Height(38))) LaunchAsIs();
+                    GUILayout.Space(8);
                 }
+                string verb = Editing != null ? "Update build" : Chosen == Pace.Outsource ? "Outsource" : Chosen == Pace.Overtime ? (AsIs != null ? "Refurbish with overtime" : "Build with overtime") : AsIs != null ? "Refurbish" : "Build";
+                string label = verb + " · " + (DueNow < 0 ? "refund " + Pricing.Funds(-DueNow) : Pricing.Funds(DueNow));
+                if (GUILayout.Button(label, Look.Go, GUILayout.Height(38), GUILayout.MinWidth(180))) Build();
             }
             GUILayout.EndHorizontal();
+        }
+
+        /// <summary>KSP's own checks first (its dialogs explain any problem), then the build.</summary>
+        void Build()
+        {
+            Showing = false;
+            BuildChecks.Run(() => { if (!Confirm()) Showing = true; }, () => Showing = true);
+        }
+
+        /// <summary>A hangar ship exactly as it came home: refuelled (all it pays), then launched with its wear.</summary>
+        void LaunchAsIs()
+        {
+            PRSScenario sc = PRSScenario.Instance;
+            if (sc == null || AsIs == null) return;
+            if (!sc.Refuel(AsIs, out string err)) { Error = err; return; }
+            Showing = false;
+            EditorAddon.Instance.StockLaunch();
         }
     }
 }

@@ -379,19 +379,25 @@ namespace PhilsReusabilitySuite
             HangarShip flown = sc.Hangar.FirstOrDefault(h => h.Placed.Count == home.Count && h.Placed.All(home.Contains));
             Check(flown != null && BuildsLink.DesignOf(flown) == d.Id && flown.Flights == 1, "a filed design's piece comes home to the hangar (" + flown?.DisplayName + ", " + home.Count + " parts)");
             if (flown == null) yield break;
+            // A hop from the pad adds next to no wear: give it 30% so the refurbish has a price to check.
+            Check(flown.Wear < 0.02, "a hop from the pad adds next to no wear (" + Core.Wear.Percent(flown.Wear) + ")");
+            flown.SetWear(0.3);
             CompletionResult c5 = BuildsLink.Complete(d, flown);
             Check(c5 != null && c5.Used.Count == home.Count && c5.NewSlots.Count == 1 && c5.NewSlots[0] == chuteSlot, "completing it to the design: its own " + c5?.Used.Count + " parts, and a new part in the chute's slot");
             rows = Link.CopiesOf(d);
             CopyRow flownRow = rows.FirstOrDefault(r => r.Id == flown.Id);
             // The chute was destroyed while attached, so the copy is missing it (a spent upper stage wouldn't be).
-            Check(flownRow != null && flownRow.Text == "first stage · 1 flight" && flownRow.Warning == "missing 1 part", "its library row (" + flownRow?.Label + " " + flownRow?.Text + " " + flownRow?.Warning + ")");
+            Check(flownRow != null && flownRow.Text == "first stage · 1 flight · wear 30%" && flownRow.Warning == "missing 1 part", "its library row (" + flownRow?.Label + " " + flownRow?.Text + " " + flownRow?.Warning + ")");
             Check(Link.Note(d) == "1 flown first stage in the hangar", "the design's note: " + Link.Note(d));
             CopyDetail fd = flownRow != null ? Link.Detail(d, flownRow) : null;
-            Check(fd != null && fd.Lines.Any(l => l.Label.StartsWith("1 new part")) && fd.Lines.Any(l => l.Label == "Refit"), "its detail panel prices the refit and the new part");
+            Check(fd != null && fd.Lines.Any(l => l.Label.StartsWith("1 new part")) && fd.Lines.Any(l => l.Label == "Refurbish to 0% wear") && fd.Chips.Any(ch => ch.Text == "Wear 30%"), "its detail panel shows its wear and prices the refurbish and the new part");
+            var openField = typeof(CopyDetail).GetField("Open");
+            if (openField != null) Check(fd != null && openField.GetValue(fd) != null, "its detail panel offers Load as stored beside Load");
+            else Note("this Phil's Builds has no Load as stored button yet");
             Check(fd != null && fd.Log.Count > 0, "its detail panel shows its flight log (" + (fd?.Log.FirstOrDefault() ?? "none") + ")");
             Quote cq = sc.QuoteFor(c5.Craft, flown.DisplayName, null);
             float chutePrice = PartLoader.getPartInfoByName("parachuteSingle").cost;
-            Check(Near(cq.NewPrice, chutePrice, 1) && cq.RefitPrice > 0, "the whole Hopper from it: the chute new (" + Pricing.Funds(cq.NewPrice) + " of " + Pricing.Funds(chutePrice) + "), the rest refit (" + Pricing.Funds(cq.RefitPrice) + ")");
+            Check(Near(cq.NewPrice, chutePrice, 1) && cq.RefurbishPrice > 0, "the whole Hopper from it: the chute new (" + Pricing.Funds(cq.NewPrice) + " of " + Pricing.Funds(chutePrice) + "), the rest refurbished (" + Pricing.Funds(cq.RefurbishPrice) + ")");
             string flownId = flown.Id, flownHull = flown.Hull;
             string flownDisplay = flown.DisplayName;
 
@@ -524,12 +530,13 @@ namespace PhilsReusabilitySuite
             if (rs != null)
             {
                 bool chuteFromBin = rs.Quote.BinSerials.Count == 1;
-                Check(rs.Quote.RefitPrice > 0 && (chuteFromBin ? rs.Quote.NewPrice < 1 : Near(rs.Quote.NewPrice, chutePrice, 1)), "it costs a chute (" + (chuteFromBin ? "from the bin" : "new, " + Pricing.Funds(rs.Quote.NewPrice)) + ") and the refit of the rest (" + Pricing.Funds(rs.Quote.RefitPrice) + ")");
+                Check(rs.Quote.RefurbishPrice > 0 && (chuteFromBin ? rs.Quote.NewPrice < 1 : Near(rs.Quote.NewPrice, chutePrice, 1)), "it costs a chute (" + (chuteFromBin ? "from the bin" : "new, " + Pricing.Funds(rs.Quote.NewPrice)) + ") and the refurbish of the rest (" + Pricing.Funds(rs.Quote.RefurbishPrice) + ")");
                 BuildJob rj = BuildsLink.RestoreBuild(toRestore, rs, false, true, out err);
                 Check(rj != null, "restoring it " + err);
                 HangarShip restored = sc.Hangar.FirstOrDefault(h => h.Id == flownId);
                 Check(restored != null && restored.Ready && restored.Placed.Count == 8 && home.All(restored.Placed.Contains), "it's ready again with its own flown parts and a chute (" + restored?.Placed.Count + " parts)");
                 Check(restored != null && restored.DisplayName == flownDisplay, "as the same ship (" + restored?.DisplayName + ")");
+                Check(restored != null && restored.Wear == 0 && restored.Craft.Children("PART").All(p => Core.Wear.In(p.Children("MODULE").FirstOrDefault(m => m.Get("name") == Core.Craft.ModuleName)) == 0), "restoring refurbishes the rest too: the whole craft leaves at 0% wear");
             }
 
             // 8. The VAB landing check on the stock Kerbal X: launch clamps stay on the pad, and the same ship

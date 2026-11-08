@@ -372,11 +372,11 @@ namespace PhilsReusabilitySuite
                 {
                     Id = h.Id,
                     Label = "#" + h.Number,
-                    Text = what + " · " + (h.Flights == 0 ? "never flown" : h.Flights + (h.Flights == 1 ? " flight" : " flights")),
+                    Text = what + " · " + (h.Flights == 0 ? "never flown" : h.Flights + (h.Flights == 1 ? " flight" : " flights")) + " · wear " + Core.Wear.Percent(h.Wear),
                     Warning = h.Missing.Count > 0 ? "missing " + Suite.Parts(h.Missing.Count) : "",
                     Price = Price(q),
                     Reserved = h.ReservedBy != null,
-                    ReservedText = h.ReservedBy != null ? "in the build of " + (sc.Jobs.FirstOrDefault(j => j.Id == h.ReservedBy)?.Name ?? "a ship") : "",
+                    ReservedText = h.ReservedBy != null ? "in the build of " + (sc.Jobs.FirstOrDefault(j => j.Id == h.ReservedBy) is BuildJob bj ? sc.TitleOf(bj) : "a ship") : "",
                 });
             }
             return rows;
@@ -407,7 +407,7 @@ namespace PhilsReusabilitySuite
                 Quote q = sc.QuoteFor(Completion.Complete(file, design.Id, new Node[0]).Craft, design.Name, null);
                 var d = new CopyDetail { Eyebrow = kind + " · " + design.Family + " family", Title = design.Name + ", new", TotalLabel = "Total · build time", Total = Price(q) };
                 d.Lines.Add(new CopyLine("New parts", Pricing.Funds(q.NewPrice)));
-                if (q.RefitPrice > 0) d.Lines.Add(new CopyLine("From the parts bin (refit)", Pricing.Funds(q.RefitPrice), true));
+                if (q.RefurbishPrice > 0) d.Lines.Add(new CopyLine("From the parts bin (refurbished)", Pricing.Funds(q.RefurbishPrice), true));
                 d.Lines.Add(new CopyLine("Fuel", Pricing.Funds(q.FuelPrice)));
                 d.Hint = "A brand-new " + design.Name + ".";
                 return d;
@@ -426,15 +426,34 @@ namespace PhilsReusabilitySuite
             };
             detail.Chips.Add(new CopyChip((c != null && c.NewSlots.Count > 0 && design.Kind == DesignKind.Launcher ? "First stage · " : "") + (h.Flights == 1 ? "1 flight" : h.Flights + " flights"), ChipTone.Good));
             detail.Chips.Add(h.Missing.Count > 0 ? new CopyChip("Missing " + Suite.Parts(h.Missing.Count), ChipTone.Warn) : new CopyChip(h.Ready ? "Ready" : "Complete"));
-            if (!h.Ready) detail.Lines.Add(new CopyLine("Refit", Pricing.Funds(cq.RefitPrice), true));
+            detail.Chips.Add(new CopyChip("Wear " + Core.Wear.Percent(h.Wear), Core.Wear.WornOut(h.Wear) ? ChipTone.Warn : ChipTone.Plain));
+            if (cq.RefurbishPrice >= 0.5) detail.Lines.Add(new CopyLine("Refurbish to 0% wear", Pricing.Funds(cq.RefurbishPrice), true));
             int newCount = c != null ? c.NewSlots.Count : 0;
             if (newCount > 0) detail.Lines.Add(new CopyLine(Suite.Parts(newCount).Replace(" part", " new part") + (design.Kind == DesignKind.Launcher && h.Missing.Count == 0 ? " (upper stage)" : ""), Pricing.Funds(cq.NewPrice)));
             detail.Lines.Add(new CopyLine(h.Ready ? "Fuel (full)" : "Fuel top-up", Pricing.Funds(cq.FuelPrice)));
             detail.Log.AddRange(sc.LogOf(h).Take(6));
+            // Phil: "load", not "pick up". Phil's Builds' own button says Load (or "Add to craft" when the editor
+            // already has one); "Load as stored" beside it (Phil's Builds 2 and later) brings only what's stored.
+            bool canOpen = h.ReservedBy == null && openLabel != null && openAction != null;
             detail.Hint = newCount > 0
-                ? "Picks up the whole " + design.Name + ": " + h.DisplayName + " plus " + Suite.Parts(newCount).Replace(" part", " new part") + " from the design. Attach it under your payload."
-                : "Picks up " + h.DisplayName + " exactly as it is.";
+                ? "The whole " + design.Name + ": " + h.DisplayName + " plus " + Suite.Parts(newCount).Replace(" part", " new part") + " from the design."
+                  + (canOpen ? " Load as stored brings only its own " + Suite.Parts(h.Placed.Count) + "." : "")
+                : h.DisplayName + " exactly as it is.";
+            if (canOpen) OfferOpen(detail, h);
             return detail;
+        }
+
+        static readonly System.Reflection.FieldInfo openLabel = typeof(CopyDetail).GetField("OpenLabel"), openAction = typeof(CopyDetail).GetField("Open");
+
+        static void OfferOpen(CopyDetail detail, HangarShip h)
+        {
+            string id = h.Id;
+            openLabel.SetValue(detail, "Load as stored");
+            openAction.SetValue(detail, (Action)(() =>
+            {
+                HangarShip ship = PRSScenario.Instance?.Hangar.FirstOrDefault(x => x.Id == id);
+                if (ship != null && ship.ReservedBy == null) EditorAddon.OpenHangarShip(ship);
+            }));
         }
 
         public void Build(Design design, CopyRow row, Action<ShipConstruct> hold)

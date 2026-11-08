@@ -116,8 +116,8 @@ namespace PhilsReusabilitySuite
                 }
             }
 
-            // It's a launch: only now does every part count a flight.
-            foreach (PRSPart m in mods) if (m != null) m.flights++;
+            // It's a launch: only now does every part count a flight, and start a new record of its hardest moments.
+            foreach (PRSPart m in mods) if (m != null) { m.flights++; m.ClearPeaks(); }
             for (int i = 0; i < parts.Count; i++) if (mods[i] != null) Stamp(partNodes[i], mods[i]);
 
             var rec = new LaunchRecord { Id = Guid.NewGuid().ToString("N"), UT = Planetarium.GetUniversalTime(), Ship = name, Craft = craft };
@@ -216,6 +216,8 @@ namespace PhilsReusabilitySuite
             // Parts lost in a hard landing didn't come home: they count as lost.
             var lostOnLanding = new HashSet<string>(serials.Where(LeftBehindOnNextRecovery.Contains));
             serials.RemoveAll(lostOnLanding.Contains);
+            // Its wear: the craft's wear before this flight, plus what this flight's hardest moments added.
+            double wear = WearAfterFlight(serials, info);
 
             RecoverChoice choice = RecoverGate.Choices.TryGetValue(pv.persistentId, out RecoverChoice ch) ? ch : RecoverChoice.Hangar;
             if (choice == RecoverChoice.Sell)
@@ -228,7 +230,7 @@ namespace PhilsReusabilitySuite
             if (rec == null)
             {
                 LastBinReason = "it has no launch record";
-                foreach (string s in serials) ToBin(s, info);
+                foreach (string s in serials) ToBin(s, info, wear);
                 Log.Info("Recovered " + pv.vesselName + ": no launch record, " + serials.Count + " parts to the parts bin");
                 return;
             }
@@ -239,7 +241,7 @@ namespace PhilsReusabilitySuite
             {
                 LastBinReason = "it couldn't be rebuilt as a ship";
                 if (problems.Count > 0) Log.Error("Rebuilt " + pv.vesselName + " isn't valid (" + string.Join("; ", problems.Take(3).ToArray()) + "); its parts go to the parts bin");
-                foreach (string s in serials) ToBin(s, info, Core.Craft.Read(rec.Craft));
+                foreach (string s in serials) ToBin(s, info, wear, Core.Craft.Read(rec.Craft));
                 return;
             }
 
@@ -248,7 +250,7 @@ namespace PhilsReusabilitySuite
             if (!RecoveryValue.CanFly(r.Placed.Select(s => info[s].partName)))
             {
                 LastBinReason = "it has no engine or probe core";
-                foreach (string s in serials) ToBin(s, info, recCraft);
+                foreach (string s in serials) ToBin(s, info, wear, recCraft);
                 Log.Info("Recovered " + pv.vesselName + ": no engine or probe core, so its " + serials.Count + " parts went to the parts bin");
                 Changed();
                 return;
@@ -257,7 +259,7 @@ namespace PhilsReusabilitySuite
             if (S.RequireDesign && !r.Placed.Any(s => !string.IsNullOrEmpty(PRSPart.ValueIn(info[s], "design"))))
             {
                 LastBinReason = "it wasn't built from a design filed in Phil's Builds";
-                foreach (string s in serials) ToBin(s, info, recCraft);
+                foreach (string s in serials) ToBin(s, info, wear, recCraft);
                 Log.Info("Recovered " + pv.vesselName + ": not built from a design filed in Phil's Builds, so its " + serials.Count + " parts went to the parts bin");
                 Changed();
                 return;
@@ -278,13 +280,13 @@ namespace PhilsReusabilitySuite
                 LaunchId = rec.Id,
                 RootSerial = r.RootSerial,
                 Craft = r.Craft,
-                Fuel = FuelLeft(r.Placed, info),
             };
             h.StampHull(true);
+            h.SetWear(wear);
             h.Placed.AddRange(r.Placed);
             h.Missing.AddRange(r.Missing);
             h.Flights = r.Placed.Select(s => FlightsOf(info[s])).DefaultIfEmpty(0).Max();
-            // What each part still holds, so a refit only tops it up.
+            // What each part still holds, so refuelling only tops it up.
             foreach (string s in r.Placed)
             {
                 var left = new Dictionary<string, double>();
@@ -292,18 +294,19 @@ namespace PhilsReusabilitySuite
                     left[res.resourceName] = (left.TryGetValue(res.resourceName, out double had) ? had : 0) + res.amount;
                 if (left.Count > 0) h.CameBack[s] = left;
             }
+            h.UpdateFuel();
             Hangar.Add(h);
             // The ship's flight log: when, what it flew as, and how it came home.
             double km = RecoveryValue.DistanceKm(pv);
             string landed = NextLandingNote ?? (km < 2 ? "recovered at KSC" : "recovered " + Math.Round(km).ToString("N0") + " km from KSC");
             AddToLog(h.Hull, h.Flights + " · " + KSPUtil.PrintDateCompact(rec.UT, false) + " · " + rec.Ship + " · " + landed
-                     + (r.Missing.Count > 0 ? ", lost " + r.Missing.Count + (r.Missing.Count == 1 ? " part" : " parts") : ""));
+                     + (r.Missing.Count > 0 ? ", lost " + r.Missing.Count + (r.Missing.Count == 1 ? " part" : " parts") : "") + " · wear " + Core.Wear.Percent(h.Wear));
             NextLandingNote = null;
             // Broken-off parts stay noted even when they come home on their own: the ship they came off is
             // still missing them. The note clears when the part next launches.
-            foreach (string s in r.Unplaced.Concat(r.Dropped)) ToBin(s, info, recCraft);
+            foreach (string s in r.Unplaced.Concat(r.Dropped)) ToBin(s, info, wear, recCraft);
             Log.Info("Recovered " + name + ": " + r.Placed.Count + " parts to the hangar as " + h.DisplayName
-                     + (r.Missing.Count > 0 ? ", " + r.Missing.Count + " missing" : "")
+                     + (r.Missing.Count > 0 ? ", " + r.Missing.Count + " missing" : "") + ", wear " + Core.Wear.Percent(h.Wear)
                      + (r.Unplaced.Count + r.Dropped.Count > 0 ? ", " + (r.Unplaced.Count + r.Dropped.Count) + " to the parts bin" : ""));
             Changed();
         }
@@ -350,12 +353,14 @@ namespace PhilsReusabilitySuite
                 : "Recovery of " + pv.vesselName + ": sold for scrap, " + Pricing.Funds(paid * S.ScrapValue));
         }
 
-        void ToBin(string serial, Dictionary<string, ProtoPartSnapshot> info, Craft from = null)
+        void ToBin(string serial, Dictionary<string, ProtoPartSnapshot> info, double wear, Craft from = null)
         {
             if (serial == null || !info.TryGetValue(serial, out ProtoPartSnapshot ps)) return;
             // From its launch record when there is one; otherwise made from the part itself, so the bin part can
             // still be matched to a new build and sold for what it's worth.
             Node partNode = from != null && from.BySerial.TryGetValue(serial, out CraftPart cp) ? Builds.Loose(cp.Node) : PartNodeFrom(ps, serial);
+            Node mod = partNode.Children("MODULE").FirstOrDefault(x => x.Get("name") == Core.Craft.ModuleName);
+            if (mod != null) mod.Set("wear", wear.ToString("R", System.Globalization.CultureInfo.InvariantCulture));
             Bin.Add(new BinPart { Serial = serial, Part = ps.partName, Flights = FlightsOf(ps), PartNode = partNode });
         }
 
@@ -387,22 +392,27 @@ namespace PhilsReusabilitySuite
             return int.TryParse(m?.moduleValues?.GetValue("flights"), out int f) ? f : 0;
         }
 
-        static double FuelLeft(IEnumerable<string> placed, Dictionary<string, ProtoPartSnapshot> info)
+        /// <summary>
+        /// A recovered piece's wear: what its craft had at launch (one number, so the most any of its parts carries),
+        /// plus the wear this flight added, from the hardest moments any of its parts went through (Core.Wear).
+        /// </summary>
+        static double WearAfterFlight(IEnumerable<string> serials, Dictionary<string, ProtoPartSnapshot> info)
         {
-            double amount = 0, max = 0;
-            foreach (string s in placed)
+            double before = 0, speed = 0, heat = 0, g = 0;
+            foreach (string s in serials)
             {
                 if (!info.TryGetValue(s, out ProtoPartSnapshot ps)) continue;
-                foreach (ProtoPartResourceSnapshot res in ps.resources)
-                {
-                    PartResourceDefinition def = PartResourceLibrary.Instance.GetDefinition(res.resourceName);
-                    if (def == null || def.density <= 0) continue;
-                    amount += res.amount;
-                    max += res.maxAmount;
-                }
+                before = Math.Max(before, Val(ps, "wear"));
+                speed = Math.Max(speed, Val(ps, "peakSpeed"));
+                heat = Math.Max(heat, Val(ps, "peakHeat"));
+                g = Math.Max(g, Val(ps, "peakG"));
             }
-            return max > 0 ? amount / max : 1;
+            double added = Core.Wear.OfFlight(speed, heat, g, S);
+            Log.Info("This flight's hardest moments: " + Math.Round(speed) + " m/s, " + Math.Round(heat * 100) + "% of the heat limit, " + g.ToString("0.0") + " G: wear " + Core.Wear.Percent(before) + " + " + Core.Wear.Percent(added));
+            return Core.Wear.After(before, added);
         }
+
+        static double Val(ProtoPartSnapshot ps, string key) => LaunchRecord.Num(PRSPart.ValueIn(ps, key));
 
         // ---- Tidying ----
 

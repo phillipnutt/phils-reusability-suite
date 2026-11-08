@@ -122,10 +122,26 @@ booster under a newly built payload.
    - **Transport home** costs what stock's distance rule would have kept back. That's about 2% of the
      piece's value at KSC, about 16% from 300 km downrange, and up to 90% on the far side of Kerbin.
      It's charged at recovery, and it rewards landing back at KSC or on the runway.
-   - **Refurbishment price:** 10% of each owned part's price, plus 1% for every flight it has already
-     flown. A booster costs 14% to refit for its 5th flight, 19% for its 10th, 29% for its 20th.
-   - **Wear is cost only.** No extra failures and no hard flight limit. PIP's failure chances stay
-     PIP's business.
+   - **Refurbishment price** (until 2026-11-08 the "refit": 10% of each part's price plus 1% per flight,
+     required before every reuse). Now it follows **wear**, below.
+   - **Wear and refurbishing (Phil, 2026-11-08, approved as the starting model, "Yes, start there"; tune in
+     play):**
+     - **One wear number per craft** (not per part), 0 to 100%, shown in the suite and in Phil's Builds.
+     - **Refurbishing is optional:** refurbish any time, or launch again as it is (it's only refuelled). At
+       **100% a refurbish is forced** (Phil chose that over forced retirement as simplest).
+     - **No failures or other penalties** from wear, and it stays out of PIP ("way too messy").
+     - **What a flight adds:** while a craft is loaded, each part keeps the flight's peaks: surface speed, the
+       hottest part as a share of its own limit (the worse of skin and core), and G (KSP's smoothed
+       `vessel.geeForce`). At recovery: speed 10% × peak ÷ 2,500 m/s (at most 10%); heat 0 below half the
+       limit, rising to 30% at the limit; G 0 below 3 G, rising to 20% at 10 G. Roughly: a pad hop about 1%, a
+       short suborbital hop 2 to 5%, orbit and a normal re-entry 20 to 25%, a near-melting steep re-entry 50%.
+     - **Stages that land unloaded** (stage recovery) have no readings for the fall: they bring home the peaks
+       they had when they left physics range, which is about their speed at separation.
+     - **Refurbish price = the craft's part price × wear × ½** (20% wear is about the old 10% refit; 100% is
+       half the price of new). Its time is the build-time formula, as for any build.
+     - **Any build refurbishes the flown hardware in it:** Restore (the surviving parts too, so one new fin
+       doesn't "reset" a worn craft and new parts don't count as worn), a flown booster under a new payload, a
+       hangar ship built on in the VAB. The built craft leaves at 0%.
    - **Refurbishment time:** the build-time formula, applied to the refurbishment price plus any new
      parts.
    - **Hard landings, 6 to 12 m/s:** outer parts with nothing attached to them can break off: fins,
@@ -634,6 +650,28 @@ question. Each question now has one rule (about 100 fewer lines of code, every t
   replaced the joint-break, decouple, undock and part-destroyed listeners, the same-frame and 1.5-second rules, and
   the saved "broke off" list. It's checked offline by Test-Core on every stock craft.
 - **Who a returning piece is** (`PRSScenario.WhoIs`): one rule for the hangar and the flight forecast.
+
+**Phil's third play-test (2026-11-08 afternoon)**, career save on the test install (Gallant I, Capsules). Working:
+recovery with 7 lost parts, building from a hangar copy, Restore with all 15 parts, Open in the VAB loading exactly
+what's stored. Pick up stays the whole design; Open in the VAB is the "just what's stored" route. Changed:
+- **Wear and Refurbish** (above): replaces the flight-count refit and the always-refit rule. "Refit and launch"
+  (which only queued the refit) is gone: a hangar ship has Launch (refuelled first, keeps its wear), Refurbish
+  (queued, back to 0%) and Restore (refurbishes the rest too). Wear rides on each part (`PRSPart.wear`, with the
+  flight's peaks), so it travels into the editor, into flight and into the parts bin with the hardware.
+- **The hangar panel** scrolls its prices and flight log; its buttons stay at the bottom (at 5 flights "Open in the
+  VAB" couldn't be reached).
+- **A ship opened from the hangar keeps its name:** the editor calls it "Gallant I #1", and the build is named
+  "Gallant I", so it stays Gallant I #1 (it came home as "Gallant I #1 #1"). Builds that keep a hangar ship's
+  identity (refurbish, restore, built on top of it) are shown by that ship's name in the queue and the log.
+- **Open in the VAB** works from the Space Center too (it goes to the ship's building and opens it there), and
+  beside Pick up in Phil's Builds (from Phil's Builds' API 2: `CopyDetail.OpenLabel` and `Open`).
+- **Fuel** is shown against what the ship launched with ("fuel 100% of launch load" for a booster loaded to 30% on
+  purpose that brings all of it back), not against tank capacity.
+- **The Build panel's breakdown** is a list, not cards: "8 flown parts from Gallant I #1", "7 new parts".
+- **Scrap:** the Recover prompt says what the maths does: half of what it's worth where it landed (KSP's distance
+  rule first, then half), not "half its price, less the haul".
+- **Whole-craft pick-ups into an empty VAB are named after the design** (Phil's Builds' rule, now for every kind of
+  design, not only launchers and upper stages).
 
 ## Open questions
 

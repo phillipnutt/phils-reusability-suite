@@ -30,6 +30,28 @@ that were each answered in several places now have one rule each, and the code i
   small change: a decoupler whose joint snaps instead of firing now counts as a stage leaving, not a part lost.
 - **What is a returning piece called?** One rule, used both when it comes home and by the flight forecast.
 
+From Phil's third play-test (Gallant I, the afternoon after):
+- **Wear and Refurbish.** Each craft has one wear number, 0 to 100%, from how hard its flights were: top speed,
+  how close its hottest part came to its heat limit, and G. It shows in the hangar, the Build panel and Phil's
+  Builds. Refurbishing (it was "Refit") is optional now: launch a hangar ship again as it is (it's refuelled,
+  which is all it pays), or refurbish it back to 0% whenever you like. The refurbish price follows the wear:
+  the craft's price × its wear × half (20% wear costs about what a refit did; 100% costs half the price of
+  new). At 100% it must be refurbished before it flies again. Wear does nothing else: no failures. Any build
+  refurbishes the flown hardware in it, Restore included, so the built craft leaves at 0%. This replaces the
+  refit rule (10% plus 1% per flight) and refitting before every reuse. The numbers are in Settings.cfg.
+- **The hangar panel's buttons stay at the bottom** and the flight log scrolls: with five flights in the log,
+  "Open in the VAB" couldn't be reached.
+- **"Gallant I #1 #1".** A ship opened from the hangar and built in the VAB now stays that ship (Gallant I #1).
+  Refurbish and restore builds are called by the ship's own name in the queue and the log ("Gallant I #1", not
+  "Gallant I"), so two copies can be told apart.
+- **"Open in the VAB" from the Space Center** goes to the ship's building and opens it there. Phil's Builds
+  offers it beside Load, as "Load as stored".
+- **Fuel against what it launched with:** "fuel 100% of launch load" for a booster loaded to 30% on purpose that
+  brought all of it back (it read "fuel 31%").
+- **The Build panel's breakdown is a list,** not cards to pick from: "8 flown parts from Gallant I #1",
+  "7 new parts".
+- The Recover prompt's scrap line says what the sum does: half of what it's worth where it landed.
+
 From Phil's second play-test (the morning after):
 - **Building a design could quietly use up a hangar ship.** Craft files saved in the VAB keep their parts'
   serial numbers, so a design saved from parts that were later built (Harris Hawk II saved from the I's parts)
@@ -86,7 +108,7 @@ Fixed:
 - A dropped stage crashing could count its top part as broken off, so the piece it came from showed parts
   missing. A destroyed part now only counts as lost if its ship survives it (a fin lost on landing). Launch
   clamps letting go at launch no longer count as broken off.
-- Settings.cfg accepts 0 for overtime and outsourcing prices, refit shares and scrap value.
+- Settings.cfg accepts 0 for overtime and outsourcing prices, the refurbish share and scrap value.
 - "Back to the queue" in the library list threw an error; the "Take apart" and "Sell for scrap" links showed
   "<u>" tags; landing-check lines were cut off when they wrapped; prices in the Build panel's piece list lost the
   tail of their comma, so 16,303 read as "16.303".

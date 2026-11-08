@@ -11,7 +11,7 @@ namespace PhilsReusabilitySuite
     /// An unattended in-game check of build step 2, started by the test harness through the hidden
     /// PRSSelfTestBuild event. It makes a throwaway career save (zz_PRSSelfTest) and runs the build queue:
     /// Build in the VAB, a second build waiting with overtime, time passing at the KSC, outsourcing, launching
-    /// a ready ship free, recovering it to the hangar, and a refit build cancelled for a refund.
+    /// a ready ship free, recovering it to the hangar, wear and a refurbish cancelled for a refund, refuelling to fly as it is.
     /// </summary>
     class SelfTestBuild : MonoBehaviour
     {
@@ -128,7 +128,7 @@ namespace PhilsReusabilitySuite
             Quote q1 = panel.Quote;
             Check(q1 != null && Near(q1.NewPrice, dry), "new parts cost KSP's own dry price (" + q1?.NewPrice + " vs " + dry + ")");
             Check(q1 != null && Near(q1.FuelPrice, fuel), "fuel costs KSP's own fuel price (" + q1?.FuelPrice + " vs " + fuel + ")");
-            Check(q1 != null && q1.RefitPrice == 0 && panel.Editing == null && panel.ReadyShip == null, "a fresh design: no refit, not a queued build, not a ready ship");
+            Check(q1 != null && q1.RefurbishPrice == 0 && panel.Editing == null && panel.ReadyShip == null, "a fresh design: nothing to refurbish, not a queued build, not a ready ship");
             yield return new WaitForSeconds(1f);
             Shot("build_panel_new");
             yield return new WaitForSeconds(1f);
@@ -264,14 +264,18 @@ namespace PhilsReusabilitySuite
             Check(stored.Flights == 1, "it has 1 flight");
             Check(stored.DisplayName == readyName, "it comes home as the same ship (" + stored.DisplayName + ", launched as " + readyName + ")");
 
-            // 6. Refit it: the refit is 11% of its dry price for one flight. Then cancel for a full refund.
+            // 6. Wear (Phil, 2026-11-08). A hop from the pad adds next to none; give it 20% to check the price: the
+            // refurbish is the price × wear × half, so 10% of it. Then cancel for a full refund.
+            Check(stored.Wear < 0.02, "a recovery from the pad adds next to no wear (" + Core.Wear.Percent(stored.Wear) + ")");
+            stored.SetWear(0.2);
             Quote rq = sc.QuoteFor(stored.Craft, stored.DisplayName, null);
-            Check(rq.NewPrice == 0 && rq.RefitPrice > 0, "a refit has no new parts, only refit (" + Pricing.Funds(rq.RefitPrice) + ")");
-            Check(Near(rq.RefitPrice, q1.NewPrice * Pricing.RefitShare(1, S), 2), "refit is 11% of its price after one flight (" + Pricing.Funds(rq.RefitPrice) + " of " + Pricing.Funds(q1.NewPrice) + ")");
+            Check(rq.NewPrice == 0 && rq.RefurbishPrice > 0, "a refurbish has no new parts, only refurbishing (" + Pricing.Funds(rq.RefurbishPrice) + ")");
+            Check(Near(rq.RefurbishPrice, q1.NewPrice * 0.2 * S.RefurbishShare, 2), "at 20% wear the refurbish is 10% of its price (" + Pricing.Funds(rq.RefurbishPrice) + " of " + Pricing.Funds(q1.NewPrice) + ")");
             double f4 = Funds;
-            BuildJob refit = sc.RefitBuild(stored, out err);
-            Check(refit != null && Near(f4 - Funds, rq.Total), "Refit and launch queued and paid (" + Pricing.Funds(f4 - Funds) + ") " + err);
-            Check(stored.ReservedBy == refit?.Id, "the stored ship is reserved by its refit");
+            BuildJob refit = sc.RefurbishBuild(stored, out err);
+            Check(refit != null && Near(f4 - Funds, rq.Total), "Refurbish queued and paid (" + Pricing.Funds(f4 - Funds) + ") " + err);
+            Check(stored.ReservedBy == refit?.Id, "the stored ship is reserved by its refurbish");
+            Check(refit != null && sc.TitleOf(refit) == stored.DisplayName, "the queue calls the refurbish by the ship's own name (" + (refit != null ? sc.TitleOf(refit) : "") + ")");
             SuiteWindow.Instance.Show = true;
             SuiteWindow.Instance.Tab = 0;
             yield return new WaitForSeconds(1f);
@@ -281,11 +285,53 @@ namespace PhilsReusabilitySuite
             double f5 = Funds;
             sc.Cancel(refit);
             Check(Near(Funds - f5, rq.Total) && stored.ReservedBy == null && !sc.Jobs.Contains(refit), "cancelling refunds it in full and frees the ship");
+            // Refurbishing is optional: it can be refuelled and flown as it is, keeping its wear. At 100% it can't.
+            stored.SetWear(1);
+            Check(!sc.Refuel(stored, out err) && !sc.LaunchReady(stored, out err) && !stored.Ready, "a worn-out ship can't be refuelled or launched until it's refurbished (" + err + ")");
+            stored.SetWear(0.2);
+            double f5b = Funds, fuelPrice = sc.RefuelPrice(stored);
+            Check(sc.Refuel(stored, out err) && stored.Ready && Near(f5b - Funds, fuelPrice) && Near(stored.Wear, 0.2, 1e-6), "refuelling without refurbishing: ready to launch, pays only fuel (" + Pricing.Funds(fuelPrice) + "), keeps its wear " + err);
+            SuiteWindow.Instance.ShowHangarShip(stored.Id);
+            yield return new WaitForSeconds(1f);
+            Shot("suite_hangar_wear");
+            yield return new WaitForSeconds(1f);
+            SuiteWindow.Instance.Show = false;
+
+            // 6b. "Open in the VAB" from the Space Center (Phil): it goes to the VAB and opens the ship as it's stored,
+            // its own hardware with its wear. Built from there it stays that ship: the build is named "X", not
+            // "X #1" (which came home as "X #1 #1").
+            string storedId = stored.Id, storedName = stored.Name, storedDisplay = stored.DisplayName;
+            var storedSerials = stored.Placed.ToList();
+            double refurbishPrice = rq.RefurbishPrice;
+            EditorAddon.OpenHangarShip(stored);
+            yield return WaitFor(() => HighLogic.LoadedScene == GameScenes.EDITOR && EditorLogic.fetch != null && EditorAddon.Instance != null && EditorLogic.fetch.ship != null && EditorLogic.fetch.ship.parts.Count == storedSerials.Count, 90, "Open in the VAB went to the VAB with the ship");
+            yield return new WaitForSeconds(3f);
+            var opened = EditorLogic.fetch.ship.parts.Select(PRSPart.SerialOf).ToList();
+            Check(opened.Count == storedSerials.Count && storedSerials.All(opened.Contains), "it's the stored ship's own hardware (" + opened.Count(storedSerials.Contains) + " of " + storedSerials.Count + ")");
+            Check(EditorLogic.fetch.ship.parts.All(p => Mathf.Abs(PRSPart.Of(p).wear - 0.2f) < 1e-4f), "its parts carry its wear into the VAB");
+            EditorAddon.Instance.OpenBuildPanel();
+            panel = EditorAddon.Instance.Panel;
+            Check(panel.ReadyShip?.Id == storedId && panel.ShipName == storedName && panel.Kept?.Id == storedId, "the Build panel knows it as " + storedDisplay + ", to be built under its own name (" + panel.ShipName + ")");
+            Check(panel.Quote != null && Near(panel.Quote.RefurbishPrice, refurbishPrice, 2) && panel.Quote.FuelPrice < 0.5, "refurbishing it from here costs the same, with nothing to refuel (" + Pricing.Funds(panel.Quote?.RefurbishPrice ?? 0) + ")");
+            yield return new WaitForSeconds(1f);
+            Shot("build_panel_ready_worn");
+            double f5c = Funds;
+            Check(panel.Confirm(), "refurbishing it from the VAB " + panel.Error);
+            sc = PRSScenario.Instance;
+            BuildJob vabRefurb = sc.Jobs.LastOrDefault();
+            Check(vabRefurb != null && vabRefurb.Name == storedName && sc.TitleOf(vabRefurb) == storedDisplay, "the build keeps the ship's identity (" + vabRefurb?.Name + ", shown as " + (vabRefurb != null ? sc.TitleOf(vabRefurb) : "") + ")");
+            if (vabRefurb != null) sc.Cancel(vabRefurb);
+            Check(Near(Funds, f5c, 2), "cancelled for a full refund");
+            yield return ToSpaceCenter();
+            sc = PRSScenario.Instance;
+            stored = sc.Hangar.FirstOrDefault(h => h.Id == storedId);
+            Check(stored != null && stored.Ready && Near(stored.Wear, 0.2, 1e-6), "back at the Space Center it's still in the hangar, fuelled, at 20% wear");
+            if (stored == null) yield break;
 
             // ---- Step 3: selling, taking apart, the parts bin in a new build, selling on recovery ----
 
             // 7. Sell the other ready ship for scrap: half its price.
-            HangarShip ready2 = sc.Hangar.FirstOrDefault(h => h.Ready);
+            HangarShip ready2 = sc.Hangar.FirstOrDefault(h => h.Ready && h != stored);
             Check(ready2 != null, "the second ready ship is still in the hangar");
             if (ready2 == null) yield break;
             double scrap = sc.ScrapValue(ready2), f6 = Funds;
@@ -297,14 +343,14 @@ namespace PhilsReusabilitySuite
             Check(sc.TakeApart(stored) && sc.Bin.Count == binBefore + partsStored && !sc.Hangar.Contains(stored), "taking a ship apart puts its " + partsStored + " parts in the bin");
             var binSerials = sc.Bin.Select(b => b.Serial).ToList();
 
-            // 9. A new Jumping Flea in the VAB uses those bin parts, at refit price.
+            // 9. A new Jumping Flea in the VAB uses those bin parts, at their refurbish price (they keep the 20% wear).
             yield return ToEditor();
             yield return LoadFlea();
             EditorAddon.Instance.OpenBuildPanel();
             panel = EditorAddon.Instance.Panel;
             Quote qb = panel.Quote;
             Check(qb.BinSerials.Count == partsStored && qb.NewPrice < 1, "every part comes from the bin (" + qb.BinSerials.Count + " of " + partsStored + "), nothing new");
-            Check(Near(qb.RefitPrice, q1.NewPrice * Pricing.RefitShare(1, S), 2), "bin parts cost their refit (" + Pricing.Funds(qb.RefitPrice) + ")");
+            Check(Near(qb.RefurbishPrice, q1.NewPrice * 0.2 * S.RefurbishShare, 2), "bin parts cost their refurbish at 20% wear (" + Pricing.Funds(qb.RefurbishPrice) + ")");
             yield return new WaitForSeconds(1f);
             Shot("build_panel_bin");
             yield return new WaitForSeconds(1f);

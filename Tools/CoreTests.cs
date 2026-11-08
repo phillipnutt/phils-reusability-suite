@@ -77,10 +77,15 @@ static class CoreTests
         Check(Near(Pricing.BuildSeconds(47199, s) / day, 2.0, 0.05), "Comsat I (47k) takes about 2.0 days");
         Check(Near(Pricing.BuildSeconds(1000000, s) / day, 22.9, 0.05), "a 1M ship takes about 22.9 days");
         Check(Pricing.BuildSeconds(0, s) == 0, "no work takes no time");
-        Check(Pricing.RefitShare(0, s) == 0, "a part that has never flown needs no refit");
-        Check(Near(Pricing.RefitShare(1, s), 0.11, 1e-9), "refit for a part with 1 flight is 11%");
-        Check(Near(Pricing.RefitShare(4, s), 0.14, 1e-9), "refit for its 5th flight is 14%");
-        Check(Near(Pricing.RefitShare(19, s), 0.29, 1e-9), "refit for its 20th flight is 29%");
+        Check(Pricing.RefurbishShare(0, s) == 0, "a craft with no wear costs nothing to refurbish");
+        Check(Near(Pricing.RefurbishShare(0.2, s), 0.10, 1e-9), "20% wear: refurbishing costs 10% of the price (Phil's old refit)");
+        Check(Near(Pricing.RefurbishShare(1, s), 0.5, 1e-9) && Near(Pricing.RefurbishShare(1.5, s), 0.5, 1e-9), "100% wear: half the price of new, never more");
+        Check(Wear.OfFlight(0, 0, 1, s) == 0, "sitting still adds no wear");
+        Check(Near(Wear.OfFlight(1250, 0.4, 2.5, s), 0.05, 1e-9), "half of 2,500 m/s adds 5%; heat under half its limit and G under 3 add nothing");
+        Check(Near(Wear.OfFlight(2500, 0.75, 6.5, s), 0.10 + 0.15 + 0.10, 1e-9), "2,500 m/s 10%, three-quarters of the heat limit 15%, 6.5 G 10%");
+        Check(Near(Wear.OfFlight(9000, 1.4, 25, s), 0.60, 1e-9), "each part of the rule stops at its top: 10% + 30% + 20%");
+        Check(Wear.After(0.9, 0.3) == 1 && Wear.WornOut(1) && !Wear.WornOut(0.99) && Wear.WornOut(0.996), "wear stops at 100%, which forces a refurbish");
+        Check(Wear.Percent(0.234) == "23%" && Wear.Percent(1.2) == "100%", "wear shows as a whole percent");
         Check(Near(Pricing.OvertimeCharge(22220, 1, s), 5555, 0.01), "overtime on a fresh 22,220 build is +5,555");
         Check(Near(Pricing.OvertimeCharge(22220, 0.38, s), 2110.9, 0.1), "overtime with 38% left is 25% of that share");
         Check(Near(Pricing.OutsourceCharge(22220, 0.38, s), 8443.6, 0.1), "outsourcing with 38% left pays that share again");
@@ -102,7 +107,7 @@ static class CoreTests
         public double UnitCost(string resource) => resource == "LiquidFuel" ? 0.8 : 0;
     }
 
-    static Node QuotePart(string serial, int flights, double dry, double fuel)
+    static Node QuotePart(string serial, int flights, double dry, double fuel, double wear = 0)
     {
         var p = new Node("PART");
         p.Add("part", "tank_" + serial);
@@ -112,6 +117,7 @@ static class CoreTests
         m.Add("name", Craft.ModuleName);
         m.Add("serial", serial);
         m.Add("flights", flights.ToString());
+        if (wear > 0) m.Add("wear", wear.ToString(System.Globalization.CultureInfo.InvariantCulture));
         return p;
     }
 
@@ -121,32 +127,34 @@ static class CoreTests
         var s = new Settings();
         var craft = new Node();
         craft.Nodes.Add(QuotePart("upper", 0, 16500, 100));     // new upper stage, 100 units of fuel
-        craft.Nodes.Add(QuotePart("first", 1, 52000, 1000));    // Oak 005 #4, flown once, came back with 90 units
+        craft.Nodes.Add(QuotePart("first", 1, 52000, 1000, 0.2));    // Oak 005 #4, flown once (20% worn), came back with 90 units
         craft.Nodes.Add(QuotePart("comsat", 0, 38400, 0));      // a ready Comsat II from the hangar
-        craft.Nodes.Add(QuotePart("binned", 2, 1000, 0));       // a battery from the parts bin
+        craft.Nodes.Add(QuotePart("binned", 2, 1000, 0, 0.3));       // a battery from the parts bin, 30% worn
         Func<string, Owner> owner = sn =>
             sn == "first" ? new Owner { Kind = OwnerKind.Hangar, ShipId = "oak4", Label = "Oak 005 #4" } :
-            sn == "comsat" ? new Owner { Kind = OwnerKind.Hangar, ShipId = "comsat", Label = "Comsat II", RefitDone = true } :
+            sn == "comsat" ? new Owner { Kind = OwnerKind.Hangar, ShipId = "comsat", Label = "Comsat II", Ready = true } :
             sn == "binned" ? new Owner { Kind = OwnerKind.Bin } : null;
         Func<string, IDictionary<string, double>> left = sn => sn == "first" ? new Dictionary<string, double> { { "LiquidFuel", 90 } } : null;
         Quote q = Quotes.Make(craft, "Comsat II", owner, new FakeCosts(), left, s);
         Check(q.PartCount == 4 && q.Lines.Count == 4, "four parts in four lines (" + q.Lines.Count + ")");
         Check(Near(q.NewPrice, 16500, 0.01), "new parts cost their full price (" + q.NewPrice + ")");
-        Check(Near(q.RefitPrice, 52000 * 0.11 + 1000 * 0.12, 0.01), "reused parts cost their refit; the ready payload costs nothing (" + q.RefitPrice + ")");
+        Check(Near(q.RefurbishPrice, 52000 * 0.2 * 0.5 + 1000 * 0.3 * 0.5, 0.01), "reused parts cost their refurbish by wear; the unworn ready payload costs nothing (" + q.RefurbishPrice + ")");
+        Check(Near(q.Lines[0].Wear, 0.2, 1e-9) && q.Lines[1].Wear == 0, "each line knows its wear");
         Check(Near(q.FuelPrice, 100 * 0.8 + 910 * 0.8, 0.01), "fuel: new tanks filled, the flown stage topped up, the ready payload full (" + q.FuelPrice + ")");
-        Check(Near(q.Seconds, Pricing.BuildSeconds(q.BuildPrice, s), 1e-6), "build time comes from new parts plus refit");
+        Check(Near(q.Seconds, Pricing.BuildSeconds(q.BuildPrice, s), 1e-6), "build time comes from new parts plus refurbishing");
         Check(q.Lines[0].Kind == OwnerKind.Hangar && q.Lines[2].Kind == OwnerKind.Bin && q.Lines[3].Kind == OwnerKind.New, "reused pieces first, then the bin, then new parts");
         Check(q.HangarShips.SetEquals(new[] { "oak4", "comsat" }) && q.BinSerials.SequenceEqual(new[] { "binned" }), "the build knows which hangar ships and bin parts it uses");
 
-        // A new part with a matching loose part in the bin: the bin part is used instead, at refit price.
+        // A new part with a matching loose part in the bin: the bin part is used instead, at its refurbish price.
         var craft2 = new Node();
         craft2.Nodes.Add(QuotePart("fresh", 0, 2000, 0));
         craft2.Nodes.Add(QuotePart("other", 0, 500, 0));
-        Func<Node, Owner> match = p => p.Get("part") == "tank_fresh" ? new Owner { Kind = OwnerKind.Bin, BinSerial = "bin-7", Flights = 3 } : null;
+        Func<Node, Owner> match = p => p.Get("part") == "tank_fresh" ? new Owner { Kind = OwnerKind.Bin, BinSerial = "bin-7", Flights = 3, Wear = 0.4 } : null;
         Quote q2 = Quotes.Make(craft2, "Probe", sn => null, new FakeCosts(), sn => null, s, match);
-        Check(Near(q2.RefitPrice, 2000 * 0.13, 0.01) && Near(q2.NewPrice, 500, 0.01), "a bin part swapped in costs its refit; the other part is new (" + q2.RefitPrice + ", " + q2.NewPrice + ")");
+        Check(Near(q2.RefurbishPrice, 2000 * 0.4 * 0.5, 0.01) && Near(q2.NewPrice, 500, 0.01), "a bin part swapped in costs its refurbish; the other part is new (" + q2.RefurbishPrice + ", " + q2.NewPrice + ")");
         Check(q2.BinSerials.SequenceEqual(new[] { "bin-7" }) && q2.BinSwaps.ContainsKey("fresh"), "the build knows which bin part it takes");
         Node built = q2.WithBinParts(craft2);
+        Check(Wear.In(built.Children("PART").First().Children("MODULE").First()) == 0.4, "the built craft carries the bin part's wear");
         Check(Craft.SerialOf(built.Children("PART").First()) == "bin-7" && Craft.SerialOf(built.Children("PART").Last()) == "other", "the built craft carries the bin part's own serial");
         Check(Craft.SerialOf(craft2.Children("PART").First()) == "fresh", "the editor's craft is left as it was");
     }

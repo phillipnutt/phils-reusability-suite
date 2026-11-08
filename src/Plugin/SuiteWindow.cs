@@ -182,7 +182,7 @@ namespace PhilsReusabilitySuite
                 GUILayout.Label(h.DisplayName, Look.Name);
                 string under = BuildsLink.Under(h);
                 if (under != null) GUILayout.Label("on " + under, Look.Meta);
-                GUILayout.Label(Suite.FacilityOf(h.Craft) + " · " + Suite.Parts(h.Placed.Count) + (h.Flights > 0 ? " · " + h.Flights + (h.Flights == 1 ? " flight" : " flights") : " · never flown"), Look.Meta);
+                GUILayout.Label(Suite.FacilityOf(h.Craft) + " · " + Suite.Parts(h.Placed.Count) + (h.Flights > 0 ? " · " + h.Flights + (h.Flights == 1 ? " flight" : " flights") : " · never flown") + (h.Wear >= 0.005 ? " · wear " + Core.Wear.Percent(h.Wear) : ""), Look.Meta);
                 if (GUILayout.Button("Launch", Look.Go, GUILayout.Height(32))) Launch(sc, h);
                 GUILayout.EndVertical();
                 GUILayout.Space(6);
@@ -229,7 +229,7 @@ namespace PhilsReusabilitySuite
                 GUILayout.FlexibleSpace();
                 if (GUILayout.Button("Back to the queue", Look.Ghost, GUILayout.Height(28), GUILayout.ExpandWidth(false))) { picking = false; library = null; GUIUtility.ExitGUI(); }
                 GUILayout.EndHorizontal();
-                GUILayout.Label("Each is built new, from its design file. Matching parts in the parts bin are used automatically, at their refit price.", Look.Hint);
+                GUILayout.Label("Each is built new, from its design file. Matching parts in the parts bin are used automatically, at their refurbish price.", Look.Hint);
                 GUILayout.Space(4);
                 GUILayout.BeginHorizontal();
                 PaceButton(BuildPanel.Pace.Normal, "Normal");
@@ -264,7 +264,7 @@ namespace PhilsReusabilitySuite
             GUILayout.BeginHorizontal();
             GUILayout.Label(item.Design.Name, Look.Name, GUILayout.ExpandWidth(false));
             GUILayout.Space(6);
-            if (q.RefitPrice > 0) { Look.Chip("Parts from the bin", Look.ChipReuse); GUILayout.Space(4); }
+            if (q.BinSerials.Count > 0) { Look.Chip("Parts from the bin", Look.ChipReuse); GUILayout.Space(4); }
             if (item.Ready > 0) Look.Chip(item.Ready + " ready in the hangar", Look.ChipGrey);
             GUILayout.FlexibleSpace();
             GUILayout.Label(Pricing.Funds(q.Total + extra) + " · " + (seconds <= 0 ? "ready now" : Pricing.Duration(seconds, S)), Look.Name, GUILayout.ExpandWidth(false));
@@ -298,10 +298,10 @@ namespace PhilsReusabilitySuite
             GUILayout.BeginHorizontal();
             Look.Chip(lineLabel, Look.ChipGrey);
             GUILayout.Space(6);
-            GUILayout.Label(j.Name, Look.Name, GUILayout.ExpandWidth(false));
+            GUILayout.Label(sc.TitleOf(j), Look.Name, GUILayout.ExpandWidth(false));
             GUILayout.Space(6);
-            if (j.FromShipId != null) Look.Chip("Refit", Look.ChipReuse);
-            else if (j.RefitPrice > 0) Look.Chip("Reused parts", Look.ChipReuse);
+            if (j.FromShipId != null) Look.Chip(j.Craft.Children("PART").Count() > (sc.KeptShipOf(j)?.Placed.Count ?? 0) ? "Restore" : "Refurbish", Look.ChipReuse);
+            else if (j.RefurbishPrice > 0) Look.Chip("Reused parts", Look.ChipReuse);
             else Look.Chip("New", Look.ChipNew);
             if (j.Overtime) { GUILayout.Space(4); Look.Chip("Overtime on", Look.ChipWarn); }
             GUILayout.FlexibleSpace();
@@ -377,7 +377,8 @@ namespace PhilsReusabilitySuite
 
         BuildsLink.Restore RestoreFor(HangarShip h)
         {
-            if (h.Ready || h.ReservedBy != null) return null;
+            // A fuelled ship can still be short of parts (refuelled to fly as it is), so only a build stops a restore.
+            if (h.ReservedBy != null) return null;
             // Worked out only at the start of a frame (Layout), so the panel's shape can't change between its events.
             if (Event.current.type == EventType.Layout && (restoreFor != h.Id || Time.realtimeSinceStartup - restoreAt > 2f))
             {
@@ -399,18 +400,22 @@ namespace PhilsReusabilitySuite
             GUILayout.Label(h.DisplayName, Look.Name);
             string under = BuildsLink.Under(h);
             if (under != null) GUILayout.Label("on " + under, Look.Meta);
-            string meta = Suite.Parts(h.Placed.Count) + " · " + (h.Flights == 0 ? "never flown" : h.Flights + (h.Flights == 1 ? " flight" : " flights"));
-            if (!h.Ready) meta += " · fuel " + Mathf.RoundToInt((float)(h.Fuel * 100)) + "%";
+            string meta = Suite.Parts(h.Placed.Count) + " · " + (h.Flights == 0 ? "never flown" : h.Flights + (h.Flights == 1 ? " flight" : " flights")) + " · wear " + Core.Wear.Percent(h.Wear);
+            // Against what it launched with: a booster loaded to 30% on purpose that brings all of it back is full.
+            if (!h.Ready) meta += " · fuel " + Mathf.RoundToInt((float)(h.Fuel * 100)) + "% of launch load";
             GUILayout.Label(meta, Look.Meta);
             if (h.Missing.Count > 0) GUILayout.Label("Missing " + Suite.Parts(h.Missing.Count), Look.MetaWarn);
+            if (Core.Wear.WornOut(h.Wear)) GUILayout.Label("Worn out: refurbish it before it flies again", Look.MetaBad);
             GUILayout.EndVertical();
             GUILayout.FlexibleSpace();
-            if (h.ReservedBy != null) GUILayout.Label("In the build of " + (sc.Jobs.FirstOrDefault(j => j.Id == h.ReservedBy)?.Name ?? "a ship"), Look.Meta, GUILayout.Width(200));
+            if (h.ReservedBy != null) GUILayout.Label("In the build of " + (sc.Jobs.FirstOrDefault(j => j.Id == h.ReservedBy) is BuildJob job ? sc.TitleOf(job) : "a ship"), Look.Meta, GUILayout.Width(200));
             else if (h.Ready) GUILayout.Label("Ready", Look.MetaGood, GUILayout.Width(60));
             GUILayout.EndHorizontal();
-            if (Event.current.type == EventType.MouseUp && GUILayoutUtility.GetLastRect().Contains(Event.current.mousePosition)) { selectedId = h.Id; error = null; Event.current.Use(); }
+            if (Event.current.type == EventType.MouseUp && GUILayoutUtility.GetLastRect().Contains(Event.current.mousePosition)) { selectedId = h.Id; error = null; scrollDetail = Vector2.zero; Event.current.Use(); }
             GUILayout.Space(5);
         }
+
+        Vector2 scrollDetail;
 
         void ShipDetail(PRSScenario sc, HangarShip h)
         {
@@ -422,18 +427,33 @@ namespace PhilsReusabilitySuite
             GUILayout.Space(8);
             if (h.ReservedBy == null)
             {
+                bool worn = Core.Wear.WornOut(h.Wear);
                 Quote q = sc.QuoteFor(h.Craft, h.DisplayName, null);
-                GUILayout.Label("NEXT FLIGHT", Look.Section);
-                Line("Refit", h.Ready ? "done" : Pricing.Funds(q.RefitPrice));
-                Line("Fuel back to launch levels", h.Ready ? "full" : Pricing.Funds(q.FuelPrice));
-                Line("Total · refit time", h.Ready ? "launch now" : Pricing.Funds(q.Total) + " · " + Pricing.Duration(q.Seconds, S));
+                bool canRefurbish = q.RefurbishPrice >= 0.5 || q.FuelPrice >= 0.5;
                 BuildsLink.Restore r = RestoreFor(h);
+                // Prices and the flight log scroll; the buttons stay at the bottom, however long the log gets.
+                scrollDetail = GUILayout.BeginScrollView(scrollDetail, GUILayout.ExpandHeight(true));
+                GUILayout.Label("WEAR · " + Core.Wear.Percent(h.Wear), Look.Section);
+                GUILayout.Label(worn ? "<color=#ff8a7a>Worn out: it must be refurbished before it flies again.</color>"
+                                : h.Wear < 0.005 ? "Like new." : "From how hard its flights were: speed, heat and G. Refurbishing takes it back to 0%; it's optional until 100%.", Look.Meta);
+                GUILayout.Space(8);
+                GUILayout.Label("LAUNCH AS IT IS", Look.Section);
+                if (worn) Line("Launch", "refurbish first");
+                else Line(h.Ready ? "Fuelled · launch" : "Fuel back to launch levels", h.Ready ? "free" : Pricing.Funds(q.FuelPrice));
+                if (canRefurbish)
+                {
+                    GUILayout.Space(8);
+                    GUILayout.Label("REFURBISH TO 0% WEAR", Look.Section);
+                    Line("Refurbish", Pricing.Funds(q.RefurbishPrice));
+                    Line("Fuel", Pricing.Funds(q.FuelPrice));
+                    Line("Total · time", Pricing.Funds(q.Total) + " · " + Pricing.Duration(q.Seconds, S));
+                }
                 if (r != null)
                 {
                     GUILayout.Space(8);
                     GUILayout.Label("RESTORE TO " + r.Design.Name.ToUpperInvariant(), Look.Section);
                     Line(r.NewParts + (r.NewParts == 1 ? " new part" : " new parts") + (r.Quote.BinSerials.Count > 0 ? " (" + r.Quote.BinSerials.Count + " from the bin)" : ""), Pricing.Funds(r.Quote.NewPrice));
-                    Line("Refit", Pricing.Funds(r.Quote.RefitPrice));
+                    Line("Refurbish the rest", Pricing.Funds(r.Quote.RefurbishPrice));
                     Line("Fuel", Pricing.Funds(r.Quote.FuelPrice));
                     Line("Total · build time", Pricing.Funds(r.Quote.Total) + " · " + Pricing.Duration(r.Quote.Seconds, S));
                     if (r.Blocked != null) GUILayout.Label(r.Blocked, Look.MetaBad);
@@ -443,36 +463,38 @@ namespace PhilsReusabilitySuite
                 {
                     GUILayout.Space(8);
                     GUILayout.Label("FLIGHTS", Look.Section);
-                    foreach (string e in log.Take(6)) GUILayout.Label(e, Look.Meta);
+                    foreach (string e in log) GUILayout.Label(e, Look.Meta);
                 }
-                GUILayout.FlexibleSpace();
+                GUILayout.EndScrollView();
+                GUILayout.Space(6);
+
+                // The first button is the likely next step: restore a ship that's missing parts, refurbish a worn-out
+                // one, otherwise launch it.
                 string err;
-                if (h.Ready)
+                bool restoreFirst = r != null && r.Blocked == null;
+                if (r != null && GUILayout.Button("Restore to " + r.Design.Name + " · " + Pricing.Funds(r.Quote.Total), restoreFirst ? Look.Go : Look.GoOff, GUILayout.Height(38)) && r.Blocked == null)
                 {
-                    if (GUILayout.Button("Launch", Look.Go, GUILayout.Height(38))) Launch(sc, h);
+                    if (BuildsLink.RestoreBuild(h, r, false, false, out err) == null) error = err;
+                    else { error = null; Tab = 0; picking = false; library = null; }
+                    restoreFor = null;
+                    GUIUtility.ExitGUI();
                 }
-                else
+                if (!worn && GUILayout.Button(h.Ready ? "Launch" : "Refuel and launch · " + Pricing.Funds(q.FuelPrice), restoreFirst ? Look.Ghost : Look.Go, GUILayout.Height(restoreFirst ? 32 : 38)))
+                    Launch(sc, h);
+                if (canRefurbish && GUILayout.Button("Refurbish · " + Pricing.Funds(q.Total), worn && !restoreFirst ? Look.Go : Look.Ghost, GUILayout.Height(worn && !restoreFirst ? 38 : 32)))
                 {
-                    if (r != null && GUILayout.Button("Restore to " + r.Design.Name, r.Blocked == null ? Look.Go : Look.GoOff, GUILayout.Height(38)) && r.Blocked == null)
-                    {
-                        if (BuildsLink.RestoreBuild(h, r, false, false, out err) == null) error = err;
-                        else { error = null; Tab = 0; picking = false; library = null; }
-                        restoreFor = null;
-                        GUIUtility.ExitGUI();
-                    }
-                    if (GUILayout.Button("Refit and launch", r != null ? Look.Ghost : Look.Go, GUILayout.Height(r != null ? 32 : 38)))
-                    {
-                        if (sc.RefitBuild(h, out err) == null) error = err;
-                        else { error = null; Tab = 0; }
-                    }
+                    if (sc.RefurbishBuild(h, out err) == null) error = err;
+                    else { error = null; Tab = 0; }
                 }
-                if (InEditor && GUILayout.Button("Open in the " + (HighLogic.LoadedScene == GameScenes.EDITOR && EditorDriver.editorFacility == EditorFacility.SPH ? "SPH" : "VAB"), Look.Ghost, GUILayout.Height(32)))
+                string facility = InEditor ? (EditorDriver.editorFacility == EditorFacility.SPH ? "SPH" : "VAB") : Suite.FacilityOf(h.Craft);
+                if (GUILayout.Button("Open in the " + facility, Look.Ghost, GUILayout.Height(32)))
                 {
-                    EditorAddon.LoadHangarShip(h);
+                    EditorAddon.OpenHangarShip(h);
                     Show = false;
                     if (button != null) button.SetFalse(false);
                 }
-                GUILayout.Label(h.Ready ? "It's built and fuelled: launching costs nothing." : "Refit and launch queues the refit; the ship is then ready to launch. Open it in the VAB to build on it.", Look.Hint);
+                GUILayout.Label(h.Ready ? "Fuelled: launching costs nothing. Open it in the " + facility + " to build on it."
+                                : "Refurbishing is queued like a build; the ship is then ready to launch. Open it in the " + facility + " to build on it.", Look.Hint);
                 GUILayout.Space(4);
                 GUILayout.BeginHorizontal();
                 GUILayout.FlexibleSpace();
@@ -512,10 +534,11 @@ namespace PhilsReusabilitySuite
                     GUILayout.BeginHorizontal(Look.Card);
                     GUILayout.Label(Title(g.Key), Look.Name);
                     GUILayout.FlexibleSpace();
-                    int minF = g.Min(b => b.Flights), maxF = g.Max(b => b.Flights);
+                    double minW = g.Min(b => b.Wear), maxW = g.Max(b => b.Wear);
                     int reserved = g.Count(b => b.ReservedBy != null);
                     if (reserved > 0) GUILayout.Label(reserved + " in a build", Look.MetaGood, GUILayout.Width(90));
-                    GUILayout.Label((minF == maxF ? minF.ToString() : minF + "-" + maxF) + (maxF == 1 ? " flight" : " flights"), Look.Meta, GUILayout.Width(90));
+                    string lo = Core.Wear.Percent(minW), hi = Core.Wear.Percent(maxW);
+                    GUILayout.Label("wear " + (lo == hi ? hi : lo.TrimEnd('%') + "–" + hi), Look.Meta, GUILayout.Width(90));
                     GUILayout.Label("× " + g.Count(), Look.RowVal, GUILayout.Width(50));
                     if (Suite.Career && g.Any(b => b.ReservedBy == null))
                     {

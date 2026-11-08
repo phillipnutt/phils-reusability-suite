@@ -36,7 +36,7 @@ namespace PhilsReusabilitySuite
                 if (h.Placed.Contains(serial))
                 {
                     if (h.ReservedBy != null && (editing == null || h.ReservedBy != editing.Id)) return null;
-                    return new Owner { Kind = OwnerKind.Hangar, ShipId = h.Id, Label = h.DisplayName, RefitDone = h.Ready };
+                    return new Owner { Kind = OwnerKind.Hangar, ShipId = h.Id, Label = h.DisplayName, Ready = h.Ready };
                 }
             foreach (BinPart b in Bin)
                 if (b.Serial == serial)
@@ -81,7 +81,7 @@ namespace PhilsReusabilitySuite
                     if (!dryCache.TryGetValue(b.Serial, out double bd)) dryCache[b.Serial] = bd = KspCosts.Instance.Cost(b.PartNode).Dry;
                     if (Math.Abs(bd - dry) > 1) continue;
                     used.Add(b.Serial);
-                    return new Owner { Kind = OwnerKind.Bin, BinSerial = b.Serial, Flights = b.Flights, Label = "From the parts bin" };
+                    return new Owner { Kind = OwnerKind.Bin, BinSerial = b.Serial, Flights = b.Flights, Wear = b.Wear, Label = "From the parts bin" };
                 }
                 return null;
             };
@@ -207,7 +207,7 @@ namespace PhilsReusabilitySuite
                 Facility = facility,
                 Craft = q.WithBinParts(craft),
                 NewPrice = q.NewPrice,
-                RefitPrice = q.RefitPrice,
+                RefurbishPrice = q.RefurbishPrice,
                 FuelPrice = q.FuelPrice,
                 Paid = q.Total,
                 Overtime = overtime && !outsource,
@@ -218,7 +218,7 @@ namespace PhilsReusabilitySuite
             Jobs.Add(job);
             Reserve(job, q);
             Changed();
-            Log.Info("Build started: " + name + " (" + facility + "), paid " + Pricing.Funds(total) + ", " + Pricing.Duration(job.SecondsLeft(S), S)
+            Log.Info("Build started: " + TitleOf(job) + " (" + facility + "), paid " + Pricing.Funds(total) + ", " + Pricing.Duration(job.SecondsLeft(S), S)
                      + (overtime ? " with overtime" : "") + (outsource ? ", outsourced" : ""));
             if (outsource || q.BuildPrice <= 0) Finish(job);
             return job;
@@ -240,13 +240,13 @@ namespace PhilsReusabilitySuite
             job.Craft = q.WithBinParts(craft);
             job.Name = name;
             job.NewPrice = q.NewPrice;
-            job.RefitPrice = q.RefitPrice;
+            job.RefurbishPrice = q.RefurbishPrice;
             job.FuelPrice = q.FuelPrice;
             job.Paid = q.Total;
             job.Progress = newProgress;
             Reserve(job, q);
             Changed();
-            Log.Info("Build updated: " + name + ", " + (diff >= 0 ? "paid " + Pricing.Funds(diff) : "refunded " + Pricing.Funds(-diff)) + ", " + Math.Round(newProgress * 100) + "% done");
+            Log.Info("Build updated: " + TitleOf(job) + ", " + (diff >= 0 ? "paid " + Pricing.Funds(diff) : "refunded " + Pricing.Funds(-diff)) + ", " + Math.Round(newProgress * 100) + "% done");
             if (job.Progress >= 1) Finish(job);
             return true;
         }
@@ -259,7 +259,7 @@ namespace PhilsReusabilitySuite
             Release(job);
             Jobs.Remove(job);
             Changed();
-            Log.Info("Build cancelled: " + job.Name + ", refunded " + Pricing.Funds(refund));
+            Log.Info("Build cancelled: " + TitleOf(job) + ", refunded " + Pricing.Funds(refund));
         }
 
         public bool SetOvertime(BuildJob job, bool on, out string error)
@@ -297,8 +297,8 @@ namespace PhilsReusabilitySuite
                 }
         }
 
-        /// <summary>Starts a refit of a hangar ship on its own: when done, it's ready to launch.</summary>
-        public BuildJob RefitBuild(HangarShip h, out string error)
+        /// <summary>Starts a refurbish of a hangar ship on its own: when done, it's at 0% wear, fuelled and ready to launch.</summary>
+        public BuildJob RefurbishBuild(HangarShip h, out string error)
         {
             Quote q = QuoteFor(h.Craft, h.DisplayName, null);
             return StartBuild(h.Craft, h.Name, Suite.FacilityOf(h.Craft), q, false, false, h.Id, out error);
@@ -324,7 +324,7 @@ namespace PhilsReusabilitySuite
             var serials = new HashSet<string>(job.Serials());
             // A build made from hangar ships (Argo I #1 stacked on Rockall 002 #1) stays the ship at its top: same
             // name, number and flight log, with the others under it. Phil, 2026-11-08: keep the top piece's identity.
-            string keepId = job.FromShipId ?? TopShipOf(job)?.Id;
+            string keepId = KeptShipOf(job)?.Id;
             foreach (HangarShip h in Hangar.Where(x => x.ReservedBy == job.Id && x.Id != keepId).ToList())
             {
                 // Parts taken off a stored ship in the VAB go to the parts bin.
@@ -357,8 +357,10 @@ namespace PhilsReusabilitySuite
             ready.Placed.AddRange(serials);
             ready.Missing.Clear();
             ready.CameBack.Clear();
-            ready.Fuel = 1;
             ready.Ready = true;
+            ready.Fuel = 1;
+            // Built or refurbished: the whole craft leaves at 0% wear (Phil: Restore refurbishes the surviving parts too).
+            ready.SetWear(0);
             ready.ReservedBy = null;
             // New parts now belong to this ship; reused ones keep their own ship (a flown first stage stays
             // "Oak 005 #4" under its new payload, and comes home as itself).
@@ -371,13 +373,19 @@ namespace PhilsReusabilitySuite
         }
 
         /// <summary>
-        /// The hangar ship a build is built on top of: the one taken into the build that holds its root part, under
-        /// the same name. Null when the root part is new, or the ship was given a name of its own.
+        /// The hangar ship whose identity a build keeps: the one it refurbishes or restores, or the one it's built on
+        /// top of (taken into the build, holding its root part, under the same name). Null for a new ship.
         /// </summary>
+        public HangarShip KeptShipOf(BuildJob job) => job.FromShipId != null ? Hangar.FirstOrDefault(h => h.Id == job.FromShipId) : TopShipOf(job);
+
+        /// <summary>What a build is called on screen and in the log: the hangar ship it keeps ("Gallant I #1"), or its name.</summary>
+        public string TitleOf(BuildJob job) => KeptShipOf(job)?.DisplayName ?? job.Name;
+
         HangarShip TopShipOf(BuildJob job)
         {
-            if (job.Craft == null) return null;
-            string root = Core.Craft.Read(job.Craft).Parts.FirstOrDefault(p => p.Parent == null)?.Serial;
+            // KSP writes a craft's root part first.
+            Node first = job.Craft?.Children("PART").FirstOrDefault();
+            string root = first != null ? Core.Craft.SerialOf(first) : null;
             if (string.IsNullOrEmpty(root)) return null;
             return Hangar.FirstOrDefault(h => h.ReservedBy == job.Id && h.Placed.Contains(root) && h.Name == job.Name);
         }
@@ -440,11 +448,15 @@ namespace PhilsReusabilitySuite
 
         // ---- Launching ready ships ----
 
-        /// <summary>Launches a ready hangar ship straight from the hangar, with its default crew.</summary>
+        /// <summary>
+        /// Launches a hangar ship straight from the hangar, with its default crew. Refurbishing is optional (Phil): a
+        /// ship that isn't fuelled is refuelled first, which is all it pays. A worn-out one must be refurbished first.
+        /// </summary>
         public bool LaunchReady(HangarShip h, out string error)
         {
             error = null;
-            if (!h.Ready || h.ReservedBy != null) { error = h.DisplayName + " isn't ready to launch."; return false; }
+            if (h.ReservedBy != null) { error = h.DisplayName + " is in a build in the queue."; return false; }
+            if (Core.Wear.WornOut(h.Wear)) { error = h.DisplayName + " is worn out (100% wear): refurbish it before it flies again."; return false; }
             string site = Suite.FacilityOf(h.Craft) == "SPH" ? "Runway" : "LaunchPad";
             List<ProtoVessel> inTheWay = ShipConstruction.FindVesselsLandedAt(HighLogic.CurrentGame.flightState, site);
             // Launch clamps left standing from the last launch are cleared away, as KSP's own launch would offer:
@@ -460,6 +472,7 @@ namespace PhilsReusabilitySuite
                 error = KSP.Localization.Localizer.Format(inTheWay[0].vesselName) + " is on the " + (site == "Runway" ? "runway" : "launch pad") + ". Recover it first (from the Tracking Station, or fly it off).";
                 return false;
             }
+            if (!Refuel(h, out error)) return false;
             string path = SuiteFiles.WriteCraft(h);
             ConfigNode craft = ConfigNode.Load(path);
             VesselCrewManifest m = VesselCrewManifest.FromConfigNode(craft);
@@ -467,6 +480,34 @@ namespace PhilsReusabilitySuite
             Log.Info("Launching " + h.DisplayName + " from the hangar");
             FlightDriver.StartWithNewLaunch(path, HighLogic.CurrentGame.flagURL, site, m);
             return true;
+        }
+
+        /// <summary>What refuelling a hangar ship to its launch levels costs (nothing once it's fuelled).</summary>
+        public double RefuelPrice(HangarShip h) => h.Ready ? 0 : QuoteFor(h.Craft, h.DisplayName, null).FuelPrice;
+
+        /// <summary>Refuels a hangar ship to its launch levels without refurbishing it: it keeps its wear, and launches free.</summary>
+        public bool Refuel(HangarShip h, out string error)
+        {
+            error = null;
+            if (h.Ready) return true;
+            if (h.ReservedBy != null) { error = h.DisplayName + " is in a build in the queue."; return false; }
+            if (Core.Wear.WornOut(h.Wear)) { error = h.DisplayName + " is worn out (100% wear): refurbish it before it flies again."; return false; }
+            double fuel = RefuelPrice(h);
+            if (!CanAfford(fuel)) { error = "Not enough funds: refuelling " + h.DisplayName + " costs " + Pricing.Funds(fuel) + "."; return false; }
+            Suite.Charge(fuel);
+            h.Ready = true;
+            h.CameBack.Clear();
+            h.Fuel = 1;
+            Changed();
+            Log.Info("Refuelled " + h.DisplayName + " for " + Pricing.Funds(fuel) + ", not refurbished (wear " + Core.Wear.Percent(h.Wear) + ")");
+            return true;
+        }
+
+        /// <summary>A hangar ship, ready or not, whose parts are exactly these and that no build has taken.</summary>
+        public HangarShip HangarShipOf(ICollection<string> serials)
+        {
+            if (serials.Count == 0) return null;
+            return Hangar.FirstOrDefault(h => h.ReservedBy == null && h.Placed.Count == serials.Count && serials.All(h.Placed.Contains));
         }
 
         static bool OnlyLaunchClamps(ProtoVessel pv) =>
