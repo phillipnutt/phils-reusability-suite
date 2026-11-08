@@ -364,8 +364,12 @@ first.
 
 ## Build status
 
-Phil said "Yes, start building" on 2026-11-07. A local git repo was made with Phil's personal identity.
-It has no GitHub remote; each step is committed locally.
+Phil said "Yes, start building" on 2026-11-07. A git repo was made with Phil's personal identity.
+
+**Released 0.1.0 as a pre-release on 2026-11-07** (Phil: "Yes, release it"; 0.1.0 pre-release, and
+Phil's Builds released first). It's on GitHub as phillipnutt/phils-reusability-suite, tag v0.1.0. It needs
+Phil's Builds 0.1.0 or later. Before publishing, all four in-game tests ran again on the release zip next
+to Phil's Builds' own release: 166 checks passed.
 
 **Phil's Builds hooks:** that mod's own development proposed a `PhilsBuilds.BuildsApi` covering all six
 needs, and the suite accepted it. Its DESIGN.md has the details. Nothing is built there until Phil says
