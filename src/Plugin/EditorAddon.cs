@@ -153,7 +153,9 @@ namespace PhilsReusabilitySuite
                 {
                     string name = t.GetType().Name;
                     if (name == "CanAffordLaunchTest" || name == "LaunchSiteClear") continue;
-                    ours.AddTest((PreFlightTests.IPreFlightTest)t);
+                    var test = (PreFlightTests.IPreFlightTest)t;
+                    // KSP's dialog special-cases the wrong-vessel-type check by its type, so that one stays as it is.
+                    ours.AddTest(name.Contains("VesselType") ? test : new BuildWording(test));
                     n++;
                 }
                 Log.Info("Running " + n + " of KSP's pre-launch checks before building");
@@ -164,6 +166,21 @@ namespace PhilsReusabilitySuite
                 Log.Warn("KSP's pre-launch checks couldn't be run (" + ex.Message + "); building without them");
                 onPass();
             }
+        }
+
+        /// <summary>
+        /// One of KSP's own pre-launch checks, unchanged, except that its warning's go-ahead button says
+        /// "Build anyway" instead of "Launch anyway": at this point the ship is being built, not launched.
+        /// </summary>
+        sealed class BuildWording : PreFlightTests.IPreFlightTest
+        {
+            readonly PreFlightTests.IPreFlightTest inner;
+            public BuildWording(PreFlightTests.IPreFlightTest inner) { this.inner = inner; }
+            public bool Test() => inner.Test();
+            public string GetWarningTitle() => inner.GetWarningTitle();
+            public string GetWarningDescription() => inner.GetWarningDescription();
+            public string GetProceedOption() => string.IsNullOrEmpty(inner.GetProceedOption()) ? inner.GetProceedOption() : "Build anyway";
+            public string GetAbortOption() => inner.GetAbortOption();
         }
     }
 
