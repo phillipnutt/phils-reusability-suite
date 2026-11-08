@@ -75,6 +75,19 @@ namespace PhilsReusabilitySuite
             CelestialBody home = v.mainBody;
             Check(v.FindPartModulesImplementing<ModuleDecouple>().Count >= 2, "the Z-MAP has its stage decouplers");
 
+            // As if launched from the hangar as "Z-MAP Test #1": its parts and its launch record carry that identity.
+            // The satellite on top holds the root part, so #1 stays with it; a stage that comes home on its own is a
+            // ship of its own (#2).
+            foreach (Part p in v.parts) { PRSPart pm = PRSPart.Of(p); if (pm != null) pm.hull = "Z-MAP Test|1"; }
+            LaunchRecord launchRec = PRSScenario.Instance.FindRecord(v.parts.Select(PRSPart.SerialOf).Where(s => s != null).ToList());
+            Check(launchRec != null, "the Z-MAP's launch was recorded");
+            if (launchRec != null)
+                foreach (Node pn in launchRec.Craft.Children("PART"))
+                {
+                    Node mod = pn.Children("MODULE").FirstOrDefault(x => x.Get("name") == Core.Craft.ModuleName);
+                    if (mod != null) mod.Set("hull", "Z-MAP Test|1");
+                }
+
             // Up to 20 km, falling, as in the stage-recovery test.
             foreach (Part p in v.parts) if (p.Rigidbody != null) p.Rigidbody.isKinematic = false;
             yield return new WaitForSeconds(1f);
@@ -109,12 +122,13 @@ namespace PhilsReusabilitySuite
             List<string> outcomes = StageReturns.Instance != null ? StageReturns.Instance.Outcomes.ToList() : new List<string>();
             foreach (string f in forecasts) Note("forecast: " + f);
             foreach (string o in outcomes) Note("outcome: " + o);
-            Check(forecasts.Any(f => f.Contains("landing burn")), "as it went out of range, the suite said the middle stage will come home with a landing burn");
+            Check(forecasts.Any(f => f.StartsWith("Z-MAP Test will come home with a landing burn")), "as it went out of range, the suite said the middle stage (named as the hangar will name it, not #1) will come home with a landing burn");
             Check(outcomes.Any(o => o.Contains("came home") && o.Contains("landing burn")), "the middle stage came home with a landing burn");
             PRSScenario sc = PRSScenario.Instance;
             HangarShip craneShip = sc.Hangar.FirstOrDefault(h => h.Placed.Any(craneSerials.Contains));
             Check(craneShip != null, "the middle stage is in the hangar (" + craneShip?.DisplayName + ")");
             if (craneShip == null) yield break;
+            Check(craneShip.DisplayName == "Z-MAP Test #2", "it came home as a ship of its own, Z-MAP Test #2, not as the Z-MAP Test #1 still in orbit (" + craneShip.DisplayName + ")");
             // The burn's propellant is gone: the hangar ship came back with less than it dropped with.
             double fuelAfter = craneShip.Craft.Children("PART").SelectMany(p => p.Children("RESOURCE"))
                 .Where(r => r.Get("name") == "LiquidFuel" || r.Get("name") == "Oxidizer")

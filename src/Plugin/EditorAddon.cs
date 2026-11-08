@@ -58,7 +58,6 @@ namespace PhilsReusabilitySuite
 
         void OnDestroy()
         {
-            LaunchingReadyShip = false;
             GameEvents.onEditorShipModified.Remove(OnShipModified);
             GameEvents.onEditorLoad.Remove(OnEditorLoad);
             GameEvents.onGameSceneLoadRequested.Remove(OnLeavingScene);
@@ -81,13 +80,17 @@ namespace PhilsReusabilitySuite
 
         void OnLaunchClicked() { OpenBuildPanel(); }
 
-        /// <summary>A ready hangar ship is being launched from the editor (see ReadyShipAffordable).</summary>
-        public static bool LaunchingReadyShip;
+        /// <summary>The ship in the editor is exactly a ready hangar ship (all its parts, nothing more).</summary>
+        public static bool EditorShipIsReady()
+        {
+            if (!HighLogic.LoadedSceneIsEditor || EditorLogic.fetch == null || EditorLogic.fetch.ship == null || PRSScenario.Instance == null) return false;
+            var serials = EditorLogic.fetch.ship.parts.Select(PRSPart.SerialOf).Where(s => s != null).ToList();
+            return serials.Count == EditorLogic.fetch.ship.parts.Count && PRSScenario.Instance.ReadyShipOf(serials) != null;
+        }
 
         /// <summary>Runs the stock launch (for a ready hangar ship, which launches free).</summary>
         public void StockLaunch()
         {
-            LaunchingReadyShip = true;   // already paid for: KSP's "can you afford it" check lets it through
             if (stockLaunch != null) stockLaunch.Invoke();
             else EditorLogic.fetch.launchVessel();
         }
@@ -273,7 +276,6 @@ namespace PhilsReusabilitySuite
         public void Refresh()
         {
             Error = null;
-            EditorAddon.LaunchingReadyShip = false;   // a launch that was cancelled doesn't carry over
             PRSScenario sc = PRSScenario.Instance;
             ShipConstruct ship = EditorLogic.fetch.ship;
             EditorAddon.Check(ship);   // serials are right before pricing, whatever KSP restored

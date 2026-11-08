@@ -50,9 +50,12 @@ Fixed:
   used or sold. Bin parts from such recoveries now keep what they need to be matched and valued.
 - In the Tracking Station, picking another ship in the list while the Recover prompt was open recovered that one
   instead. The prompt now always recovers the ship it was asked about.
-- Pieces of one ship that came home separately all became the same hangar ship name and number. A piece that's a
-  copy of one filed design now comes home as that design's next copy ("Kopje 005 #2"); otherwise a name and number
-  already in the hangar goes to the next number.
+- Pieces of one ship that came home separately all became the same hangar ship. Now the piece holding the launched
+  ship's root part comes home as that ship, with its name, number and flight log. A piece that came off it is a
+  ship of its own: named after its design if it's a copy of one ("Kopje 005 #2"), or the next number otherwise.
+  Reused hardware with an identity of its own (a flown "Kopje 005 #1" under a new payload) keeps that identity.
+- The VAB's launch-site list (the slide-out by the green button) launched past the Build panel; it now opens the
+  Build panel unless the ship is a ready hangar ship.
 - Settings.cfg accepts 0 for overtime and outsourcing prices, refit shares and scrap value.
 - "Back to the queue" in the library list threw an error; the "Take apart" and "Sell for scrap" links showed
   "<u>" tags; landing-check lines were cut off when they wrapped.

@@ -15,8 +15,15 @@ namespace PhilsReusabilitySuite
     {
         void Awake()
         {
-            try { new Harmony("PhilsReusabilitySuite").PatchAll(typeof(SuiteHarmony).Assembly); Log.Info("Recover buttons hooked"); }
-            catch (Exception ex) { Log.Error("Couldn't hook the Recover buttons: " + ex); }
+            // One patch at a time, so a patch KSP doesn't allow (a renamed method) only switches off that one.
+            var harmony = new Harmony("PhilsReusabilitySuite");
+            int done = 0;
+            foreach (Type t in typeof(SuiteHarmony).Assembly.GetTypes().Where(x => x.GetCustomAttributes(typeof(HarmonyPatch), true).Length > 0))
+            {
+                try { harmony.CreateClassProcessor(t).Patch(); done++; }
+                catch (Exception ex) { Log.Error("Couldn't hook " + t.Name + ": " + ex.Message); }
+            }
+            Log.Info("Recover buttons hooked (" + done + " patches)");
         }
     }
 
@@ -283,15 +290,37 @@ namespace PhilsReusabilitySuite
     /// <summary>
     /// A ready hangar ship is already paid for, so KSP's own "can you afford it" pre-launch check doesn't stop it
     /// launching from the VAB or SPH when funds are below its full price (the suite hands KSP's rollout charge
-    /// back). Only while the suite itself is launching a ready ship; every other launch is checked as usual.
+    /// back). Decided from the ship in the editor at the moment of the check: only a ship that is exactly a ready
+    /// hangar ship passes; anything else, changed or unbuilt, is checked as usual.
     /// </summary>
     [HarmonyLib.HarmonyPatch(typeof(PreFlightTests.CanAffordLaunchTest), "Test")]
     static class ReadyShipAffordable
     {
         static bool Prefix(ref bool __result)
         {
-            if (!EditorAddon.LaunchingReadyShip) return true;
+            if (!EditorAddon.EditorShipIsReady()) return true;
             __result = true;
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// The editor's launch-site list (the slide-out by the green button) launches straight away, past the Build
+    /// panel. A ready hangar ship may go; anything else opens the Build panel, as the green button does.
+    /// </summary>
+    [HarmonyLib.HarmonyPatch]
+    static class LaunchSiteListBuilds
+    {
+        static bool Prepare() => HarmonyLib.AccessTools.TypeByName("KSP.UI.Screens.EditorLaunchPadItem") != null;
+
+        // KSP's class isn't public, so it's found by name.
+        static System.Reflection.MethodBase TargetMethod() =>
+            HarmonyLib.AccessTools.Method(HarmonyLib.AccessTools.TypeByName("KSP.UI.Screens.EditorLaunchPadItem"), "MouseInput_Launch");
+
+        static bool Prefix()
+        {
+            if (PRSScenario.Instance == null || Krash.SimActive || EditorAddon.Instance == null || EditorAddon.EditorShipIsReady()) return true;
+            EditorAddon.Instance.OpenBuildPanel();
             return false;
         }
     }

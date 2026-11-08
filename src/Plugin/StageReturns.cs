@@ -147,7 +147,24 @@ namespace PhilsReusabilitySuite
         {
             string hull = v.parts.Select(p => PRSPart.Of(p)?.hull).Where(h => !string.IsNullOrEmpty(h))
                 .GroupBy(h => h).OrderByDescending(g => g.Count()).Select(g => g.Key).FirstOrDefault();
-            return HangarShip.ParseHull(hull, out string name, out int number) ? name + " #" + number : Name(v);
+            if (!HangarShip.ParseHull(hull, out string name, out int number)) return Name(v);
+            // As the hangar will name it: a piece that came off the ship it launched as (it doesn't hold that ship's
+            // root part) comes home as a ship of its own, so it's named by its design, or the ship's name, without
+            // a number yet.
+            try
+            {
+                var serials = v.parts.Select(PRSPart.SerialOf).Where(s => s != null).ToList();
+                LaunchRecord rec = PRSScenario.Instance?.FindRecord(serials);
+                CraftPart root = rec != null ? Core.Craft.Read(rec.Craft).Parts.FirstOrDefault(p => p.Parent == null) : null;
+                string rootHull = root?.Node.Children("MODULE").FirstOrDefault(m => m.Get("name") == Core.Craft.ModuleName)?.Get("hull");
+                if (root?.Serial != null && hull == rootHull && !serials.Contains(root.Serial))
+                {
+                    string designId = BuildsLink.SingleDesign(v.parts.Select(p => PRSPart.Of(p)?.design));
+                    return (designId != null ? BuildsLink.NameOf(designId) : null) ?? name;
+                }
+            }
+            catch (Exception) { }
+            return name + " #" + number;
         }
 
         static void Remember(Vessel v)
