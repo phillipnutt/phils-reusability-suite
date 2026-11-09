@@ -87,12 +87,9 @@ namespace PhilsReusabilitySuite
                 Owner old = null;
                 foreach (BinPart b in Bin)
                 {
-                    if (b.Part != name || b.PartNode == null || used.Contains(b.Serial)) continue;
+                    if (b.PartNode == null || used.Contains(b.Serial)) continue;
                     if (b.ReservedBy != null && (editing == null || b.ReservedBy != editing.Id)) continue;
                     if (skipBin != null && skipBin.Contains(b.Serial)) continue;
-                    if (dry < 0) dry = KspCosts.Instance.Cost(part).Dry;
-                    if (!dryCache.TryGetValue(b.Serial, out double bd)) dryCache[b.Serial] = bd = KspCosts.Instance.Cost(b.PartNode).Dry;
-                    if (Math.Abs(bd - dry) > 1) continue;
                     if (!behindCache.TryGetValue(b.Serial, out Owner behind))
                     {
                         int marks = Pip.Behind(b.PartNode, out string now, out string current);
@@ -103,6 +100,12 @@ namespace PhilsReusabilitySuite
                         };
                         behindCache[b.Serial] = behind;
                     }
+                    // An old part is compared as it would be once updated: an old version becomes the newest one's part.
+                    Node like = behind != null ? Pip.Preview(b.PartNode) : b.PartNode;
+                    if ((behind != null ? Pip.PartName(like) : b.Part) != name) continue;
+                    if (dry < 0) dry = KspCosts.Instance.Cost(part).Dry;
+                    if (!dryCache.TryGetValue(b.Serial, out double bd)) dryCache[b.Serial] = bd = KspCosts.Instance.Cost(like).Dry;
+                    if (Math.Abs(bd - dry) > 1) continue;
                     // Answered "No, build them new": old-Mk parts aren't offered again for this build.
                     if (behind != null) { if (old == null && !noOld) old = behind; continue; }
                     used.Add(b.Serial);
@@ -119,7 +122,8 @@ namespace PhilsReusabilitySuite
         public double PipUpdatePrice(Node part, out int marks)
         {
             marks = Pip.Behind(part);
-            return marks > 0 ? Pricing.PipUpdate(KspCosts.Instance.Cost(part).Dry, marks, S) : 0;
+            // Priced as what it becomes (an old version updates to the newest version's part).
+            return marks > 0 ? Pricing.PipUpdate(KspCosts.Instance.Cost(Pip.Preview(part)).Dry, marks, S) : 0;
         }
 
         /// <summary>What updating these parts costs, and how many of them are behind.</summary>
@@ -139,14 +143,14 @@ namespace PhilsReusabilitySuite
         /// "Update PIP parts": brings each part that's behind to its program's current Mk (PIP's own step, the one the
         /// VAB uses for a new part), paid now. Wear, flights and fuel stay as they are.
         /// </summary>
-        bool UpdatePip(List<Node> parts, string what, out string error)
+        bool UpdatePip(List<Node> parts, Node craft, string what, out string error)
         {
             error = null;
             double price = PipUpdatePrice(parts, out int behind);
             if (behind == 0) { error = "Its Phil's Iterative Parts parts are all at their program's current Mk."; return false; }
             if (Suite.Career && price > Suite.Funds) { error = "Not enough funds: updating costs " + Pricing.Funds(price) + "."; return false; }
             int done = 0;
-            foreach (Node p in parts) if (Pip.Behind(p) > 0 && Pip.MakeCurrent(p)) done++;
+            foreach (Node p in parts) if (Pip.Behind(p) > 0 && Pip.MakeCurrent(p, craft)) done++;
             if (done == 0) { error = "Phil's Iterative Parts couldn't update them."; return false; }
             // Charged for what was updated (all of them, unless PIP refused one).
             Suite.Charge(done == behind ? price : price * done / behind);
@@ -157,14 +161,19 @@ namespace PhilsReusabilitySuite
 
         public bool UpdatePip(IEnumerable<BinPart> parts, out string error)
         {
-            List<Node> nodes = parts.Where(b => b.ReservedBy == null && b.PartNode != null).Select(b => b.PartNode).ToList();
-            return UpdatePip(nodes, "the parts bin", out error);
+            List<BinPart> list = parts.Where(b => b.ReservedBy == null && b.PartNode != null).ToList();
+            if (!UpdatePip(list.Select(b => b.PartNode).ToList(), null, "the parts bin", out error)) return false;
+            // An old version's part is now the newest version's part.
+            foreach (BinPart b in list) b.Part = Pip.PartName(b.PartNode);
+            return true;
         }
 
         public bool UpdatePip(HangarShip h, out string error)
         {
             if (h.ReservedBy != null) { error = h.DisplayName + " is in a build: update it when the build is done."; return false; }
-            return UpdatePip(h.Craft.Children("PART").ToList(), h.DisplayName, out error);
+            if (!UpdatePip(h.Craft.Children("PART").ToList(), h.Craft, h.DisplayName, out error)) return false;
+            h.UpdateFuel();
+            return true;
         }
 
         /// <summary>The bin parts behind old-Mk offers in a quote, as they are now.</summary>

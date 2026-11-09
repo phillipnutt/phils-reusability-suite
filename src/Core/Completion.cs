@@ -24,7 +24,10 @@ namespace PhilsReusabilitySuite.Core
     /// </summary>
     public static class Completion
     {
-        public static CompletionResult Complete(Node design, string designId, IEnumerable<Node> hangarParts)
+        /// <param name="family">What a part becomes once brought up to date (Phil's Iterative Parts: an old version's part
+        /// becomes the newest version's), or null. A flown part fits its slot if it's the same part, or the same part
+        /// once updated; either way it stays the part it is there (flown hardware keeps what it was built as).</param>
+        public static CompletionResult Complete(Node design, string designId, IEnumerable<Node> hangarParts, Func<Node, string> family = null)
         {
             var result = new CompletionResult();
             var bySlot = new Dictionary<int, Node>();
@@ -48,7 +51,7 @@ namespace PhilsReusabilitySuite.Core
             {
                 // If the design was saved over since the stage flew, a slot may now hold another part: then the
                 // flown part doesn't fit it, and the slot is built new.
-                if (bySlot.ContainsKey(i) && nameBySlot[i] != PartName(part)) bySlot.Remove(i);
+                if (bySlot.ContainsKey(i) && nameBySlot[i] != PartName(part) && (family == null || family(partBySlot[i]) != family(part))) bySlot.Remove(i);
                 Node m = Module(part);
                 if (m == null)
                 {
@@ -64,6 +67,8 @@ namespace PhilsReusabilitySuite.Core
                     m.Set("flights", flown.Get("flights") ?? "0");
                     m.Set("hull", flown.Get("hull") ?? "");
                     m.Set("wear", flown.Get("wear") ?? "0");
+                    // Another version of the slot's part (updated, or not yet): the slot takes the flown part's own.
+                    if (nameBySlot[i] != PartName(part)) TakePartName(craft, part, nameBySlot[i]);
                     CarryHardware(partBySlot[i], part);
                     result.Used.Add(flown.Get("serial"));
                 }
@@ -102,6 +107,40 @@ namespace PhilsReusabilitySuite.Core
                     if (d.Name != "MODULE" || d.Get("name") != name) continue;
                     designPart.Nodes[j] = from[k++].Clone();
                 }
+            }
+        }
+
+        /// <summary>Makes a craft's part another part ("PIP.x_42" becomes "PIP.y_42"), with every link to it renamed.</summary>
+        public static void TakePartName(Node craft, Node part, string name)
+        {
+            string from = part.Get("part") ?? "";
+            int cut = from.LastIndexOf('_');
+            string to = cut >= 0 ? name + from.Substring(cut) : name;
+            part.Set("part", to);
+            foreach (Node other in craft.Children("PART")) if (!ReferenceEquals(other, part)) RenameRef(other, from, to);
+        }
+
+        /// <summary>Renames a part reference ("PIP.x_4294") in a part's links and attachments, whole references only.</summary>
+        public static void RenameRef(Node part, string from, string to)
+        {
+            if (string.IsNullOrEmpty(from) || from == to) return;
+            for (int k = 0; k < part.Values.Count; k++)
+            {
+                string v = part.Values[k].Value;
+                if (string.IsNullOrEmpty(v) || !v.Contains(from)) continue;
+                var sb = new System.Text.StringBuilder();
+                int i = 0;
+                while (i < v.Length)
+                {
+                    int at = v.IndexOf(from, i, StringComparison.Ordinal);
+                    if (at < 0) { sb.Append(v, i, v.Length - i); break; }
+                    int end = at + from.Length;
+                    bool startOk = at == 0 || v[at - 1] == ',' || char.IsWhiteSpace(v[at - 1]);
+                    bool endOk = end == v.Length || !char.IsDigit(v[end]);
+                    sb.Append(v, i, at - i).Append(startOk && endOk ? to : from);
+                    i = end;
+                }
+                part.Values[k] = new KeyValuePair<string, string>(part.Values[k].Key, sb.ToString());
             }
         }
 

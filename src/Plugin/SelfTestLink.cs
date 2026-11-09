@@ -192,6 +192,29 @@ namespace PhilsReusabilitySuite
             Check(rows.Count == 1 && rows[0].IsNew && rows[0].Price.Length > 0, "with nothing built, the launcher has just its New row (" + rows.FirstOrDefault()?.Price + ")");
             Check(Link.Note(d) == "", "and no hangar note");
 
+            // 1b. The two partner calls of the play-test round 2: Phil's Builds' pictures and Phil's Iterative Parts' Mk step.
+            Check(BuildsLink.HasPictures, "Phil's Builds gives design pictures (API " + BuildsApi.Version + ")");
+            Note("the Hopper's picture: " + (BuildsLink.Picture(d.Id) != null ? "there" : "none yet (taken when it's saved or loaded)"));
+            Type pipApi = AssemblyLoader.loadedAssemblies.Select(a => a.assembly.GetType("PIP.PipApi", false)).FirstOrDefault(x => x != null);
+            if (pipApi != null)
+            {
+                Check(Pip.BehindOf != null && Pip.MakeCurrentOf != null && Pip.TitleOf != null, "linked with Phil's Iterative Parts' Behind, ToCurrent and Title");
+                var hook = pipApi.GetField("IsHardware")?.GetValue(null) as Func<ConfigNode, bool>;
+                Check(hook != null, "Phil's Iterative Parts asks the suite which editor parts are hardware");
+                if (hook != null)
+                {
+                    var probe = new ConfigNode("PART");
+                    ConfigNode pm = probe.AddNode("MODULE");
+                    pm.AddValue("name", Core.Craft.ModuleName);
+                    pm.AddValue("serial", "not-hardware-" + Guid.NewGuid().ToString("N"));
+                    Check(!hook(probe), "a part with a serial nobody owns is a new part to PIP");
+                }
+                var stock = new Node("PART");
+                stock.Add("part", "mk1pod.v2_1");
+                Check(Pip.Behind(stock) == 0 && Pip.Title(stock) == null && !Pip.MakeCurrent(stock.Clone()), "PIP leaves a stock part alone");
+            }
+            else Note("Phil's Iterative Parts' API isn't installed: its link checks are skipped");
+
             // 2. Placed in the VAB, every part is stamped with the design and its slot.
             yield return ToEditor();
             yield return Place(d);

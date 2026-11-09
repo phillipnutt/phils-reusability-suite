@@ -387,6 +387,15 @@ namespace PhilsReusabilitySuite
             m.Add("isEnabled", "True");
             m.Add("serial", serial);
             m.Add("flights", FlightsOf(ps).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            // Its own hardware (a Phil's Iterative Parts program and Mk), so the bin knows what it is.
+            foreach (ProtoPartModuleSnapshot pm in ps.modules)
+            {
+                if (pm.moduleValues == null || Array.IndexOf(Completion.HardwareModules, pm.moduleName) < 0) continue;
+                Node hw = KspNodes.FromKsp(pm.moduleValues);
+                hw.Name = "MODULE";
+                if (hw.Get("name") == null) hw.Values.Insert(0, new KeyValuePair<string, string>("name", pm.moduleName));
+                n.Nodes.Add(hw);
+            }
             return n;
         }
 

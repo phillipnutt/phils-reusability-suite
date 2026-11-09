@@ -93,8 +93,8 @@ namespace PhilsReusabilitySuite
 
         // ---- Pictures (Phil, play-test 2026-11-08 #17: pictures in the Build queue and the Hangar) ----
 
-        /// <summary>Phil's Builds' own picture of a design, the one its library shows (Phil's Builds 3 and later).</summary>
-        static readonly System.Reflection.MethodInfo pictureCall = typeof(BuildsApi).GetMethod("Picture",
+        /// <summary>Phil's Builds' own picture of a design, the one its library shows (its API 3: BuildsApi.PictureOf).</summary>
+        static readonly System.Reflection.MethodInfo pictureCall = typeof(BuildsApi).GetMethod("PictureOf",
             System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static, null, new[] { typeof(string) }, null);
 
         /// <summary>This Phil's Builds can show design pictures (an older one can't: then the suite shows none).</summary>
@@ -192,7 +192,7 @@ namespace PhilsReusabilitySuite
         public static CompletionResult Complete(Design d, HangarShip h)
         {
             Node file = DesignFile(d);
-            return file == null ? null : Completion.Complete(file, d.Id, h.Craft.Children("PART"));
+            return file == null ? null : Completion.Complete(file, d.Id, h.Craft.Children("PART"), p => Pip.PartName(Pip.Preview(p)));
         }
 
         static string Price(Quote q) => Pricing.Funds(q.Total) + " · " + Pricing.Duration(q.Seconds, S);

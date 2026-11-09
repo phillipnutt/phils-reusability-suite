@@ -432,22 +432,62 @@ namespace PhilsReusabilitySuite
         /// </summary>
         void PipSection(PRSScenario sc, HangarShip h)
         {
-            var behind = new List<string>();
-            foreach (Node p in h.Craft.Children("PART"))
-                if (Pip.Behind(p, out string now, out string current) > 0) behind.Add(Pip.Change(now, current));
-            if (behind.Count == 0) return;
+            string list = BehindList(h);
+            if (list == null) return;
             double price = sc.PipUpdatePrice(h.Craft.Children("PART"), out int n);
             GUILayout.Space(8);
             GUILayout.Label("PIP PARTS · " + n + " BEHIND", Look.Section);
-            GUILayout.Label(string.Join(", ", behind.GroupBy(x => x).Select(g => (g.Count() > 1 ? g.Count() + " × " : "") + g.Key).ToArray())
-                            + ". Their programs have moved on since " + (n == 1 ? "it was" : "they were") + " built.", Look.Meta);
-            if (GUILayout.Button("Update PIP parts · " + (price < 0.5 ? "free" : Pricing.Funds(price)), Look.Ghost, GUILayout.Height(30)))
-            {
-                if (!sc.UpdatePip(h, out string err)) error = err;
-                else { error = null; Suite.Message(h.DisplayName + ": " + Suite.Parts(n) + " updated to the current Mk"); }
-                restoreFor = null;
-                GUIUtility.ExitGUI();
-            }
+            // Phil: a ship's own old parts can fly as they are.
+            GUILayout.Label(list + ". " + (n == 1 ? "Its program has" : "Their programs have") + " moved on since " + (n == 1 ? "it was" : "they were")
+                            + " built. It can fly with " + (n == 1 ? "it" : "them") + " as " + (n == 1 ? "it is" : "they are") + ".", Look.Meta);
+            if (GUILayout.Button("Update PIP parts · " + (price < 0.5 ? "free" : Pricing.Funds(price)), Look.Ghost, GUILayout.Height(30))) UpdateShip(sc, h, n);
+        }
+
+        /// <summary>"Augur I Mk. 1 → Mk. 3, 2 × Hertz I Mk. 1 → Mk. 3" for a hangar ship's parts that are behind, or null.</summary>
+        static string BehindList(HangarShip h)
+        {
+            var behind = new List<string>();
+            foreach (Node p in h.Craft.Children("PART"))
+                if (Pip.Behind(p, out string now, out string current) > 0) behind.Add(Pip.Change(now, current));
+            if (behind.Count == 0) return null;
+            return string.Join(", ", behind.GroupBy(x => x).Select(g => (g.Count() > 1 ? g.Count() + " × " : "") + g.Key).ToArray());
+        }
+
+        void UpdateShip(PRSScenario sc, HangarShip h, int n)
+        {
+            if (!sc.UpdatePip(h, out string err)) error = err;
+            else { error = null; Suite.Message(h.DisplayName + ": " + Suite.Parts(n) + " updated to the current Mk"); }
+            restoreFor = null;
+            GUIUtility.ExitGUI();
+        }
+
+        /// <summary>Hangar ships whose own old-Mk parts the player chose to keep when restoring ("No").</summary>
+        readonly HashSet<string> keepOldParts = new HashSet<string>();
+
+        /// <summary>
+        /// Restore asks about the ship's own old-Mk parts first (Phil: "update its old parts too?"; No keeps them, and it
+        /// flies with them). True while it waits for an answer.
+        /// </summary>
+        bool AskOwnOldParts(PRSScenario sc, HangarShip h)
+        {
+            if (keepOldParts.Contains(h.Id)) return false;
+            string list = BehindList(h);
+            if (list == null) return false;
+            double price = sc.PipUpdatePrice(h.Craft.Children("PART"), out int n);
+            string fee = price < 0.5 ? "free" : Pricing.Funds(price);
+            GUILayout.BeginVertical(Look.Notice);
+            GUILayout.Label("<color=#ffcf5a>" + h.DisplayName + " has " + (n == 1 ? "a PIP part" : n + " PIP parts") + " behind:</color> " + list
+                            + ". Update " + (n == 1 ? "it" : "them") + " too (" + fee + "), or restore it with " + (n == 1 ? "it" : "them") + " as " + (n == 1 ? "it is" : "they are") + "?",
+                            Look.Meta, GUILayout.Width(270));
+            GUILayout.BeginHorizontal();
+            GUILayout.FlexibleSpace();
+            if (GUILayout.Button("No, keep", Look.Ghost, GUILayout.Height(30), GUILayout.ExpandWidth(false))) { keepOldParts.Add(h.Id); GUIUtility.ExitGUI(); }
+            GUILayout.Space(6);
+            if (GUILayout.Button("Update too · " + fee, Look.Go, GUILayout.Height(30), GUILayout.ExpandWidth(false))) UpdateShip(sc, h, n);
+            GUILayout.EndHorizontal();
+            GUILayout.EndVertical();
+            GUILayout.Space(6);
+            return true;
         }
 
         void ShipRow(PRSScenario sc, HangarShip h)
@@ -531,7 +571,8 @@ namespace PhilsReusabilitySuite
                     QuoteLine bin = r.Quote.Lines.FirstOrDefault(l => l.Kind == OwnerKind.Bin);
                     if (bin != null) GUILayout.Label("From the parts bin: " + string.Join(", ", BuildPanel.BinItems(bin).ToArray()), Look.Meta);
                     if (r.Blocked != null) GUILayout.Label(r.Blocked, Look.MetaBad);
-                    restoreAsking = QuestionFor("restore:" + h.Id).Draw(r.Quote, () => restoreFor = null, 270);
+                    // Its own old parts first (No keeps them), then any old bin part that would fill a gap.
+                    restoreAsking = AskOwnOldParts(sc, h) || QuestionFor("restore:" + h.Id).Draw(r.Quote, () => restoreFor = null, 270);
                 }
                 else restoreAsking = false;
                 List<string> log = sc.LogOf(h);

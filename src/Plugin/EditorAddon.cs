@@ -30,6 +30,7 @@ namespace PhilsReusabilitySuite
             if (arriving != null) placed.UnionWith(arriving);
             arriving = null;
             adoptRestored = EditorDriver.StartupBehaviour == EditorDriver.StartupBehaviours.LOAD_FROM_CACHE;
+            started = true;
             GameEvents.onEditorShipModified.Add(OnShipModified);
             GameEvents.onEditorLoad.Add(OnEditorLoad);
             GameEvents.onEditorRestart.Add(OnEditorRestart);
@@ -60,6 +61,7 @@ namespace PhilsReusabilitySuite
 
         void OnDestroy()
         {
+            started = false;
             GameEvents.onEditorShipModified.Remove(OnShipModified);
             GameEvents.onEditorLoad.Remove(OnEditorLoad);
             GameEvents.onEditorRestart.Remove(OnEditorRestart);
@@ -120,18 +122,32 @@ namespace PhilsReusabilitySuite
         /// <summary>Marks hardware as put in the editor by the suite.</summary>
         internal static void Claim(IEnumerable<string> serials) { foreach (string s in serials) if (!string.IsNullOrEmpty(s)) placed.Add(s); }
 
+        /// <summary>This addon has started in the current editor (KSP can load the first ship before that).</summary>
+        static bool started;
+
         /// <summary>
-        /// Is this editor part real hardware (by the rule above), not a new part? Phil's Iterative Parts asks as each
-        /// part starts in the editor: a new part takes its program's current Mk, hardware keeps the Mk it was built
-        /// at. Without this, opening Gallant I #1 in the VAB quietly made its flown Mk 1 pod a Mk 2 (play-test #6).
-        /// Asked before the suite's own load checks run, so it answers from what the suite is loading too.
+        /// Is this editor part real hardware (by the rule above), not a new part? Phil's Iterative Parts asks as the editor
+        /// builds each part from its saved data: a new part is made current, hardware keeps the version and Mk it was
+        /// built at. Without this, opening Gallant I #1 in the VAB quietly made its flown Mk 1 pod a Mk 2 (play-test
+        /// #6). Asked before the suite's own load checks run, and sometimes before this addon has started (a ship opened
+        /// from the Space Center, or the one KSP brings back after a launch), so it answers from what's coming in too.
         /// </summary>
-        public static bool IsHardware(Part p)
+        public static bool IsHardwareNode(ConfigNode part)
         {
-            string s = PRSPart.SerialOf(p);
+            if (part == null) return false;
+            foreach (ConfigNode m in part.GetNodes("MODULE"))
+                if (m.GetValue("name") == Core.Craft.ModuleName) return IsHardwareSerial(m.GetValue("serial"));
+            return false;
+        }
+
+        public static bool IsHardware(Part p) => IsHardwareSerial(PRSPart.SerialOf(p));
+
+        static bool IsHardwareSerial(string s)
+        {
             if (string.IsNullOrEmpty(s)) return false;
-            if (placed.Contains(s) || (loading != null && loading.Contains(s))) return true;
-            return adoptRestored && PRSScenario.Instance != null && PRSScenario.Instance.StoredSerials().Contains(s);
+            if (placed.Contains(s) || (loading != null && loading.Contains(s)) || (!started && arriving != null && arriving.Contains(s))) return true;
+            bool comingBack = adoptRestored || (!started && EditorDriver.StartupBehaviour == EditorDriver.StartupBehaviours.LOAD_FROM_CACHE);
+            return comingBack && PRSScenario.Instance != null && PRSScenario.Instance.StoredSerials().Contains(s);
         }
 
         void OnShipModified(ShipConstruct ship) { Check(ship); }

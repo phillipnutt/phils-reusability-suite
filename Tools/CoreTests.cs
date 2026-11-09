@@ -242,6 +242,30 @@ static class CoreTests
         PipModule(binNode, 3);
         Quote q4 = Quotes.Make(craft4, "Probe", sn => null, new FakeCosts(), sn => null, s, p => new Owner { Kind = OwnerKind.Bin, BinSerial = "bin-9", Flights = 2, BinPart = binNode });
         Check(MkOf(q4.WithBinParts(craft4).Children("PART").First()) == "3", "the built craft carries the bin part's own PIP Mk");
+
+        // A flown part updated to its program's next version is another part ("PIP.b" for "PIP.a"): it still fits its
+        // slot, stays the part it is, and every link to the slot follows it.
+        var design2 = new Node();
+        Node top = new Node("PART");
+        top.Add("part", "PIP.a_100");
+        Node tm = top.AddNode("MODULE"); tm.Add("name", Craft.ModuleName); tm.Add("serial", "");
+        design2.Nodes.Add(top);
+        Node below = new Node("PART");
+        below.Add("part", "tank_200");
+        below.Add("attN", "top,PIP.a_100_0|0.5|0");
+        below.Add("link", "PIP.a_1001");
+        Node bm = below.AddNode("MODULE"); bm.Add("name", Craft.ModuleName); bm.Add("serial", "");
+        design2.Nodes.Add(below);
+        Node updated = new Node("PART");
+        updated.Add("part", "PIP.b_777");
+        Node um = updated.AddNode("MODULE"); um.Add("name", Craft.ModuleName); um.Add("design", "D2"); um.Add("slot", "0"); um.Add("serial", "flown-a"); um.Add("flights", "2");
+        PipModule(updated, 1);
+        Func<Node, string> family = p => (p.Get("part") ?? "").StartsWith("PIP.") ? "PIP.b" : (p.Get("part") ?? "");
+        CompletionResult r2 = Completion.Complete(design2, "D2", new[] { updated }, family);
+        Node t2 = r2.Craft.Children("PART").First(), b2 = r2.Craft.Children("PART").Last();
+        Check(r2.Used.SequenceEqual(new[] { "flown-a" }) && t2.Get("part") == "PIP.b_100", "an updated flown part fills its slot as itself (" + t2.Get("part") + ")");
+        Check(b2.Get("attN") == "top,PIP.b_100_0|0.5|0" && b2.Get("link") == "PIP.a_1001", "links to it follow it, and a longer id that only starts the same is left alone");
+        Check(Completion.Complete(design2, "D2", new[] { updated }).Used.Count == 0, "without the family rule, another part doesn't fit the slot");
     }
 
     static void AddSerials(Node craft)

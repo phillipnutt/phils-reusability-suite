@@ -64,7 +64,8 @@ From Phil's fourth play-test (the evening after):
 - **Update PIP parts.** Bin parts and hangar copies whose programs have moved on say so ("Augur I Mk. 1 → Mk. 3")
   and have an "Update PIP parts" button: 10% of the part's price for each Mk it gains (`pipUpdatePerMk`). A build
   that finds an old-Mk bin part that would fit asks first: update it and use it, or build that part new (the old
-  one stays in the bin). Old-Mk bin parts are never used as they are.
+  one stays in the bin). Old-Mk bin parts are never used as they are. A hangar ship's own old parts can fly as they
+  are; Restore asks whether to update them too.
 - **The Build panel splits new parts by design:** "Cabral I · 1 new part", "Shkhara 022 · 31 new parts".
 - **Bin parts are named** in the Build panel and the library, with their wear and refurbish cost, and each bin row
   says what a build would pay to refurbish it.
