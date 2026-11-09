@@ -131,6 +131,25 @@ namespace PhilsReusabilitySuite
             return now + " → " + current;
         }
 
+        /// <summary>
+        /// Gives a live editor part a stored part's hardware modules (its own program and Mk): "Use it" turns new parts
+        /// into a hangar copy's hardware. PIP keeps them because the suite now says the part is hardware.
+        /// </summary>
+        public static void LoadHardware(Part part, Node stored)
+        {
+            if (part == null || stored == null) return;
+            foreach (string name in Completion.HardwareModules)
+            {
+                var from = stored.Children("MODULE").Where(m => m.Get("name") == name).ToList();
+                var live = part.Modules.Cast<PartModule>().Where(m => m.moduleName == name).ToList();
+                for (int i = 0; i < Math.Min(from.Count, live.Count); i++)
+                {
+                    try { live[i].Load(KspNodes.ToKsp(from[i], "MODULE")); }
+                    catch (Exception ex) { Log.Warn("Couldn't give " + part.partInfo?.title + " its own " + name + " data: " + ex.Message); }
+                }
+            }
+        }
+
         /// <summary>Every new part of a craft at its program's current Mk: a Space Center build makes what the VAB would.</summary>
         public static int MakeCurrent(Node craft, Func<Node, bool> isNew)
         {

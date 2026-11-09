@@ -480,6 +480,12 @@ namespace PhilsReusabilitySuite
         {
             if (HangarCopy == null || copyDesign == null) return;
             Dictionary<int, Node> bySlot = CopyModules();
+            var partBySlot = new Dictionary<int, Node>();
+            foreach (Node p in HangarCopy.Craft.Children("PART"))
+            {
+                Node pm = p.Children("MODULE").FirstOrDefault(x => x.Get("name") == Core.Craft.ModuleName);
+                if (pm != null && pm.Get("design") == copyDesign) partBySlot[SlotIn(p)] = p;
+            }
             foreach (Part part in EditorLogic.fetch.ship.parts)
             {
                 PRSPart m = PRSPart.Of(part);
@@ -489,6 +495,8 @@ namespace PhilsReusabilitySuite
                 m.hull = hm.Get("hull") ?? "";
                 m.wear = (float)Core.Wear.In(hm);
                 EditorAddon.Claim(new[] { m.serial });
+                // It's that hardware now, so it has that hardware's own Phil's Iterative Parts program and Mk.
+                if (partBySlot.TryGetValue(m.slot, out Node stored)) Pip.LoadHardware(part, stored);
             }
             Log.Info("Using " + HangarCopy.DisplayName + " from the hangar in this build (" + copyParts + " of " + designParts + " parts of its design)");
             Refresh();

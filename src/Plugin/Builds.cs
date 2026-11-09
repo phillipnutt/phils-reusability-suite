@@ -294,7 +294,7 @@ namespace PhilsReusabilitySuite
                 Id = Guid.NewGuid().ToString("N"),
                 Name = name,
                 Facility = facility,
-                Craft = q.WithBinParts(craft),
+                Craft = WithHardware(q.WithBinParts(craft)),
                 NewPrice = q.NewPrice,
                 RefurbishPrice = q.RefurbishPrice,
                 FuelPrice = q.FuelPrice,
@@ -313,6 +313,29 @@ namespace PhilsReusabilitySuite
             return job;
         }
 
+        /// <summary>
+        /// Hardware keeps its own Phil's Iterative Parts Mk in a build, whatever the editor made of it ("Use it" turns new
+        /// editor parts into a hangar copy's hardware): each part that is a hangar ship's or a bin part's takes that stored
+        /// part's hardware modules (Completion.CarryHardware). Changes the craft it's given (already a copy).
+        /// </summary>
+        Node WithHardware(Node craft)
+        {
+            var stored = new Dictionary<string, Node>();
+            foreach (HangarShip h in Hangar)
+                foreach (Node p in h.Craft.Children("PART"))
+                {
+                    string s = Core.Craft.SerialOf(p);
+                    if (!string.IsNullOrEmpty(s) && h.Placed.Contains(s)) stored[s] = p;
+                }
+            foreach (BinPart b in Bin) if (b.PartNode != null && !string.IsNullOrEmpty(b.Serial)) stored[b.Serial] = b.PartNode;
+            foreach (Node part in craft.Children("PART"))
+            {
+                string s = Core.Craft.SerialOf(part);
+                if (!string.IsNullOrEmpty(s) && stored.TryGetValue(s, out Node from) && !ReferenceEquals(from, part)) Completion.CarryHardware(from, part);
+            }
+            return craft;
+        }
+
         /// <summary>Applies an edit to a queued build: pays or refunds the difference and keeps the work done.</summary>
         public bool UpdateBuild(BuildJob job, Node craft, string name, Quote q, out string error)
         {
@@ -326,7 +349,7 @@ namespace PhilsReusabilitySuite
             if (!CanAfford(diff)) { error = "Not enough funds: the change costs " + Pricing.Funds(diff) + "."; return false; }
             Suite.Charge(diff);
             Release(job);
-            job.Craft = q.WithBinParts(craft);
+            job.Craft = WithHardware(q.WithBinParts(craft));
             job.Name = name;
             job.NewPrice = q.NewPrice;
             job.RefurbishPrice = q.RefurbishPrice;
