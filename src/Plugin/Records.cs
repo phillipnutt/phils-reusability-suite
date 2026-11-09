@@ -221,6 +221,11 @@ namespace PhilsReusabilitySuite
         public string ReservedBy;
         /// <summary>The part as it was in its craft (for reuse in a new build), if known.</summary>
         public Node PartNode;
+        /// <summary>
+        /// What it still holds (a pod's monopropellant), so a build only tops it up. Null when not known (parts binned
+        /// before this was kept): then it's filled from empty. Play-test #9: Gallant I #6 paid for a whole load again.
+        /// </summary>
+        public Dictionary<string, double> Left;
 
         public void Save(ConfigNode n)
         {
@@ -229,12 +234,17 @@ namespace PhilsReusabilitySuite
             n.AddValue("flights", Flights);
             if (!string.IsNullOrEmpty(ReservedBy)) n.AddValue("reservedBy", ReservedBy);
             if (PartNode != null) n.AddNode(KspNodes.ToKsp(PartNode, "PART"));
+            if (Left != null)
+            {
+                ConfigNode left = n.AddNode("LEFT");
+                foreach (KeyValuePair<string, double> r in Left) left.AddValue(r.Key, r.Value.ToString("R", CultureInfo.InvariantCulture));
+            }
         }
 
         public static BinPart Load(ConfigNode n)
         {
             ConfigNode p = n.GetNode("PART");
-            return new BinPart
+            var b = new BinPart
             {
                 Serial = n.GetValue("serial"),
                 Part = n.GetValue("part"),
@@ -242,6 +252,25 @@ namespace PhilsReusabilitySuite
                 ReservedBy = n.GetValue("reservedBy"),
                 PartNode = p != null ? KspNodes.FromKsp(p) : null,
             };
+            ConfigNode l = n.GetNode("LEFT");
+            if (l != null)
+            {
+                b.Left = new Dictionary<string, double>();
+                foreach (ConfigNode.Value v in l.values) b.Left[v.name] = LaunchRecord.Num(v.value);
+            }
+            return b;
+        }
+
+        /// <summary>What a part holds by its craft node's resources (a ready ship's part is as loaded).</summary>
+        public static Dictionary<string, double> Held(Node part)
+        {
+            var d = new Dictionary<string, double>();
+            foreach (Node r in part.Children("RESOURCE"))
+            {
+                string name = r.Get("name");
+                if (name != null) d[name] = (d.TryGetValue(name, out double had) ? had : 0) + LaunchRecord.Num(r.Get("amount"));
+            }
+            return d;
         }
     }
 

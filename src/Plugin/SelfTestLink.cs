@@ -206,6 +206,10 @@ namespace PhilsReusabilitySuite
             lastPart.design = "another-design";
             EditorAddon.Instance.OpenBuildPanel();
             Check(EditorAddon.Instance.Panel.ShipName == DesignName, "a ship of two designs takes the name of its root part's design (" + EditorAddon.Instance.Panel.ShipName + ")");
+            // Its new parts are split by design, as reused pieces are (Phil: "a Cabral on top of a Shkhara").
+            var newLines = EditorAddon.Instance.Panel.Quote.Lines.Where(l => l.Kind == OwnerKind.New).ToList();
+            Check(newLines.Count == 2 && BuildPanel.NewTitle(newLines[0]) == DesignName + " · 7 new parts" && BuildPanel.NewTitle(newLines[1]) == "1 new part",
+                  "new parts split by design: " + string.Join(" / ", newLines.Select(BuildPanel.NewTitle).ToArray()));
             lastPart.design = d.Id;
             EditorAddon.Instance.OpenBuildPanel();
             BuildPanel panel = EditorAddon.Instance.Panel;
@@ -256,8 +260,15 @@ namespace PhilsReusabilitySuite
             Shot("suite_library");
             yield return new WaitForSeconds(1f);
             if (SuiteWindow.Instance != null) SuiteWindow.Instance.Show = false;
+            // A Space Center build makes what the VAB would: every new part goes through Phil's Iterative Parts' "current
+            // Mk" step (play-test #7). Counted with a stand-in for PIP's step; the Hopper's parts are stock.
+            Func<Node, bool> realCurrent = Pip.MakeCurrentOf;
+            int madeCurrent = 0;
+            Pip.MakeCurrentOf = p => { madeCurrent++; return false; };
             List<BuildsLink.LibraryBuild> lib = BuildsLink.Library();
+            Pip.MakeCurrentOf = realCurrent;
             BuildsLink.LibraryBuild hop = lib.FirstOrDefault(i => i.Design.Id == d.Id);
+            Check(hop != null && madeCurrent >= 8, "every new part of a library build went through PIP's current-Mk step (" + madeCurrent + " parts)");
             Check(hop != null && hop.Blocked == null && hop.Parts == 8 && hop.Ready == 1, "the library lists the Hopper as buildable, with its ready copy (" + hop?.Blocked + ")");
             if (hop == null) yield break;
             Check(Near(hop.Quote.Total, vabPaid, 1), "it costs what the VAB build cost (" + Pricing.Funds(hop.Quote.Total) + " vs " + Pricing.Funds(vabPaid) + ")");
@@ -539,7 +550,12 @@ namespace PhilsReusabilitySuite
             }
             else Note("no bin parts matched the Hopper here, so the stale-price check was skipped");
             HangarShip toRestore = sc.Hangar.FirstOrDefault(h => h.Id == flownId);
+            Func<Node, bool> realStep = Pip.MakeCurrentOf;
+            int restoredCurrent = 0;
+            Pip.MakeCurrentOf = p => { restoredCurrent++; return false; };
             BuildsLink.Restore rs = toRestore != null ? BuildsLink.RestoreOf(toRestore) : null;
+            Pip.MakeCurrentOf = realStep;
+            Check(rs == null || restoredCurrent == rs.NewParts, "Restore brings only its new parts to the current Mk; its own keep theirs (" + restoredCurrent + " of " + rs?.NewParts + ")");
             if (toRestore != null && SuiteWindow.Instance != null) SuiteWindow.Instance.ShowHangarShip(toRestore.Id);
             yield return new WaitForSeconds(3f);
             Shot("suite_restore");

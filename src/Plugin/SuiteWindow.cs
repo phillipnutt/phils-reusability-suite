@@ -146,7 +146,7 @@ namespace PhilsReusabilitySuite
             if (picking)
             {
                 // Priced once, at the start of a frame (Layout), so every event in the frame draws the same list.
-                if (library == null && Event.current.type == EventType.Layout) library = BuildsLink.Library();
+                if (library == null && Event.current.type == EventType.Layout) LoadLibrary();
                 if (library != null) LibraryList(sc);
             }
             else
@@ -200,6 +200,27 @@ namespace PhilsReusabilitySuite
         BuildPanel.Pace pickPace = BuildPanel.Pace.Normal;
         List<BuildsLink.LibraryBuild> library;
 
+        /// <summary>Each build's question about old-Mk bin parts ("lib:" + design, "restore:" + ship), with its answers.</summary>
+        readonly Dictionary<string, OldPartsQuestion> questions = new Dictionary<string, OldPartsQuestion>();
+
+        OldPartsQuestion QuestionFor(string key)
+        {
+            if (!questions.TryGetValue(key, out OldPartsQuestion q)) questions[key] = q = new OldPartsQuestion(new HashSet<string>());
+            return q;
+        }
+
+        /// <summary>The library, priced at the start of a frame, with any "build them new" answers already given.</summary>
+        void LoadLibrary()
+        {
+            library = BuildsLink.Library();
+            foreach (BuildsLink.LibraryBuild item in library)
+            {
+                OldPartsQuestion q = QuestionFor("lib:" + item.Design.Id);
+                item.Skip = q.Skip;
+                if (q.Skip.Count > 0) item.Requote();
+            }
+        }
+
         /// <summary>Opens the window on the Hangar tab with this ship picked.</summary>
         public void ShowHangarShip(string id)
         {
@@ -218,6 +239,7 @@ namespace PhilsReusabilitySuite
             library = null;
             error = null;
             scrollMain = Vector2.zero;
+            questions.Clear();
         }
 
         void LibraryList(PRSScenario sc)
@@ -260,7 +282,9 @@ namespace PhilsReusabilitySuite
             bool overtime = pickPace == BuildPanel.Pace.Overtime, outsource = pickPace == BuildPanel.Pace.Outsource;
             double extra = outsource ? Pricing.OutsourceCharge(q.BuildPrice, 1, S) : overtime ? Pricing.OvertimeCharge(q.BuildPrice, 1, S) : 0;
             double seconds = outsource ? 0 : overtime ? q.Seconds / S.OvertimeSpeed : q.Seconds;
-            GUILayout.BeginVertical(Look.Card);
+            GUILayout.BeginHorizontal(Look.Card);
+            if (BuildsLink.HasPictures) { Look.Picture(BuildsLink.Picture(item.Design.Id), 52, 46); GUILayout.Space(10); }
+            GUILayout.BeginVertical();
             GUILayout.BeginHorizontal();
             GUILayout.Label(item.Design.Name, Look.Name, GUILayout.ExpandWidth(false));
             GUILayout.Space(6);
@@ -269,11 +293,15 @@ namespace PhilsReusabilitySuite
             GUILayout.FlexibleSpace();
             GUILayout.Label(Pricing.Funds(q.Total + extra) + " · " + (seconds <= 0 ? "ready now" : Pricing.Duration(seconds, S)), Look.Name, GUILayout.ExpandWidth(false));
             GUILayout.EndHorizontal();
+            // Which parts the bin gives, and what a worn one costs to refurbish (Phil didn't know it had used them).
+            QuoteLine bin = q.Lines.FirstOrDefault(l => l.Kind == OwnerKind.Bin);
+            if (bin != null) GUILayout.Label("From the parts bin: " + string.Join(", ", BuildPanel.BinItems(bin).ToArray()), Look.Meta);
+            bool asking = QuestionFor("lib:" + item.Design.Id).Draw(q, item.Requote, 560);
             GUILayout.BeginHorizontal();
             GUILayout.Label(item.KindLabel + " · " + Suite.Parts(item.Parts) + (item.Blocked != null ? "\n<color=#ff8a7a>" + item.Blocked + "</color>" : ""), Look.Meta);
             GUILayout.FlexibleSpace();
-            bool can = item.Blocked == null;
-            if (GUILayout.Button(can ? "Build" : "Can't build", can ? Look.Go : Look.GoOff, GUILayout.Height(30), GUILayout.Width(120)) && can)
+            bool can = item.Blocked == null && !asking;
+            if (GUILayout.Button(asking ? "Answer above" : can ? "Build" : "Can't build", can ? Look.Go : Look.GoOff, GUILayout.Height(30), GUILayout.Width(120)) && can)
             {
                 BuildJob job = BuildsLink.BuildFromLibrary(item, overtime, outsource, out string err);
                 if (job == null) error = err;
@@ -283,6 +311,7 @@ namespace PhilsReusabilitySuite
             }
             GUILayout.EndHorizontal();
             GUILayout.EndVertical();
+            GUILayout.EndHorizontal();
             GUILayout.Space(6);
         }
 
@@ -294,7 +323,9 @@ namespace PhilsReusabilitySuite
         void JobCard(PRSScenario sc, BuildJob j, string lineLabel, bool canMoveUp)
         {
             bool waiting = lineLabel == "Waiting";
-            GUILayout.BeginVertical(Look.Card);
+            GUILayout.BeginHorizontal(Look.Card);
+            if (BuildsLink.HasPictures) { Look.Picture(BuildsLink.Picture(BuildsLink.TopDesign(j.Craft)), 64, 64); GUILayout.Space(10); }
+            GUILayout.BeginVertical();
             GUILayout.BeginHorizontal();
             Look.Chip(lineLabel, Look.ChipGrey);
             GUILayout.Space(6);
@@ -337,6 +368,7 @@ namespace PhilsReusabilitySuite
             if (GUILayout.Button("Cancel", Look.Ghost, GUILayout.Height(28))) { sc.Cancel(j); error = null; }
             GUILayout.EndHorizontal();
             GUILayout.EndVertical();
+            GUILayout.EndHorizontal();
             GUILayout.Space(6);
         }
 
@@ -384,18 +416,45 @@ namespace PhilsReusabilitySuite
             {
                 restoreFor = h.Id;
                 restoreAt = Time.realtimeSinceStartup;
-                try { restore = BuildsLink.RestoreOf(h); }
+                try { restore = BuildsLink.RestoreOf(h, QuestionFor("restore:" + h.Id).Skip); }
                 catch (Exception ex) { restore = null; Log.Warn("Couldn't work out restoring " + h.DisplayName + ": " + ex.Message); }
             }
             return restoreFor == h.Id ? restore : null;
         }
 
+        bool restoreAsking;
+
         static string GroupOf(HangarShip h) => h.ReservedBy != null ? "In a build" : h.Ready ? "Ready to fly" : "Stored";
+
+        /// <summary>
+        /// A hangar ship's Phil's Iterative Parts parts that are behind their program's current Mk, and "Update PIP
+        /// parts" (Phil's design, play-test 2026-11-08 #5). Flown hardware keeps the Mk it was built at until then.
+        /// </summary>
+        void PipSection(PRSScenario sc, HangarShip h)
+        {
+            var behind = new List<string>();
+            foreach (Node p in h.Craft.Children("PART"))
+                if (Pip.Behind(p, out string now, out string current) > 0) behind.Add(Pip.Change(now, current));
+            if (behind.Count == 0) return;
+            double price = sc.PipUpdatePrice(h.Craft.Children("PART"), out int n);
+            GUILayout.Space(8);
+            GUILayout.Label("PIP PARTS · " + n + " BEHIND", Look.Section);
+            GUILayout.Label(string.Join(", ", behind.GroupBy(x => x).Select(g => (g.Count() > 1 ? g.Count() + " × " : "") + g.Key).ToArray())
+                            + ". Their programs have moved on since " + (n == 1 ? "it was" : "they were") + " built.", Look.Meta);
+            if (GUILayout.Button("Update PIP parts · " + (price < 0.5 ? "free" : Pricing.Funds(price)), Look.Ghost, GUILayout.Height(30)))
+            {
+                if (!sc.UpdatePip(h, out string err)) error = err;
+                else { error = null; Suite.Message(h.DisplayName + ": " + Suite.Parts(n) + " updated to the current Mk"); }
+                restoreFor = null;
+                GUIUtility.ExitGUI();
+            }
+        }
 
         void ShipRow(PRSScenario sc, HangarShip h)
         {
             bool sel = h.Id == selectedId;
             GUILayout.BeginHorizontal(sel ? Look.CardSel : Look.Card);
+            if (BuildsLink.HasPictures) { Look.Picture(BuildsLink.Picture(BuildsLink.TopDesign(h.Craft)), 52, 46, h.Missing.Count > 0); GUILayout.Space(10); }
             GUILayout.BeginVertical();
             GUILayout.Label(h.DisplayName, Look.Name);
             string under = BuildsLink.Under(h);
@@ -406,6 +465,8 @@ namespace PhilsReusabilitySuite
             GUILayout.Label(meta, Look.Meta);
             if (h.Missing.Count > 0) GUILayout.Label("Missing " + Suite.Parts(h.Missing.Count), Look.MetaWarn);
             if (Core.Wear.WornOut(h.Wear)) GUILayout.Label("Worn out: refurbish it before it flies again", Look.MetaBad);
+            int behind = h.Craft.Children("PART").Count(p => Pip.Behind(p) > 0);
+            if (behind > 0) GUILayout.Label((behind == 1 ? "1 PIP part" : behind + " PIP parts") + " behind the current Mk", Look.MetaWarn);
             GUILayout.EndVertical();
             GUILayout.FlexibleSpace();
             if (h.ReservedBy != null) GUILayout.Label("In the build of " + (sc.Jobs.FirstOrDefault(j => j.Id == h.ReservedBy) is BuildJob job ? sc.TitleOf(job) : "a ship"), Look.Meta, GUILayout.Width(200));
@@ -424,6 +485,16 @@ namespace PhilsReusabilitySuite
             string under = BuildsLink.Under(h);
             if (under != null) GUILayout.Label("on " + under, Look.Meta);
             GUILayout.Label(Suite.Parts(h.Placed.Count) + " · " + (h.Flights == 0 ? "never flown" : h.Flights + (h.Flights == 1 ? " flight" : " flights")) + (h.Missing.Count > 0 ? " · missing " + h.Missing.Count : ""), Look.Meta);
+            if (BuildsLink.HasPictures)
+            {
+                // Its design's picture; for a stack, the launcher it's on beside it.
+                GUILayout.Space(6);
+                string top = BuildsLink.TopDesign(h.Craft), below = BuildsLink.UnderDesign(h.Craft);
+                GUILayout.BeginHorizontal();
+                Look.Picture(BuildsLink.Picture(top), below != null ? 140 : 284, 110, h.Missing.Count > 0);
+                if (below != null) { GUILayout.Space(4); Look.Picture(BuildsLink.Picture(below), 140, 110); }
+                GUILayout.EndHorizontal();
+            }
             GUILayout.Space(8);
             if (h.ReservedBy == null)
             {
@@ -436,6 +507,7 @@ namespace PhilsReusabilitySuite
                 GUILayout.Label("WEAR · " + Core.Wear.Percent(h.Wear), Look.Section);
                 GUILayout.Label(worn ? "<color=#ff8a7a>Worn out: it must be refurbished before it flies again.</color>"
                                 : h.Wear < 0.005 ? "Like new." : "From how hard its flights were: speed, heat and G. Refurbishing takes it back to 0%; it's optional until 100%.", Look.Meta);
+                PipSection(sc, h);
                 GUILayout.Space(8);
                 GUILayout.Label("LAUNCH AS IT IS", Look.Section);
                 if (worn) Line("Launch", "refurbish first");
@@ -456,8 +528,12 @@ namespace PhilsReusabilitySuite
                     Line("Refurbish the rest", Pricing.Funds(r.Quote.RefurbishPrice));
                     Line("Fuel", Pricing.Funds(r.Quote.FuelPrice));
                     Line("Total · build time", Pricing.Funds(r.Quote.Total) + " · " + Pricing.Duration(r.Quote.Seconds, S));
+                    QuoteLine bin = r.Quote.Lines.FirstOrDefault(l => l.Kind == OwnerKind.Bin);
+                    if (bin != null) GUILayout.Label("From the parts bin: " + string.Join(", ", BuildPanel.BinItems(bin).ToArray()), Look.Meta);
                     if (r.Blocked != null) GUILayout.Label(r.Blocked, Look.MetaBad);
+                    restoreAsking = QuestionFor("restore:" + h.Id).Draw(r.Quote, () => restoreFor = null, 270);
                 }
+                else restoreAsking = false;
                 List<string> log = sc.LogOf(h);
                 if (log.Count > 0)
                 {
@@ -471,8 +547,8 @@ namespace PhilsReusabilitySuite
                 // The first button is the likely next step: restore a ship that's missing parts, refurbish a worn-out
                 // one, otherwise launch it.
                 string err;
-                bool restoreFirst = r != null && r.Blocked == null;
-                if (r != null && GUILayout.Button("Restore to " + r.Design.Name + " · " + Pricing.Funds(r.Quote.Total), restoreFirst ? Look.Go : Look.GoOff, GUILayout.Height(38)) && r.Blocked == null)
+                bool restoreFirst = r != null && r.Blocked == null && !restoreAsking;
+                if (r != null && GUILayout.Button((restoreAsking ? "Restore: answer the parts bin above" : "Restore to " + r.Design.Name + " · " + Pricing.Funds(r.Quote.Total)), restoreFirst ? Look.Go : Look.GoOff, GUILayout.Height(38)) && restoreFirst)
                 {
                     if (BuildsLink.RestoreBuild(h, r, false, false, out err) == null) error = err;
                     else { error = null; Tab = 0; picking = false; library = null; }
@@ -527,12 +603,21 @@ namespace PhilsReusabilitySuite
             GUILayout.BeginVertical(); GUILayout.Space(10);
             Indent(() => GUILayout.Label("Loose parts from ships taken apart, pieces with no engine or probe core, and dangling struts and fuel lines. New builds will use matching parts from here.", Look.Hint));
             if (sc.Bin.Count == 0) Indent(() => GUILayout.Label("The parts bin is empty.", Look.Hint));
-            foreach (IGrouping<string, BinPart> g in sc.Bin.GroupBy(b => b.Part).OrderBy(g => Title(g.Key)).ToList())
+            // One row per part and Mk: a Phil's Iterative Parts part shows its own program and Mk ("Augur I Mk. 1").
+            foreach (IGrouping<string, BinPart> g in sc.Bin.GroupBy(b => b.Part + "|" + (Pip.Title(b.PartNode) ?? "")).OrderBy(g => NameOf(g.First())).ToList())
             {
                 Indent(() =>
                 {
+                    BinPart first = g.First();
                     GUILayout.BeginHorizontal(Look.Card);
-                    GUILayout.Label(Title(g.Key), Look.Name);
+                    GUILayout.BeginVertical();
+                    GUILayout.Label(NameOf(first), Look.Name);
+                    if (Pip.Behind(first.PartNode, out string now, out string current) > 0)
+                        GUILayout.Label("Behind its program (" + Pip.Change(now, current) + "): update it before a build can use it", Look.MetaWarn);
+                    // What a build pays to refurbish them, by their wear (Phil asked whether worn bin parts cost more).
+                    double refurb = g.Where(b => b.PartNode != null).Sum(b => KspCosts.Instance.Cost(b.PartNode).Dry * Pricing.RefurbishShare(b.Wear, S));
+                    if (refurb >= 0.5) GUILayout.Label("a build refurbishes " + (g.Count() == 1 ? "it" : "them") + " for " + Pricing.Funds(refurb), Look.Meta);
+                    GUILayout.EndVertical();
                     GUILayout.FlexibleSpace();
                     double minW = g.Min(b => b.Wear), maxW = g.Max(b => b.Wear);
                     int reserved = g.Count(b => b.ReservedBy != null);
@@ -550,22 +635,41 @@ namespace PhilsReusabilitySuite
             }
             GUILayout.EndVertical();
             GUILayout.EndScrollView();
-            if (Suite.Career && sc.Bin.Any(b => b.ReservedBy == null))
+            List<BinPart> old = sc.Bin.Where(b => b.ReservedBy == null && b.PartNode != null && Pip.Behind(b.PartNode) > 0).ToList();
+            bool sell = Suite.Career && sc.Bin.Any(b => b.ReservedBy == null);
+            if (sell || old.Count > 0)
             {
                 GUILayout.BeginVertical(GUILayout.Width(220));
                 GUILayout.Space(10);
-                double all = sc.Bin.Where(b => b.ReservedBy == null).Sum(b => sc.ScrapValue(b));
-                GUILayout.Label(sc.Bin.Count + " parts · scrap value " + Pricing.Funds(all), Look.Meta);
-                if (GUILayout.Button("Sell all for scrap", Look.Ghost, GUILayout.Height(32))) sc.Sell(sc.Bin.ToList());
+                if (sell)
+                {
+                    double all = sc.Bin.Where(b => b.ReservedBy == null).Sum(b => sc.ScrapValue(b));
+                    GUILayout.Label(sc.Bin.Count + " parts · scrap value " + Pricing.Funds(all), Look.Meta);
+                    if (GUILayout.Button("Sell all for scrap", Look.Ghost, GUILayout.Height(32))) sc.Sell(sc.Bin.ToList());
+                }
+                if (old.Count > 0)
+                {
+                    // Phil's design (play-test 2026-11-08 #5): old-Mk parts are updated here, or when a build asks.
+                    GUILayout.Space(10);
+                    double price = sc.PipUpdatePrice(old.Select(b => b.PartNode), out int n);
+                    GUILayout.Label((n == 1 ? "1 PIP part is" : n + " PIP parts are") + " behind the current Mk. Builds use them only once they're updated.", Look.Meta);
+                    if (GUILayout.Button("Update PIP parts · " + (price < 0.5 ? "free" : Pricing.Funds(price)), Look.Ghost, GUILayout.Height(32)))
+                    {
+                        if (!sc.UpdatePip(old, out string err)) error = err;
+                        else { error = null; Suite.Message(Suite.Parts(n) + " in the parts bin updated to the current Mk"); }
+                        GUIUtility.ExitGUI();
+                    }
+                }
                 GUILayout.EndVertical();
                 GUILayout.Space(12);
             }
         }
 
-        static string Title(string partName)
+        static string NameOf(BinPart b)
         {
-            AvailablePart ap = PartLoader.getPartInfoByName(partName);
-            return ap != null ? ap.title : partName;
+            if (b.PartNode != null) return Pip.NameOf(b.PartNode);
+            AvailablePart ap = PartLoader.getPartInfoByName(b.Part);
+            return ap != null ? ap.title : b.Part;
         }
     }
 }

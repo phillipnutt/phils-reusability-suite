@@ -361,7 +361,11 @@ namespace PhilsReusabilitySuite
             Node partNode = from != null && from.BySerial.TryGetValue(serial, out CraftPart cp) ? Builds.Loose(cp.Node) : PartNodeFrom(ps, serial);
             Node mod = partNode.Children("MODULE").FirstOrDefault(x => x.Get("name") == Core.Craft.ModuleName);
             if (mod != null) mod.Set("wear", wear.ToString("R", System.Globalization.CultureInfo.InvariantCulture));
-            Bin.Add(new BinPart { Serial = serial, Part = ps.partName, Flights = FlightsOf(ps), PartNode = partNode });
+            // What it came back with, so a build only tops it up.
+            var left = new Dictionary<string, double>();
+            foreach (ProtoPartResourceSnapshot r in ps.resources)
+                if (r.amount > 0) left[r.resourceName] = (left.TryGetValue(r.resourceName, out double had) ? had : 0) + r.amount;
+            Bin.Add(new BinPart { Serial = serial, Part = ps.partName, Flights = FlightsOf(ps), PartNode = partNode, Left = left });
         }
 
         static Node PartNodeFrom(ProtoPartSnapshot ps, string serial)

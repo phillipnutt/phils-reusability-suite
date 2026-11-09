@@ -28,6 +28,8 @@ namespace PhilsReusabilitySuite.Core
         public double WearG = 0.20, WearGFrom = 3, WearGFull = 10;
         /// <summary>Selling for scrap returns this share of the part price.</summary>
         public double ScrapValue = 0.5;
+        /// <summary>Updating a Phil's Iterative Parts part to its program's current Mk costs this share of its price per Mk gained.</summary>
+        public double PipUpdatePerMk = 0.10;
         /// <summary>Build lines per VAB or SPH level.</summary>
         public int LinesPerLevel = 1;
         /// <summary>Only pieces built from a Phil's Builds design come home to the hangar; others go to the parts bin.</summary>
@@ -54,6 +56,7 @@ namespace PhilsReusabilitySuite.Core
             s.WearGFull = D(n, "wearGFull", s.WearGFull);
             if (s.WearGFull <= s.WearGFrom) { s.WearGFrom = 3; s.WearGFull = 10; }
             s.ScrapValue = D(n, "scrapValue", s.ScrapValue, true);
+            s.PipUpdatePerMk = D(n, "pipUpdatePerMk", s.PipUpdatePerMk, true);
             s.LinesPerLevel = (int)Math.Max(1, D(n, "linesPerLevel", s.LinesPerLevel));
             if (n.Get("requireDesign") != null) s.RequireDesign = !string.Equals(n.Get("requireDesign"), "false", StringComparison.OrdinalIgnoreCase);
             return s;
@@ -77,6 +80,9 @@ namespace PhilsReusabilitySuite.Core
 
         /// <summary>Share of its price that refurbishing a part costs: its craft's wear times RefurbishShare.</summary>
         public static double RefurbishShare(double wear, Settings s) => Clamp01(wear) * s.RefurbishShare;
+
+        /// <summary>What bringing a part this many Marks up to its program's current Mk costs.</summary>
+        public static double PipUpdate(double price, int marks, Settings s) => price * Math.Max(0, marks) * s.PipUpdatePerMk;
 
         public static double OvertimeCharge(double buildPrice, double remaining, Settings s) => buildPrice * Clamp01(remaining) * s.OvertimeCost;
         public static double OutsourceCharge(double buildPrice, double remaining, Settings s) => buildPrice * Clamp01(remaining) * s.OutsourceCost;

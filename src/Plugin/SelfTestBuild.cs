@@ -309,6 +309,7 @@ namespace PhilsReusabilitySuite
             var opened = EditorLogic.fetch.ship.parts.Select(PRSPart.SerialOf).ToList();
             Check(opened.Count == storedSerials.Count && storedSerials.All(opened.Contains), "it's the stored ship's own hardware (" + opened.Count(storedSerials.Contains) + " of " + storedSerials.Count + ")");
             Check(EditorLogic.fetch.ship.parts.All(p => Mathf.Abs(PRSPart.Of(p).wear - 0.2f) < 1e-4f), "its parts carry its wear into the VAB");
+            Check(EditorLogic.fetch.ship.parts.All(EditorAddon.IsHardware), "Phil's Iterative Parts is told every part of it is hardware, so they keep their Mk in the VAB");
             EditorAddon.Instance.OpenBuildPanel();
             panel = EditorAddon.Instance.Panel;
             Check(panel.ReadyShip?.Id == storedId && panel.ShipName == storedName && panel.Kept?.Id == storedId, "the Build panel knows it as " + storedDisplay + ", to be built under its own name (" + panel.ShipName + ")");
@@ -351,6 +352,11 @@ namespace PhilsReusabilitySuite
             Quote qb = panel.Quote;
             Check(qb.BinSerials.Count == partsStored && qb.NewPrice < 1, "every part comes from the bin (" + qb.BinSerials.Count + " of " + partsStored + "), nothing new");
             Check(Near(qb.RefurbishPrice, q1.NewPrice * 0.2 * S.RefurbishShare, 2), "bin parts cost their refurbish at 20% wear (" + Pricing.Funds(qb.RefurbishPrice) + ")");
+            Check(qb.FuelPrice < 1, "bin parts from a fuelled ship are still full: no fuel to pay (" + Pricing.Funds(qb.FuelPrice) + ")");
+            Check(!EditorLogic.fetch.ship.parts.Any(EditorAddon.IsHardware), "a design loaded from a file is new parts to Phil's Iterative Parts (current Mk)");
+            QuoteLine binLine = qb.Lines.FirstOrDefault(l => l.Kind == OwnerKind.Bin);
+            var items = binLine != null ? BuildPanel.BinItems(binLine) : new System.Collections.Generic.List<string>();
+            Check(items.Count > 0 && items.All(t => t.Contains("wear 20%")) && items.Any(t => t.Contains("refurbish")),"the Build panel names the bin's parts and their refurbish (" + string.Join("; ", items.ToArray()) + ")");
             yield return new WaitForSeconds(1f);
             Shot("build_panel_bin");
             yield return new WaitForSeconds(1f);
@@ -480,6 +486,92 @@ namespace PhilsReusabilitySuite
             Check(result.DisplayName == topName && result.Placed.Count == parts, "it's still " + topName + ", now with " + result.Placed.Count + " parts, not a new number (" + result.DisplayName + ")");
             Check(!sc.Hangar.Any(h => h.Id == underId) && sc.Hangar.Count == hangarBefore - 1, "the ship under it joined it: one ship fewer in the hangar");
             Check(BuildsLink.Under(result) == underName, "its card says it's on " + underName + " (" + BuildsLink.Under(result) + ")");
+
+            yield return OldMkSteps(result);
+        }
+
+        static Node FakePip(Node part) => part.Children("MODULE").FirstOrDefault(m => m.Get("name") == "ModulePipPart");
+
+        /// <summary>
+        /// 13. Old-Mk parts (Phil's design, play-test 2026-11-08 #5), with a stand-in for Phil's Iterative Parts whose one
+        /// program is at Mk 3: a Mk 1 bin part that would fit is offered, not used; "No" builds it new and leaves it in the
+        /// bin; "Update and use" pays the fee and uses it. A hangar ship's old part updates too. The real PIP is checked
+        /// by the link test.
+        /// </summary>
+        IEnumerator OldMkSteps(HangarShip result)
+        {
+            Pip.BehindFn realBehind = Pip.BehindOf;
+            Func<Node, bool> realCurrent = Pip.MakeCurrentOf;
+            Func<Node, string> realTitle = Pip.TitleOf;
+            Pip.BehindOf = (Node p, out string now, out string cur) =>
+            {
+                Node m = FakePip(p);
+                int mk = m != null && int.TryParse(m.Get("mk"), out int k) ? k : 3;
+                now = "Fake I Mk. " + mk; cur = "Fake I Mk. 3";
+                return m == null ? 0 : 3 - mk;
+            };
+            Pip.MakeCurrentOf = p => { Node m = FakePip(p); if (m == null || m.Get("mk") == "3") return false; m.Set("mk", "3"); return true; };
+            Pip.TitleOf = p => FakePip(p) != null ? "Fake I Mk. " + FakePip(p).Get("mk") : null;
+
+            PRSScenario sc = PRSScenario.Instance;
+            string err;
+            Check(sc.TakeApart(result), "the stack taken apart for the old-Mk test");
+            yield return ToEditor();
+            yield return LoadFlea();
+            sc = PRSScenario.Instance;
+            string rootName = EditorLogic.fetch.ship.parts.First(p => p.parent == null).partInfo.name;
+            var old = sc.Bin.Where(b => b.Part == rootName && b.PartNode != null).ToList();
+            foreach (BinPart b in old) { Node m = b.PartNode.AddNode("MODULE"); m.Add("name", "ModulePipPart"); m.Add("mk", "1"); }
+            Check(old.Count > 0, "the bin has " + old.Count + " of the Flea's top part, made Mk 1 of a Mk 3 program");
+            EditorAddon.Instance.OpenBuildPanel();
+            BuildPanel panel = EditorAddon.Instance.Panel;
+            Quote q = panel.Quote;
+            Check(q.OldBin.Count == 1 && old.Any(b => b.Serial == q.OldBin[0].BinSerial) && !q.BinSerials.Contains(q.OldBin[0].BinSerial), "the old part is offered, not used (" + q.OldBin.Count + " offered)");
+            Check(OldPartsQuestion.List(q.OldBin) == "Fake I Mk. 1 → Mk. 3", "the question names it: " + OldPartsQuestion.List(q.OldBin));
+            Check(!panel.Confirm() && panel.Error != null && sc.Jobs.Count(j => j.Name == "Jumping Flea") == 0, "Build waits for an answer (" + panel.Error + ")");
+            yield return new WaitForSeconds(1f);
+            Shot("build_panel_old_mk");
+            yield return new WaitForSeconds(1f);
+
+            // "No": built new, the old ones stay in the bin.
+            double newBefore = q.NewPrice;
+            panel.SkipOld.Add(PRSScenario.SkipOldParts);
+            panel.Refresh();
+            q = panel.Quote;
+            Check(q.OldBin.Count == 0 && Near(q.NewPrice, newBefore, 0.5) && !q.BinSerials.Any(s => old.Any(b => b.Serial == s)),
+                  "after No, it's built new (" + Pricing.Funds(q.NewPrice) + " new, as priced while asking), and neither old part (" + old.Count + ") is offered or used");
+
+            // "Update and use": the fee, then the bin part is current and the build takes it.
+            panel.SkipOld.Clear();
+            panel.Refresh();
+            q = panel.Quote;
+            BinPart offered = sc.Bin.FirstOrDefault(b => q.OldBin.Count > 0 && b.Serial == q.OldBin[0].BinSerial);
+            double fee = q.UpdatePrice, expect = offered != null ? KspCosts.Instance.Cost(offered.PartNode).Dry * 2 * S.PipUpdatePerMk : -1, f0 = Funds;
+            Check(offered != null && Near(fee, expect, 0.5), "updating it costs 10% of its price per Mk gained (" + Pricing.Funds(fee) + ")");
+            Check(sc.UpdatePip(sc.BinPartsOf(q.OldBin), out err) && Near(f0 - Funds, fee, 0.5), "Update and use charged the fee " + err);
+            Check(offered != null && FakePip(offered.PartNode)?.Get("mk") == "3", "the bin part is now Mk 3");
+            panel.Refresh();
+            q = panel.Quote;
+            Check(q.OldBin.Count == 0 && offered != null && q.BinSerials.Contains(offered.Serial), "and the build now uses it");
+            Check(panel.Confirm(), "building with the updated part " + panel.Error);
+            BuildJob job = sc.Jobs.LastOrDefault();
+            if (job != null) sc.Outsource(job, out err);
+            HangarShip h = sc.Hangar.FirstOrDefault(x => x.Ready && offered != null && x.Placed.Contains(offered.Serial));
+            Check(h != null, "it's built, with the updated part");
+
+            // A hangar ship's own old part: "Update PIP parts" on the hangar copy.
+            if (h != null)
+            {
+                Node part = h.Craft.Children("PART").Last();
+                Node m = part.AddNode("MODULE"); m.Add("name", "ModulePipPart"); m.Add("mk", "2");
+                double price = sc.PipUpdatePrice(h.Craft.Children("PART"), out int behind), f1 = Funds;
+                Check(behind == 1 && price > 0, "the hangar ship has " + behind + " part behind (" + Pricing.Funds(price) + " to update)");
+                Check(sc.UpdatePip(h, out err) && Near(f1 - Funds, price, 0.5) && h.Craft.Children("PART").All(p => FakePip(p) == null || FakePip(p).Get("mk") == "3"), "Update PIP parts on a hangar ship " + err);
+                Check(!sc.UpdatePip(h, out err), "with nothing behind, there's nothing to update (" + err + ")");
+            }
+            Pip.BehindOf = realBehind;
+            Pip.MakeCurrentOf = realCurrent;
+            Pip.TitleOf = realTitle;
         }
     }
 }

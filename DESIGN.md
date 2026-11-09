@@ -676,6 +676,38 @@ what's stored. Pick up stays the whole design; Open in the VAB is the "just what
 - **Whole-craft pick-ups into an empty VAB are named after the design** (Phil's Builds' rule, now for every kind of
   design, not only launchers and upper stages).
 
+**Phil's fourth play-test (2026-11-08 evening)**, the same career and a new one. Working: Take apart, "Use it" for a
+ready payload and a ready launcher copy, Build · 0, and the unwatched-landing rules ("good and reasonable math").
+Changed:
+- **One rule for a Phil's Iterative Parts part's Mk** (Phil: "totally current with whatever the VAB can know and
+  apply"). A *new* part is its program's current Mk wherever the build starts. A *flown* part keeps the Mk it was
+  built at until it's updated. PIP owns what a Mk is and the one step that brings a part to the current Mk
+  (`PIP.PipApi`); the suite calls it, by reflection (no PIP: nothing changes). Three bugs this fixes:
+  - A Space Center build used the design file's saved Mk (Gallant I #4 flew Mk 1 parts, priced as Mk 3). Library
+    builds and Restore's new parts now go through PIP's step first (`Pip.MakeCurrent`).
+  - Restore built a flown part's slot from the design file's PIP data, so Gallant I #1's Mk 2 parts came back Mk 1.
+    `Completion.CarryHardware` puts the flown part's own hardware modules (`ModulePipPart`, `ModulePipEngine`) in its
+    slot; everything else (staging, a fired decoupler) still comes from the design. A bin part put into a build
+    carries its own the same way.
+  - The VAB re-stamped every PIP part with the current Mk, hangar hardware included (opening Gallant I #1 made its
+    Mk 1 pod a Mk 2). PIP now asks the suite (`EditorAddon.IsHardware`, the serial rule above) and leaves hardware
+    as it is.
+- **Update PIP parts** (Phil's design). Bin parts and hangar copies whose programs have moved on show it ("Augur I
+  Mk. 1 → Mk. 3") and have an "Update PIP parts" button. A build (VAB, Space Center or Restore) that finds a bin part
+  that fits once updated asks: "Update and use · N", or "No", which says those parts will be built new and the old
+  ones stay in the bin, then prices it that way. Old-Mk bin parts are never used as they are. With PIP's prices the
+  same at every Mk, matching still notices the Mk (`Pip.Behind`), so it asks instead of quietly using an old part.
+  The update costs `pipUpdatePerMk` (10%) of the part's price per Mk gained. *(Fee and whether a hangar ship's own old
+  parts must be updated before it flies: asked of Phil.)*
+- **New parts split by design** in the Build panel: "Cabral I · 1 new part", "Shkhara 022 · 31 new parts".
+- **The bin's parts are named** in the Build panel and library cards, with any refurbish cost ("Mk1 Command Pod ·
+  wear 20% · refurbish 45"), and the bin tab says what a build would pay to refurbish each row.
+- **Bin parts keep the fuel they came back with**, as hangar ships do: a build only tops them up (Gallant I #6 paid
+  160 for fuel it already had).
+- **Pictures** in the Build queue (job cards, library cards) and the Hangar (rows and the detail panel), from Phil's
+  Builds' own design pictures (`BuildsApi.Picture`, Phil's Builds 3). A stack shows its payload, and the launcher
+  beside it in the detail panel; a copy missing parts gets an amber marker. The Parts bin stays text-only.
+
 ## Open questions
 
 - None for the design. The money numbers get tuned in play.

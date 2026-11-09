@@ -51,40 +51,127 @@ namespace PhilsReusabilitySuite
         {
             foreach (HangarShip h in Hangar)
                 if (h.CameBack.TryGetValue(serial, out Dictionary<string, double> d)) return d;
+            foreach (BinPart b in Bin)
+                if (b.Serial == serial) return b.Left;
             return null;
         }
 
-        public Quote QuoteFor(Node craft, string name, BuildJob editing)
+        /// <summary>In a build's skip list: the player answered "No" to updating old-Mk bin parts, so none are offered.</summary>
+        public const string SkipOldParts = "*old-mk";
+
+        /// <param name="skipBin">Bin parts this build mustn't use (by serial), or SkipOldParts: no old-Mk part is offered.</param>
+        public Quote QuoteFor(Node craft, string name, BuildJob editing, ICollection<string> skipBin = null)
         {
-            return Quotes.Make(craft, name, s => OwnerOf(s, editing), KspCosts.Instance, CameBackOf, S, BinMatcher(editing, craft));
+            return Quotes.Make(craft, name, s => OwnerOf(s, editing), KspCosts.Instance, CameBackOf, S, BinMatcher(editing, craft, skipBin));
         }
 
         /// <summary>
         /// Matches a new part to a loose part in the bin, as ScrapYard did: the same part at the same price (so
-        /// the same variant and options), not taken by another build, each bin part used once.
+        /// the same variant and options), not taken by another build, each bin part used once. A Phil's Iterative
+        /// Parts part whose program has moved on since it was built is never used as it is: it comes back marked
+        /// Old, so the build can ask whether to update it (Phil: old-Mk parts never fly unless updated). A current
+        /// one is taken first.
         /// </summary>
-        Func<Node, Owner> BinMatcher(BuildJob editing, Node craft)
+        Func<Node, Owner> BinMatcher(BuildJob editing, Node craft, ICollection<string> skipBin)
         {
             // A bin part already in the ship (its own serial is in the craft) can't also stand in for a new part.
             var used = new HashSet<string>(craft.Children("PART").Select(Core.Craft.SerialOf).Where(s => !string.IsNullOrEmpty(s)));
             var dryCache = new Dictionary<string, double>();
+            var behindCache = new Dictionary<string, Owner>();
+            bool noOld = skipBin != null && skipBin.Contains(SkipOldParts);
             return part =>
             {
                 string r = part.Get("part") ?? "";
                 string name = r.Contains("_") ? r.Substring(0, r.LastIndexOf('_')) : r;
                 double dry = -1;
+                Owner old = null;
                 foreach (BinPart b in Bin)
                 {
                     if (b.Part != name || b.PartNode == null || used.Contains(b.Serial)) continue;
                     if (b.ReservedBy != null && (editing == null || b.ReservedBy != editing.Id)) continue;
+                    if (skipBin != null && skipBin.Contains(b.Serial)) continue;
                     if (dry < 0) dry = KspCosts.Instance.Cost(part).Dry;
                     if (!dryCache.TryGetValue(b.Serial, out double bd)) dryCache[b.Serial] = bd = KspCosts.Instance.Cost(b.PartNode).Dry;
                     if (Math.Abs(bd - dry) > 1) continue;
+                    if (!behindCache.TryGetValue(b.Serial, out Owner behind))
+                    {
+                        int marks = Pip.Behind(b.PartNode, out string now, out string current);
+                        behind = marks <= 0 ? null : new Owner
+                        {
+                            Kind = OwnerKind.Bin, Old = true, BinSerial = b.Serial, Flights = b.Flights, Wear = b.Wear, BinPart = b.PartNode,
+                            Marks = marks, Now = now, Current = current, Label = "From the parts bin",
+                        };
+                        behindCache[b.Serial] = behind;
+                    }
+                    // Answered "No, build them new": old-Mk parts aren't offered again for this build.
+                    if (behind != null) { if (old == null && !noOld) old = behind; continue; }
                     used.Add(b.Serial);
-                    return new Owner { Kind = OwnerKind.Bin, BinSerial = b.Serial, Flights = b.Flights, Wear = b.Wear, Label = "From the parts bin" };
+                    return new Owner { Kind = OwnerKind.Bin, BinSerial = b.Serial, Flights = b.Flights, Wear = b.Wear, BinPart = b.PartNode, Label = "From the parts bin" };
                 }
-                return null;
+                if (old != null) used.Add(old.BinSerial);
+                return old;
             };
+        }
+
+        // ---- Updating PIP parts to their program's current Mk ----
+
+        /// <summary>A part's update: how many Marks, and what it costs.</summary>
+        public double PipUpdatePrice(Node part, out int marks)
+        {
+            marks = Pip.Behind(part);
+            return marks > 0 ? Pricing.PipUpdate(KspCosts.Instance.Cost(part).Dry, marks, S) : 0;
+        }
+
+        /// <summary>What updating these parts costs, and how many of them are behind.</summary>
+        public double PipUpdatePrice(IEnumerable<Node> parts, out int behind)
+        {
+            double total = 0;
+            behind = 0;
+            foreach (Node p in parts)
+            {
+                total += PipUpdatePrice(p, out int marks);
+                if (marks > 0) behind++;
+            }
+            return total;
+        }
+
+        /// <summary>
+        /// "Update PIP parts": brings each part that's behind to its program's current Mk (PIP's own step, the one the
+        /// VAB uses for a new part), paid now. Wear, flights and fuel stay as they are.
+        /// </summary>
+        bool UpdatePip(List<Node> parts, string what, out string error)
+        {
+            error = null;
+            double price = PipUpdatePrice(parts, out int behind);
+            if (behind == 0) { error = "Its Phil's Iterative Parts parts are all at their program's current Mk."; return false; }
+            if (Suite.Career && price > Suite.Funds) { error = "Not enough funds: updating costs " + Pricing.Funds(price) + "."; return false; }
+            int done = 0;
+            foreach (Node p in parts) if (Pip.Behind(p) > 0 && Pip.MakeCurrent(p)) done++;
+            if (done == 0) { error = "Phil's Iterative Parts couldn't update them."; return false; }
+            // Charged for what was updated (all of them, unless PIP refused one).
+            Suite.Charge(done == behind ? price : price * done / behind);
+            Changed();
+            Log.Info("Updated " + Suite.Parts(done) + " of " + what + " to their programs' current Mk, for " + Pricing.Funds(done == behind ? price : price * done / behind));
+            return true;
+        }
+
+        public bool UpdatePip(IEnumerable<BinPart> parts, out string error)
+        {
+            List<Node> nodes = parts.Where(b => b.ReservedBy == null && b.PartNode != null).Select(b => b.PartNode).ToList();
+            return UpdatePip(nodes, "the parts bin", out error);
+        }
+
+        public bool UpdatePip(HangarShip h, out string error)
+        {
+            if (h.ReservedBy != null) { error = h.DisplayName + " is in a build: update it when the build is done."; return false; }
+            return UpdatePip(h.Craft.Children("PART").ToList(), h.DisplayName, out error);
+        }
+
+        /// <summary>The bin parts behind old-Mk offers in a quote, as they are now.</summary>
+        public List<BinPart> BinPartsOf(IEnumerable<Owner> old)
+        {
+            var serials = new HashSet<string>(old.Select(o => o.BinSerial));
+            return Bin.Where(b => serials.Contains(b.Serial)).ToList();
         }
 
         // ---- Taking apart and selling ----
@@ -94,7 +181,7 @@ namespace PhilsReusabilitySuite
         {
             if (h.ReservedBy != null) return false;
             Craft c = Core.Craft.Read(h.Craft);
-            foreach (CraftPart cp in c.Parts) if (!string.IsNullOrEmpty(cp.Serial)) Bin.Add(BinPartFrom(cp));
+            foreach (CraftPart cp in c.Parts) if (!string.IsNullOrEmpty(cp.Serial)) Bin.Add(BinPartFrom(cp, h));
             Hangar.Remove(h);
             Changed();
             Log.Info("Took " + h.DisplayName + " apart: " + c.Parts.Count + " parts to the parts bin");
@@ -197,6 +284,8 @@ namespace PhilsReusabilitySuite
             error = null;
             string stale = StaleQuote(q, null, fromShipId);
             if (stale != null) { error = "Something changed since this was priced: " + stale + ". Check the new price and try again."; return null; }
+            // Old-Mk bin parts that would fit: the build asks first (update them, or build those parts new).
+            if (q.OldBin.Count > 0) { error = "Answer the question about the parts bin's older parts first."; return null; }
             double extra = outsource ? Pricing.OutsourceCharge(q.BuildPrice, 1, S) : overtime ? Pricing.OvertimeCharge(q.BuildPrice, 1, S) : 0;
             double total = q.Total + extra;
             if (!CanAfford(total)) { error = "Not enough funds: this costs " + Pricing.Funds(total) + "."; return null; }
@@ -330,7 +419,7 @@ namespace PhilsReusabilitySuite
                 // Parts taken off a stored ship in the VAB go to the parts bin.
                 Craft c = Core.Craft.Read(h.Craft);
                 foreach (string s in h.Placed.Where(x => !serials.Contains(x)))
-                    if (c.BySerial.TryGetValue(s, out CraftPart cp)) Bin.Add(BinPartFrom(cp));
+                    if (c.BySerial.TryGetValue(s, out CraftPart cp)) Bin.Add(BinPartFrom(cp, h));
                 Hangar.Remove(h);
             }
             Bin.RemoveAll(b => b.ReservedBy == job.Id);
@@ -349,7 +438,7 @@ namespace PhilsReusabilitySuite
                 // built on as the top of a stack): anything not in the new build goes to the parts bin.
                 Craft old = Core.Craft.Read(ready.Craft);
                 foreach (string s in ready.Placed.Where(x => !serials.Contains(x)))
-                    if (old.BySerial.TryGetValue(s, out CraftPart cp)) Bin.Add(BinPartFrom(cp));
+                    if (old.BySerial.TryGetValue(s, out CraftPart cp)) Bin.Add(BinPartFrom(cp, ready));
             }
             ready.UT = Planetarium.GetUniversalTime();
             ready.Craft = job.Craft.Clone();
@@ -396,9 +485,13 @@ namespace PhilsReusabilitySuite
             return int.TryParse(m?.Get("flights"), out int f) ? f : 0;
         }
 
-        static BinPart BinPartFrom(CraftPart cp)
+        /// <summary>A hangar ship's part as a loose bin part, holding what it held in that ship (a ready ship's are full).</summary>
+        static BinPart BinPartFrom(CraftPart cp, HangarShip from)
         {
-            return new BinPart { Serial = cp.Serial, Part = cp.PartName, Flights = FlightsIn(cp.Node), PartNode = Builds.Loose(cp.Node) };
+            Dictionary<string, double> left = from.Ready ? BinPart.Held(cp.Node)
+                : from.CameBack.TryGetValue(cp.Serial, out Dictionary<string, double> d) ? new Dictionary<string, double>(d)
+                : new Dictionary<string, double>();
+            return new BinPart { Serial = cp.Serial, Part = cp.PartName, Flights = FlightsIn(cp.Node), PartNode = Builds.Loose(cp.Node), Left = left };
         }
 
         // ---- Time passing ----

@@ -25,7 +25,7 @@ namespace PhilsReusabilitySuite
             ChipNew, ChipReuse, ChipGrey, ChipWarn, Price, PriceFree, PriceSub,
             RowKey, RowVal, RowValGood, RowValAmber, RowTotalKey, RowTotal,
             Seg, SegOn, SegSub, SegSubOn, Go, GoOff, Ghost, GhostOn, Link, Hint, Notice, NoticeGood, Footer, FooterText,
-            Section, Empty, Bar;
+            Section, Empty, Bar, PictureBox;
 
         static readonly Dictionary<Color, Texture2D> solids = new Dictionary<Color, Texture2D>();
 
@@ -113,6 +113,7 @@ namespace PhilsReusabilitySuite
             Link.hover.textColor = Ink;
             Hint = Text(Body, 12, Ink3, wrap: true);
             Notice = Box(Round(Panel2, Line, 8), 9, Text(Body, 13, Ink2, wrap: true));
+            PictureBox = Box(Round(Panel2, Line, 6), 7);
             Notice.padding = new RectOffset(12, 12, 8, 8);
             NoticeGood = Box(Round(Color.Lerp(Panel2, Good, 0.08f), Color.Lerp(Panel2, Good, 0.5f), 8), 9, Text(Body, 13, Ink, wrap: true));
             NoticeGood.padding = Notice.padding;
@@ -148,6 +149,22 @@ namespace PhilsReusabilitySuite
         public static void Chip(string text, GUIStyle style)
         {
             GUILayout.Label(text.ToUpperInvariant(), style, GUILayout.Height(17), GUILayout.ExpandWidth(false));
+        }
+
+        /// <summary>
+        /// A design's picture in a box, as Phil's Builds' library shows them, or an empty box when it has none. A copy
+        /// that's missing parts gets a marker: the picture is of the whole design.
+        /// </summary>
+        public static void Picture(Texture2D picture, float width, float height, bool missing = false)
+        {
+            Rect r = GUILayoutUtility.GetRect(width, height, GUILayout.Width(width), GUILayout.Height(height));
+            if (Event.current.type != EventType.Repaint) return;
+            PictureBox.Draw(r, false, false, false, false);
+            if (picture != null) GUI.DrawTexture(new Rect(r.x + 3, r.y + 3, r.width - 6, r.height - 6), picture, ScaleMode.ScaleToFit);
+            if (!missing) return;
+            // A small picture gets an amber corner; a big one says so.
+            if (r.width < 100) GUI.DrawTexture(new Rect(r.xMax - 12, r.yMax - 12, 8, 8), Solid(Warn));
+            else ChipWarn.Draw(new Rect(r.x + 4, r.yMax - 18, 92, 14), "PARTS MISSING", false, false, false, false);
         }
 
         static Font OsFont(string name)

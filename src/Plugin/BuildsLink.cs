@@ -29,6 +29,7 @@ namespace PhilsReusabilitySuite
             BuildsApi.DesignSaved += OnSaved;
             BuildsApi.SetCopies(this);
             Log.Info("Linked with Phil's Builds (API " + BuildsApi.Version + ")");
+            Pip.Find();
         }
 
         /// <summary>Asks Phil's Builds to redraw its window, after the hangar changed.</summary>
@@ -89,6 +90,38 @@ namespace PhilsReusabilitySuite
         }
 
         static string DesignIn(Node part) => part.Children("MODULE").FirstOrDefault(m => m.Get("name") == Core.Craft.ModuleName)?.Get("design");
+
+        // ---- Pictures (Phil, play-test 2026-11-08 #17: pictures in the Build queue and the Hangar) ----
+
+        /// <summary>Phil's Builds' own picture of a design, the one its library shows (Phil's Builds 3 and later).</summary>
+        static readonly System.Reflection.MethodInfo pictureCall = typeof(BuildsApi).GetMethod("Picture",
+            System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static, null, new[] { typeof(string) }, null);
+
+        /// <summary>This Phil's Builds can show design pictures (an older one can't: then the suite shows none).</summary>
+        public static bool HasPictures => pictureCall != null && pictureCall.ReturnType == typeof(Texture2D);
+
+        /// <summary>A design's picture, owned by Phil's Builds, or null when it has none.</summary>
+        public static Texture2D Picture(string designId)
+        {
+            if (!HasPictures || string.IsNullOrEmpty(designId)) return null;
+            try { return pictureCall.Invoke(null, new object[] { designId }) as Texture2D; }
+            catch (Exception) { return null; }
+        }
+
+        /// <summary>The design at a craft's top (its root part, written first): the payload of a stack.</summary>
+        public static string TopDesign(Node craft)
+        {
+            Node first = craft?.Children("PART").FirstOrDefault();
+            string d = first != null ? DesignIn(first) : null;
+            return string.IsNullOrEmpty(d) ? null : d;
+        }
+
+        /// <summary>The design a stack's payload sits on (the launcher's), or null when it's all one design.</summary>
+        public static string UnderDesign(Node craft)
+        {
+            string top = TopDesign(craft);
+            return craft?.Children("PART").Select(DesignIn).FirstOrDefault(x => !string.IsNullOrEmpty(x) && x != top);
+        }
 
         static readonly Dictionary<string, KeyValuePair<Node, string>> underCache = new Dictionary<string, KeyValuePair<Node, string>>();
 
@@ -179,6 +212,9 @@ namespace PhilsReusabilitySuite
             /// <summary>Why it can't be built here and now, or null.</summary>
             public string Blocked;
             public string KindLabel;
+            /// <summary>Old-Mk bin parts the player chose to build new instead.</summary>
+            public HashSet<string> Skip = new HashSet<string>();
+            public void Requote() { Quote = PRSScenario.Instance?.QuoteFor(Craft, Design.Name, null, Skip); }
         }
 
         /// <summary>The design as a brand-new build: every part new, each with a serial of its own.</summary>
@@ -193,6 +229,9 @@ namespace PhilsReusabilitySuite
                 Node m = part.Children("MODULE").FirstOrDefault(x => x.Get("name") == Core.Craft.ModuleName);
                 if (m != null) m.Set("serial", PRSPart.NewSerial());
             }
+            // New parts are what the VAB would make: each Phil's Iterative Parts part at its program's current Mk,
+            // not the Mk the design file was saved with (play-test #7: Gallant I #4 flew Mk 1 parts, paid as Mk 3).
+            Pip.MakeCurrent(craft, p => true);
             return craft;
         }
 
@@ -286,16 +325,20 @@ namespace PhilsReusabilitySuite
             public Design Design;
             public Node Craft;
             public Quote Quote;
+            public string ShipName;
             public int NewParts;
             public string Facility;
             public string Blocked;
+            /// <summary>Old-Mk bin parts the player chose to build new instead.</summary>
+            public HashSet<string> Skip = new HashSet<string>();
+            public void Requote() { Quote = PRSScenario.Instance?.QuoteFor(Craft, ShipName, null, Skip); }
         }
 
         /// <summary>
         /// The hangar ship built back up to its whole design (a flown first stage becomes the whole launcher
         /// again), or null when it isn't a copy of a filed design or already has every part.
         /// </summary>
-        public static Restore RestoreOf(HangarShip h)
+        public static Restore RestoreOf(HangarShip h, HashSet<string> skip = null)
         {
             PRSScenario sc = PRSScenario.Instance;
             string id = DesignOf(h);
@@ -310,18 +353,24 @@ namespace PhilsReusabilitySuite
             foreach (Node part in craft.Children("PART"))
             {
                 Node m = part.Children("MODULE").FirstOrDefault(x => x.Get("name") == Core.Craft.ModuleName);
-                if (m != null && string.IsNullOrEmpty(m.Get("serial"))) m.Set("serial", PRSPart.NewSerial());
+                if (m == null || !string.IsNullOrEmpty(m.Get("serial"))) continue;
+                m.Set("serial", PRSPart.NewSerial());
+                // A new part, as the VAB would make it (its own parts keep the Mk they were built at).
+                Pip.MakeCurrent(part);
             }
             string facility = Suite.FacilityOf(craft);
-            return new Restore
+            var r = new Restore
             {
                 Design = d,
                 Craft = craft,
-                Quote = sc.QuoteFor(craft, h.DisplayName, null),
+                ShipName = h.DisplayName,
                 NewParts = c.NewSlots.Count,
                 Facility = facility,
                 Blocked = WhyNot(craft, facility),
             };
+            if (skip != null) r.Skip = skip;
+            r.Requote();
+            return r;
         }
 
         /// <summary>Queues the restore. The ship keeps its name and number, and is ready to launch when it's done.</summary>
@@ -427,6 +476,9 @@ namespace PhilsReusabilitySuite
             detail.Chips.Add(new CopyChip((c != null && c.NewSlots.Count > 0 && design.Kind == DesignKind.Launcher ? "First stage · " : "") + (h.Flights == 1 ? "1 flight" : h.Flights + " flights"), ChipTone.Good));
             detail.Chips.Add(h.Missing.Count > 0 ? new CopyChip("Missing " + Suite.Parts(h.Missing.Count), ChipTone.Warn) : new CopyChip(h.Ready ? "Ready" : "Complete"));
             detail.Chips.Add(new CopyChip("Wear " + Core.Wear.Percent(h.Wear), Core.Wear.WornOut(h.Wear) ? ChipTone.Warn : ChipTone.Plain));
+            // Its own Phil's Iterative Parts parts that are behind their programs (updated from the suite's hangar).
+            int behind = h.Craft.Children("PART").Count(p => Pip.Behind(p) > 0);
+            if (behind > 0) detail.Chips.Add(new CopyChip((behind == 1 ? "1 PIP part" : behind + " PIP parts") + " behind", ChipTone.Warn));
             if (cq.RefurbishPrice >= 0.5) detail.Lines.Add(new CopyLine("Refurbish to 0% wear", Pricing.Funds(cq.RefurbishPrice), true));
             int newCount = c != null ? c.NewSlots.Count : 0;
             if (newCount > 0) detail.Lines.Add(new CopyLine(Suite.Parts(newCount).Replace(" part", " new part") + (design.Kind == DesignKind.Launcher && h.Missing.Count == 0 ? " (upper stage)" : ""), Pricing.Funds(cq.NewPrice)));

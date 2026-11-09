@@ -29,6 +29,7 @@ namespace PhilsReusabilitySuite.Core
             var result = new CompletionResult();
             var bySlot = new Dictionary<int, Node>();
             var nameBySlot = new Dictionary<int, string>();
+            var partBySlot = new Dictionary<int, Node>();
             foreach (Node p in hangarParts)
             {
                 Node m = Module(p);
@@ -37,6 +38,7 @@ namespace PhilsReusabilitySuite.Core
                 {
                     bySlot[slot] = m;
                     nameBySlot[slot] = PartName(p);
+                    partBySlot[slot] = p;
                 }
             }
 
@@ -62,6 +64,7 @@ namespace PhilsReusabilitySuite.Core
                     m.Set("flights", flown.Get("flights") ?? "0");
                     m.Set("hull", flown.Get("hull") ?? "");
                     m.Set("wear", flown.Get("wear") ?? "0");
+                    CarryHardware(partBySlot[i], part);
                     result.Used.Add(flown.Get("serial"));
                 }
                 else
@@ -77,6 +80,29 @@ namespace PhilsReusabilitySuite.Core
             }
             result.Craft = craft;
             return result;
+        }
+
+        /// <summary>
+        /// Modules that describe the hardware itself, not how the design uses it: Phil's Iterative Parts keeps a
+        /// part's program, version and Mk there. A flown part keeps them. Everything else (staging, whether a
+        /// decoupler has fired, a packed chute) comes from the design, as a restored ship should.
+        /// </summary>
+        public static readonly string[] HardwareModules = { "ModulePipPart", "ModulePipEngine" };
+
+        /// <summary>Puts the flown part's hardware modules in place of the design's (the same module, by name and order).</summary>
+        public static void CarryHardware(Node flownPart, Node designPart)
+        {
+            foreach (string name in HardwareModules)
+            {
+                List<Node> from = flownPart.Children("MODULE").Where(x => x.Get("name") == name).ToList();
+                int k = 0;
+                for (int j = 0; j < designPart.Nodes.Count && k < from.Count; j++)
+                {
+                    Node d = designPart.Nodes[j];
+                    if (d.Name != "MODULE" || d.Get("name") != name) continue;
+                    designPart.Nodes[j] = from[k++].Clone();
+                }
+            }
         }
 
         static Node Module(Node part) => part.Children("MODULE").FirstOrDefault(m => m.Get("name") == Craft.ModuleName);

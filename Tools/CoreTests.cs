@@ -35,6 +35,7 @@ static class CoreTests
         RefParsing();
         PricingChecks();
         QuoteChecks();
+        RoundTwoChecks();
         int craftCount = 0, pieces = 0;
         foreach (string f in files.OrderBy(x => x))
         {
@@ -157,6 +158,90 @@ static class CoreTests
         Check(Wear.In(built.Children("PART").First().Children("MODULE").First()) == 0.4, "the built craft carries the bin part's wear");
         Check(Craft.SerialOf(built.Children("PART").First()) == "bin-7" && Craft.SerialOf(built.Children("PART").Last()) == "other", "the built craft carries the bin part's own serial");
         Check(Craft.SerialOf(craft2.Children("PART").First()) == "fresh", "the editor's craft is left as it was");
+    }
+
+    static Node PipModule(Node part, int mk)
+    {
+        Node m = part.AddNode("MODULE");
+        m.Add("name", "ModulePipPart");
+        m.Add("programId", "augur");
+        m.Add("mk", mk.ToString());
+        return m;
+    }
+
+    static string MkOf(Node part) => part.Children("MODULE").FirstOrDefault(x => x.Get("name") == "ModulePipPart")?.Get("mk");
+
+    // Phil's second play-test of 2026-11-08: Phil's Iterative Parts Marks, bin fuel, new parts split by design.
+    static void RoundTwoChecks()
+    {
+        var s = new Settings();
+        Check(Near(Pricing.PipUpdate(1000, 2, s), 200, 1e-9) && Pricing.PipUpdate(1000, 0, s) == 0, "updating a PIP part costs 10% of its price per Mk gained");
+        Check(Settings.FromNode(Node.Parse("pipUpdatePerMk = 0")).PipUpdatePerMk == 0, "the update can be made free");
+
+        // An old-Mk bin part that would fit isn't used as it is: the build asks, and the part counts as new till then.
+        var craft = new Node();
+        craft.Nodes.Add(QuotePart("fresh", 0, 2000, 0));
+        craft.Nodes.Add(QuotePart("other", 0, 500, 0));
+        Func<Node, Owner> oldMatch = p => p.Get("part") == "tank_fresh" ? new Owner { Kind = OwnerKind.Bin, Old = true, BinSerial = "bin-old", Marks = 2, Now = "Augur I Mk. 1", Current = "Augur I Mk. 3" } : null;
+        Quote q = Quotes.Make(craft, "Probe", sn => null, new FakeCosts(), sn => null, s, oldMatch);
+        Check(q.OldBin.Count == 1 && q.BinSwaps.Count == 0 && q.BinSerials.Count == 0, "an old-Mk bin part is offered, not used");
+        Check(Near(q.NewPrice, 2500, 0.01) && Near(q.UpdatePrice, 400, 0.01), "until it's updated it's built new; the update is priced (" + q.UpdatePrice + ")");
+
+        // A bin part keeps what it came back with: a build only tops it up (Gallant I #6 paid for a whole load).
+        var craft2 = new Node();
+        craft2.Nodes.Add(QuotePart("pod", 0, 600, 100));
+        Func<Node, Owner> binMatch = p => new Owner { Kind = OwnerKind.Bin, BinSerial = "bin-pod", Flights = 1 };
+        Quote q2 = Quotes.Make(craft2, "Pod", sn => null, new FakeCosts(), sn => sn == "bin-pod" ? new Dictionary<string, double> { { "LiquidFuel", 60 } } : null, s, binMatch);
+        Check(Near(q2.FuelPrice, 40 * 0.8, 0.01), "a bin part that came back with 60 of its 100 units pays for 40 (" + q2.FuelPrice + ")");
+        Quote q2b = Quotes.Make(craft2, "Pod", sn => null, new FakeCosts(), sn => null, s, binMatch);
+        Check(Near(q2b.FuelPrice, 100 * 0.8, 0.01), "a bin part with nothing known left is filled from empty");
+
+        // New parts split by design: "Cabral I · 1 new part", "Shkhara 022 · 31 new parts".
+        var craft3 = new Node();
+        foreach (string[] d in new[] { new[] { "w", "cabral" }, new[] { "l1", "shkhara" }, new[] { "l2", "shkhara" } })
+        {
+            Node p = QuotePart(d[0], 0, 100, 0);
+            p.Child("MODULE").Add("design", d[1]);
+            craft3.Nodes.Add(p);
+        }
+        Quote q3 = Quotes.Make(craft3, "Cabral I", sn => null, new FakeCosts(), sn => null, s);
+        Check(q3.Lines.Count == 2 && q3.Lines[0].Design == "cabral" && q3.Lines[0].Parts == 1 && q3.Lines[1].Design == "shkhara" && q3.Lines[1].Parts == 2,
+              "new parts are one line per design, the top design first");
+        Check(q3.NewParts == 3 && q3.Lines.Sum(l => l.Items.Count) == 3, "the lines still add up to every new part");
+
+        // Flown hardware keeps its own Mk; everything else about it comes from the design.
+        var design = new Node();
+        var flown = new List<Node>();
+        for (int i = 0; i < 2; i++)
+        {
+            Node dp = new Node("PART");
+            dp.Add("part", "probe_" + (100 + i));
+            Node pm = dp.AddNode("MODULE"); pm.Add("name", Craft.ModuleName); pm.Add("design", "D1"); pm.Add("slot", i.ToString()); pm.Add("serial", "");
+            PipModule(dp, 1);
+            Node dec = dp.AddNode("MODULE"); dec.Add("name", "ModuleDecouple"); dec.Add("isDecoupled", "False");
+            design.Nodes.Add(dp);
+        }
+        Node fp = new Node("PART");
+        fp.Add("part", "probe_555");
+        Node fm = fp.AddNode("MODULE"); fm.Add("name", Craft.ModuleName); fm.Add("design", "D1"); fm.Add("slot", "0"); fm.Add("serial", "flown-0"); fm.Add("flights", "1");
+        PipModule(fp, 2);
+        Node fdec = fp.AddNode("MODULE"); fdec.Add("name", "ModuleDecouple"); fdec.Add("isDecoupled", "True");
+        flown.Add(fp);
+        CompletionResult r = Completion.Complete(design, "D1", flown);
+        Node slot0 = r.Craft.Children("PART").First(), slot1 = r.Craft.Children("PART").Last();
+        Check(MkOf(slot0) == "2", "Restore keeps the flown part's own Mk (play-test #6), not the design file's (" + MkOf(slot0) + ")");
+        Check(slot0.Children("MODULE").First(x => x.Get("name") == "ModuleDecouple").Get("isDecoupled") == "False", "the rest of the part comes from the design: its decoupler isn't fired");
+        Check(MkOf(slot1) == "1" && r.NewSlots.SequenceEqual(new[] { 1 }), "the new slot keeps the design's PIP data, for the current-Mk step");
+
+        // A bin part put into a build brings its own Mk too.
+        var craft4 = new Node();
+        Node np = QuotePart("newone", 0, 700, 0);
+        PipModule(np, 1);
+        craft4.Nodes.Add(np);
+        Node binNode = QuotePart("bin-9", 2, 700, 0);
+        PipModule(binNode, 3);
+        Quote q4 = Quotes.Make(craft4, "Probe", sn => null, new FakeCosts(), sn => null, s, p => new Owner { Kind = OwnerKind.Bin, BinSerial = "bin-9", Flights = 2, BinPart = binNode });
+        Check(MkOf(q4.WithBinParts(craft4).Children("PART").First()) == "3", "the built craft carries the bin part's own PIP Mk");
     }
 
     static void AddSerials(Node craft)

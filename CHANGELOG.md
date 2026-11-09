@@ -56,6 +56,22 @@ From Phil's third play-test (Gallant I, the afternoon after):
   instead of 4,881?" "Use it" builds from it (its parts refurbished, only the missing ones new), and it stays
   Gallant I #1. A ready, complete copy is still offered first; before, only those were offered.
 
+From Phil's fourth play-test (the evening after):
+- **Phil's Iterative Parts parts are the current Mk wherever a build starts.** A build from the Space Center used
+  the Mk the design file was saved with: Gallant I #4 flew Mk 1 parts, priced as Mk 3. Now every new part is what
+  the VAB would make. Flown hardware keeps the Mk it was built at: Restore no longer swaps a flown part's Mk for the
+  design file's, and opening a hangar ship in the VAB no longer quietly upgrades it.
+- **Update PIP parts.** Bin parts and hangar copies whose programs have moved on say so ("Augur I Mk. 1 → Mk. 3")
+  and have an "Update PIP parts" button: 10% of the part's price for each Mk it gains (`pipUpdatePerMk`). A build
+  that finds an old-Mk bin part that would fit asks first: update it and use it, or build that part new (the old
+  one stays in the bin). Old-Mk bin parts are never used as they are.
+- **The Build panel splits new parts by design:** "Cabral I · 1 new part", "Shkhara 022 · 31 new parts".
+- **Bin parts are named** in the Build panel and the library, with their wear and refurbish cost, and each bin row
+  says what a build would pay to refurbish it.
+- **Bin parts keep the fuel they came back with:** a build tops them up instead of filling them from empty.
+- **Pictures** of each design in the Build queue and the Hangar, from Phil's Builds. A copy that's missing parts
+  is marked.
+
 From Phil's second play-test (the morning after):
 - **Building a design could quietly use up a hangar ship.** Craft files saved in the VAB keep their parts'
   serial numbers, so a design saved from parts that were later built (Harris Hawk II saved from the I's parts)

@@ -33,7 +33,12 @@ it hasn't had much real play yet. Back up your saves. The design is in [DESIGN.m
   stage says as it drops whether it will come home. It works while you watch from the Space Center or the
   Tracking Station too.
 - **A parts bin.** Loose parts, from ships you take apart or pieces with no engine or probe core, are used
-  automatically in new builds at their refurbish price.
+  automatically in new builds at their refurbish price, and the Build panel lists which ones. They keep the fuel
+  they came back with.
+- **Phil's Iterative Parts.** New parts are always their program's current Mk, whether you build in the VAB or
+  from the Space Center. Flown parts keep the Mk they were built at until you press **Update PIP parts** (in the
+  parts bin or on a hangar ship). A build that could use an old-Mk bin part asks whether to update it first, or
+  builds that part new.
 - **Build ahead from the Space Center.** "Build from Phil's Builds…" in the Build queue tab queues any filed
   launcher or craft without opening the VAB or SPH, and says why if it can't be built yet.
 - **A flown booster under a new payload.** Phil's Builds' library window lists the hangar copies under
@@ -54,7 +59,9 @@ flights".
 - ModuleManager
 - Harmony 2 (000_Harmony)
 - [Phil's Builds](https://github.com/phillipnutt/phils-builds) (required: it's where designs are filed). Phil's Builds works fine without
-  this mod.
+  this mod. Its newest version also gives the suite's windows their pictures.
+- [Phil's Iterative Parts](https://github.com/phillipnutt/phils-iterative-parts) is optional. With it, the suite keeps
+  track of each part's Mk.
 
 StageRecovery and ScrapYard do the same jobs, so remove them. While StageRecovery is installed, the suite
 leaves stage recovery to it.

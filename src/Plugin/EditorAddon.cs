@@ -120,6 +120,20 @@ namespace PhilsReusabilitySuite
         /// <summary>Marks hardware as put in the editor by the suite.</summary>
         internal static void Claim(IEnumerable<string> serials) { foreach (string s in serials) if (!string.IsNullOrEmpty(s)) placed.Add(s); }
 
+        /// <summary>
+        /// Is this editor part real hardware (by the rule above), not a new part? Phil's Iterative Parts asks as each
+        /// part starts in the editor: a new part takes its program's current Mk, hardware keeps the Mk it was built
+        /// at. Without this, opening Gallant I #1 in the VAB quietly made its flown Mk 1 pod a Mk 2 (play-test #6).
+        /// Asked before the suite's own load checks run, so it answers from what the suite is loading too.
+        /// </summary>
+        public static bool IsHardware(Part p)
+        {
+            string s = PRSPart.SerialOf(p);
+            if (string.IsNullOrEmpty(s)) return false;
+            if (placed.Contains(s) || (loading != null && loading.Contains(s))) return true;
+            return adoptRestored && PRSScenario.Instance != null && PRSScenario.Instance.StoredSerials().Contains(s);
+        }
+
         void OnShipModified(ShipConstruct ship) { Check(ship); }
 
         /// <summary>
@@ -297,6 +311,12 @@ namespace PhilsReusabilitySuite
         public HangarShip Kept;
         public Pace Chosen = Pace.Normal;
         public string Error;
+        /// <summary>Old-Mk bin parts this build leaves out (answered "No": built new instead).</summary>
+        public readonly HashSet<string> SkipOld = new HashSet<string>();
+        OldPartsQuestion oldQ;
+        OldPartsQuestion OldQ => oldQ ?? (oldQ = new OldPartsQuestion(SkipOld));
+        /// <summary>The panel is asking about old-Mk bin parts: no Build until it's answered.</summary>
+        bool asking;
 
         Rect rect = new Rect(0, 0, 600, 100);
         Vector2 scroll;
@@ -306,6 +326,8 @@ namespace PhilsReusabilitySuite
         /// <summary>Works out the quote for the ship in the editor and shows the panel.</summary>
         public void Open()
         {
+            SkipOld.Clear();
+            OldQ.Reset();
             Refresh();
             Showing = true;
             rect.x = (Screen.width - rect.width) / 2;
@@ -340,7 +362,7 @@ namespace PhilsReusabilitySuite
             ReadyShip = sc?.ReadyShipOf(serials);
             AsIs = ReadyShip == null && serials.Count == ship.parts.Count ? sc?.HangarShipOf(serials) : null;
             Editing = ReadyShip == null ? sc?.JobOf(serials) : null;
-            Quote = sc?.QuoteFor(Craft, ShipName, Editing);
+            Quote = sc?.QuoteFor(Craft, ShipName, Editing, SkipOld);
             // The hangar ship whose identity the build keeps: the one holding its root part, under the same name.
             string rootSerial = PRSPart.SerialOf(ship.parts.FirstOrDefault(p => p.parent == null));
             Kept = rootSerial == null ? null : sc?.Hangar.FirstOrDefault(h => h.Name == ShipName && h.Placed.Contains(rootSerial)
@@ -399,7 +421,7 @@ namespace PhilsReusabilitySuite
                 copyParts = fits.slots.Count;
                 designParts = here.Count;
                 CopyWhole = copyParts == designParts;
-                CopyQuote = sc.QuoteFor(WithCopy(Craft), ShipName, Editing);
+                CopyQuote = sc.QuoteFor(WithCopy(Craft), ShipName, Editing, SkipOld);
                 return;
             }
         }
@@ -502,6 +524,7 @@ namespace PhilsReusabilitySuite
             PRSScenario sc = PRSScenario.Instance;
             if (sc == null || Quote == null) { Error = "The suite's save data isn't loaded."; return false; }
             if (Quote.PartCount == 0) { Error = "There's nothing to build."; return false; }
+            if (Quote.OldBin.Count > 0) { Error = "Answer the question about the parts bin's older parts first."; return false; }
             string error;
             // Bin parts or hangar ships priced into this build may have been sold or put in another build since
             // the panel opened: price it again and let the player look before paying.
@@ -588,6 +611,7 @@ namespace PhilsReusabilitySuite
         void Draw(int id)
         {
             SuiteWindow.HeaderBar("Build", Facility, () => Showing = false);
+            asking = false;
             GUILayout.BeginVertical(GUILayout.ExpandWidth(true));
             GUILayout.Space(10);
             GUILayout.BeginHorizontal(); GUILayout.Space(16); GUILayout.BeginVertical();
@@ -632,6 +656,7 @@ namespace PhilsReusabilitySuite
                 GUILayout.Space(6);
             }
             if (Quote == null) { GUILayout.Label("The suite's save data isn't loaded.", Look.MetaBad); EndBody(); return; }
+            asking = OldQ.Draw(Quote, Refresh, 540);
 
             // What the build is made of: one build, broken down (Phil read these as cards to pick from).
             GUILayout.Label("WHAT GOES INTO IT", Look.Section);
@@ -688,7 +713,8 @@ namespace PhilsReusabilitySuite
         {
             string parts = Suite.Parts(line.Parts);
             string title, note;
-            if (line.Kind == OwnerKind.New) { title = parts.Replace(" part", " new part"); note = "built new"; }
+            List<string> items = null;
+            if (line.Kind == OwnerKind.New) { title = NewTitle(line); note = "built new"; }
             else
             {
                 string wear = "wear " + Core.Wear.Percent(line.Wear);
@@ -699,11 +725,14 @@ namespace PhilsReusabilitySuite
                 note = nothing ? (line.Ready ? "fuelled and like new: nothing to do" : "nothing to do")
                      : line.Wear < 0.005 ? "like new" + (refuel ? " · refuelled" : "")
                      : wear + " · refurbished to 0%" + (refuel ? " and refuelled" : "");
+                // Which parts the bin gives (Phil didn't know it had used them), and what a worn one costs to refurbish.
+                if (line.Kind == OwnerKind.Bin) { items = BinItems(line); note = null; }
             }
             GUILayout.BeginHorizontal();
             GUILayout.BeginVertical();
             GUILayout.Label(title, Look.Name);
-            GUILayout.Label(note, Look.Meta);
+            if (note != null) GUILayout.Label(note, Look.Meta);
+            if (items != null) foreach (string it in items) GUILayout.Label(it, Look.Meta);
             GUILayout.EndVertical();
             GUILayout.FlexibleSpace();
             GUILayout.BeginVertical(GUILayout.Width(120));
@@ -714,6 +743,23 @@ namespace PhilsReusabilitySuite
             GUILayout.EndHorizontal();
             Look.Fill(GUILayoutUtility.GetRect(1, 1, GUILayout.ExpandWidth(true)), Look.Line);
             GUILayout.Space(4);
+        }
+
+        /// <summary>New parts, split by design as the reused pieces are (Phil, play-test #15): "Cabral I · 1 new part",
+        /// "Shkhara 022 · 31 new parts". Parts from no filed design: "3 new parts".</summary>
+        public static string NewTitle(QuoteLine line)
+        {
+            string design = string.IsNullOrEmpty(line.Design) ? null : BuildsLink.NameOf(line.Design);
+            return (design != null ? design + " · " : "") + Suite.Parts(line.Parts).Replace(" part", " new part");
+        }
+
+        /// <summary>The bin line's parts:"2 × Mystery Goo Unit · like new", "Mk1 Command Pod · wear 20% · refurbish 45".</summary>
+        public static List<string> BinItems(QuoteLine line)
+        {
+            return line.Items
+                .GroupBy(i => Pip.NameOf(i.Part) + (i.Wear >= 0.005 ? " · wear " + Core.Wear.Percent(i.Wear) : " · like new"))
+                .Select(g => (g.Count() > 1 ? g.Count() + " × " : "") + g.Key + (g.Sum(i => i.Price) >= 0.5 ? " · refurbish " + Pricing.Funds(g.Sum(i => i.Price)) : ""))
+                .ToList();
         }
 
         static void Row(string key, double value, GUIStyle style, string sign = "")
@@ -776,7 +822,8 @@ namespace PhilsReusabilitySuite
                 }
                 string verb = Editing != null ? "Update build" : Chosen == Pace.Outsource ? "Outsource" : Chosen == Pace.Overtime ? (AsIs != null ? "Refurbish with overtime" : "Build with overtime") : AsIs != null ? "Refurbish" : "Build";
                 string label = verb + " · " + (DueNow < 0 ? "refund " + Pricing.Funds(-DueNow) : Pricing.Funds(DueNow));
-                if (GUILayout.Button(label, Look.Go, GUILayout.Height(38), GUILayout.MinWidth(180))) Build();
+                if (asking) GUILayout.Button("Answer the parts bin first", Look.GoOff, GUILayout.Height(38), GUILayout.MinWidth(180));
+                else if (GUILayout.Button(label, Look.Go, GUILayout.Height(38), GUILayout.MinWidth(180))) Build();
             }
             GUILayout.EndHorizontal();
         }
