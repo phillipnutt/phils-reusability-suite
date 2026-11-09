@@ -715,6 +715,16 @@ Changed:
   Builds' own design pictures (`BuildsApi.PictureOf`, its API 3). A stack shows its payload, and the launcher
   beside it in the detail panel; a copy missing parts gets an amber marker. The Parts bin stays text-only.
 
+**Phil's fifth play-test (2026-11-09)**, a new career with both DLCs. Changed:
+- **Pick the crew before launch** (Phil: "implement who the crew is going to be before launch"). Launch (or "Refuel
+  and launch") on a hangar ship with seats opens a crew step in the suite window first (`CrewStep.cs`): the crew by
+  part, seat by seat, beside the kerbals at home, with Add, ×, Fill, Clear and Reset, as KSP's own crew panel has.
+  It starts with KSP's own pick (`DefaultCrewForVessel`, as KSP's launch-pad dialog does) and launches with the
+  manifest as picked (`LaunchReady(h, out error, crew)`). A ship with no seats launches at once. `CanLaunch` holds
+  the checks (in a build, worn out, the pad clear), so nothing is charged until the crew step's Launch. KSP's own
+  crew panel can't be borrowed: it lives only inside its launch-pad dialog (which lists every craft file) and the
+  VAB. Mockup sent to Phil with the build.
+
 ## Open questions
 
 - None for the design. The money numbers get tuned in play.

@@ -574,15 +574,49 @@ namespace PhilsReusabilitySuite
         // ---- Launching ready ships ----
 
         /// <summary>
-        /// Launches a hangar ship straight from the hangar, with its default crew. Refurbishing is optional (Phil): a
-        /// ship that isn't fuelled is refuelled first, which is all it pays. A worn-out one must be refurbished first.
+        /// Launches a hangar ship straight from the hangar, with the crew given (picked in the suite's crew step), or
+        /// the crew KSP's own launch-pad dialog would pick. Refurbishing is optional (Phil): a ship that isn't fuelled
+        /// is refuelled first, which is all it pays. A worn-out one must be refurbished first.
         /// </summary>
-        public bool LaunchReady(HangarShip h, out string error)
+        public bool LaunchReady(HangarShip h, out string error, VesselCrewManifest crew = null)
+        {
+            if (!CanLaunch(h, out error, out string site)) return false;
+            if (!Refuel(h, out error)) return false;
+            string path = SuiteFiles.WriteCraft(h);
+            if (crew == null) crew = DefaultCrew(path);
+            // Anyone picked who has since gone elsewhere (another launch, KIA) stays home: KSP would refuse them.
+            foreach (PartCrewManifest pcm in crew.GetCrewableParts())
+            {
+                ProtoCrewMember[] seats = pcm.GetPartCrew();
+                for (int i = 0; i < seats.Length; i++)
+                    if (seats[i] != null && seats[i].rosterStatus != ProtoCrewMember.RosterStatus.Available) pcm.RemoveCrewFromSeat(i);
+            }
+            List<ProtoCrewMember> going = crew.GetAllCrew(false);
+            Log.Info("Launching " + h.DisplayName + " from the hangar with " + (going.Count == 0 ? "no crew" : string.Join(", ", going.Select(c => c.name).ToArray())));
+            FlightDriver.StartWithNewLaunch(path, HighLogic.CurrentGame.flagURL, site, crew);
+            return true;
+        }
+
+        /// <summary>The crew KSP's own launch-pad dialog would pick for a hangar ship: its saved crew, empty seats filled.</summary>
+        public VesselCrewManifest DefaultCrew(HangarShip h) => DefaultCrew(SuiteFiles.WriteCraft(h));
+
+        static VesselCrewManifest DefaultCrew(string path)
+        {
+            ConfigNode craft = ConfigNode.Load(path);
+            VesselCrewManifest m = VesselCrewManifest.FromConfigNode(craft);
+            return HighLogic.CurrentGame.CrewRoster.DefaultCrewForVessel(craft, m, true, false);
+        }
+
+        /// <summary>
+        /// What must hold before a hangar ship goes to the pad (nothing is charged): not in a build, not worn out, and
+        /// the launch site clear. Launch clamps left from the last launch are cleared away on the way.
+        /// </summary>
+        public bool CanLaunch(HangarShip h, out string error, out string site)
         {
             error = null;
+            site = Suite.FacilityOf(h.Craft) == "SPH" ? "Runway" : "LaunchPad";
             if (h.ReservedBy != null) { error = h.DisplayName + " is in a build in the queue."; return false; }
             if (Core.Wear.WornOut(h.Wear)) { error = h.DisplayName + " is worn out (100% wear): refurbish it before it flies again."; return false; }
-            string site = Suite.FacilityOf(h.Craft) == "SPH" ? "Runway" : "LaunchPad";
             List<ProtoVessel> inTheWay = ShipConstruction.FindVesselsLandedAt(HighLogic.CurrentGame.flightState, site);
             // Launch clamps left standing from the last launch are cleared away, as KSP's own launch would offer:
             // recovered the stock way, so they go to the parts bin for the next build.
@@ -597,13 +631,6 @@ namespace PhilsReusabilitySuite
                 error = KSP.Localization.Localizer.Format(inTheWay[0].vesselName) + " is on the " + (site == "Runway" ? "runway" : "launch pad") + ". Recover it first (from the Tracking Station, or fly it off).";
                 return false;
             }
-            if (!Refuel(h, out error)) return false;
-            string path = SuiteFiles.WriteCraft(h);
-            ConfigNode craft = ConfigNode.Load(path);
-            VesselCrewManifest m = VesselCrewManifest.FromConfigNode(craft);
-            m = HighLogic.CurrentGame.CrewRoster.DefaultCrewForVessel(craft, m, true, false);
-            Log.Info("Launching " + h.DisplayName + " from the hangar");
-            FlightDriver.StartWithNewLaunch(path, HighLogic.CurrentGame.flagURL, site, m);
             return true;
         }
 

@@ -17,7 +17,8 @@ it hasn't had much real play yet. Back up your saves. The design is in [DESIGN.m
   twice as fast, or **Outsource** to have it now. Each VAB or SPH level gives one build line. No facility
   upgrade times, no research times, no upgrade points.
 - **A hangar.** Finished builds wait in the hangar, ready, and launch at no extra cost. Recovered ships come
-  back to the hangar exactly as they landed, a lost fin and all.
+  back to the hangar exactly as they landed, a lost fin and all. Launching a ship with seats lets you pick its
+  crew first, starting from the crew KSP would pick.
 - **Wear and refurbishing.** Each craft has one wear number, from how hard its flights were: top speed, how
   close its hottest part came to its heat limit, and G. Fly it again as it is (it's only refuelled), or
   **refurbish** it back to 0% wear whenever you like: the price follows its wear, up to half the price of new.

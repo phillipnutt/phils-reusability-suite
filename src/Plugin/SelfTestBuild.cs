@@ -208,13 +208,35 @@ namespace PhilsReusabilitySuite
             string readyId = ready1.Id, readyName = ready1.DisplayName;
             var readySerials = ready1.Placed.ToList();
             double f3 = Funds;
-            Check(sc.LaunchReady(ready1, out err), "launching the ready ship " + err);
+            // First its crew (Phil, play-test 2026-11-09 #3: pick the crew before launch). The step starts with KSP's
+            // own pick; Clear, Add someone else, then Launch.
+            SuiteWindow w = SuiteWindow.Instance;
+            Check(w != null && w.StartLaunch(ready1) && w.CrewShip == ready1, "Launch opens the crew step for a ship with a seat");
+            VesselCrewManifest crew = w?.CrewList;
+            var picked = crew != null ? crew.GetAllCrew(false) : new System.Collections.Generic.List<ProtoCrewMember>();
+            Check(picked.Count == 1, "it starts with KSP's own pick (" + string.Join(", ", picked.Select(c => c.name).ToArray()) + ")");
+            yield return new WaitForSeconds(1f);
+            Shot("suite_crew_step");
+            yield return new WaitForSeconds(1f);
+            string otherName = null;
+            if (crew != null)
+            {
+                ProtoCrewMember other = SuiteWindow.AtHome(crew).FirstOrDefault();
+                SuiteWindow.Clear(crew);
+                Check(crew.GetAllCrew(false).Count == 0 && picked.Count == 1 && SuiteWindow.AtHome(crew).Contains(picked[0]), "Clear empties the seat, and that kerbal is back in the list at home");
+                Check(other != null && SuiteWindow.Seat(crew, other) && !SuiteWindow.Seat(crew, picked.FirstOrDefault()), "Add puts " + other?.name + " in the seat; with it taken, no one else fits");
+                otherName = other?.name;
+                Check(sc.DefaultCrew(ready1).GetAllCrew(false).Count == 1, "Reset would go back to KSP's pick");
+            }
+            Check(w != null && w.ConfirmCrew(), "launching the ready ship with that crew");
             yield return WaitFor(() => HighLogic.LoadedSceneIsFlight && FlightGlobals.ActiveVessel != null && FlightGlobals.ActiveVessel.loaded && !FlightGlobals.ActiveVessel.packed, 120, "the ready ship reached the pad");
             yield return new WaitForSeconds(3f);
             sc = PRSScenario.Instance;
             Check(Near(Funds, f3), "launching a ready ship cost nothing (" + Pricing.Funds(f3 - Funds) + ")");
             Check(!sc.Hangar.Any(h => h.Id == readyId), "the launched ship left the hangar");
             Vessel v = FlightGlobals.ActiveVessel;
+            var aboard = v.GetVesselCrew().Select(c => c.name).ToList();
+            Check(otherName != null && aboard.Count == 1 && aboard[0] == otherName && !picked.Any(c => c.name == otherName), "it flies with the crew picked: " + string.Join(", ", aboard.ToArray()));
             var flown = v.parts.Select(PRSPart.SerialOf).ToList();
             Check(flown.Count == readySerials.Count && flown.All(readySerials.Contains), "the launched ship is that exact hardware");
             Check(v.parts.All(p => PRSPart.Of(p).flights == 1), "its parts are on their first flight");

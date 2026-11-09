@@ -30,7 +30,7 @@ namespace PhilsReusabilitySuite
     }
 
     /// <summary>The suite window: Build queue, Hangar and Parts bin tabs, from a toolbar button.</summary>
-    public class SuiteWindow : MonoBehaviour
+    public partial class SuiteWindow : MonoBehaviour
     {
         public static SuiteWindow Instance { get; private set; }
 
@@ -113,7 +113,8 @@ namespace PhilsReusabilitySuite
             if (sc == null) { GUILayout.Label("The suite's save data isn't loaded in this scene.", Look.Empty, GUILayout.ExpandHeight(true)); GUILayout.EndVertical(); GUI.DragWindow(); return; }
             if (error != null) { GUILayout.Space(6); GUILayout.BeginHorizontal(); GUILayout.Space(16); GUILayout.Label(error, Look.MetaBad); GUILayout.EndHorizontal(); }
             GUILayout.BeginHorizontal(GUILayout.ExpandHeight(true));
-            if (Tab == 0) QueueTab(sc);
+            if (crewShip != null) CrewStep(sc);
+            else if (Tab == 0) QueueTab(sc);
             else if (Tab == 1) HangarTab(sc);
             else BinTab(sc);
             GUILayout.EndHorizontal();
@@ -130,6 +131,7 @@ namespace PhilsReusabilitySuite
                 error = null;
                 picking = false;
                 library = null;
+                crewShip = null;
                 GUIUtility.ExitGUI();   // what the window holds changed: end this event, draw afresh next frame
             }
             GUILayout.EndVertical();
@@ -372,10 +374,12 @@ namespace PhilsReusabilitySuite
             GUILayout.Space(6);
         }
 
+        /// <summary>Launch: a ship with seats goes through the crew step first (Phil: pick the crew before launch).</summary>
         void Launch(PRSScenario sc, HangarShip h)
         {
-            if (!sc.LaunchReady(h, out string err)) error = err;
-            else { error = null; Show = false; }
+            if (!StartLaunch(h)) return;
+            if (crewShip == null) Show = false;
+            GUIUtility.ExitGUI();
         }
 
         // ---- Hangar ----

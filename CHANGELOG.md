@@ -56,6 +56,11 @@ From Phil's third play-test (Gallant I, the afternoon after):
   instead of 4,881?" "Use it" builds from it (its parts refurbished, only the missing ones new), and it stays
   Gallant I #1. A ready, complete copy is still offered first; before, only those were offered.
 
+From Phil's fifth play-test (the next morning):
+- **Pick the crew before launch.** Launching a hangar ship with seats opens its crew first: who's in each seat and
+  who's at home, with Add, Fill, Clear and Reset, like KSP's own crew panel. It starts with the crew KSP would pick.
+  A ship with no seats launches straight away.
+
 From Phil's fourth play-test (the evening after):
 - **Phil's Iterative Parts parts are the current Mk wherever a build starts.** A build from the Space Center used
   the Mk the design file was saved with: Gallant I #4 flew Mk 1 parts, priced as Mk 3. Now every new part is what
