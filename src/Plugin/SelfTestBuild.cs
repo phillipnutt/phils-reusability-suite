@@ -368,8 +368,8 @@ namespace PhilsReusabilitySuite
             Check(sc.Bin.All(b => b.ReservedBy == binJob?.Id), "the bin parts are reserved by the build");
             string binJobId = binJob?.Id;
 
-            // 9b. Change the queued build in the VAB (half its solid fuel): it's still that build, the difference is
-            // refunded, and its bin parts stay its own.
+            // 9b. Change the queued build in the VAB (half its solid fuel): it's still that build, any difference in
+            // price is settled, and its bin parts stay its own.
             yield return new WaitForSeconds(1f);
             Part srb = EditorLogic.fetch.ship.parts.FirstOrDefault(p => p.Resources.Contains("SolidFuel"));
             Check(srb != null, "the Flea in the VAB has its solid booster");
@@ -383,7 +383,9 @@ namespace PhilsReusabilitySuite
                 Check(panel.Editing == binJob, "the changed ship is still the queued build");
                 double paidBefore = binJob.Paid, fEdit = Funds, newTotal = panel.Quote.Total;
                 Check(panel.Confirm(), "updating the queued build " + panel.Error);
-                Check(newTotal < paidBefore && Near(binJob.Paid, newTotal, 1) && Near(Funds - fEdit, paidBefore - newTotal, 1), "the build now costs " + Pricing.Funds(newTotal) + " and the difference came back (" + Pricing.Funds(Funds - fEdit) + ")");
+                // Its bin parts came off a fuelled ship and still hold their fuel, so less fuel saves nothing: the
+                // price stays and nothing changes hands (before bin parts kept their fuel, this was a refund).
+                Check(Near(newTotal, paidBefore, 1) && Near(binJob.Paid, newTotal, 1) && Near(Funds, fEdit, 1), "the build still costs " + Pricing.Funds(newTotal) + ": its bin parts were full already (" + Pricing.Funds(Funds - fEdit) + " changed hands)");
                 Check(sc.Jobs.Contains(binJob) && sc.Bin.All(b => b.ReservedBy == binJob.Id), "it's the same queued build, and its bin parts are still its own");
             }
 

@@ -90,5 +90,9 @@ namespace PhilsReusabilitySuite
         /// <summary>Starts the in-game self-test of the whole reuse loop (test harness only).</summary>
         [KSPEvent(guiActive = false, guiActiveEditor = false)]
         public void PRSSelfTestReuse() { SelfTestReuse.Begin(); }
+
+        /// <summary>Starts the in-game check with the real Phil's Iterative Parts (test harness only).</summary>
+        [KSPEvent(guiActive = false, guiActiveEditor = false)]
+        public void PRSSelfTestPip() { SelfTestPip.Begin(); }
     }
 }

@@ -525,14 +525,15 @@ namespace PhilsReusabilitySuite
             string under = BuildsLink.Under(h);
             if (under != null) GUILayout.Label("on " + under, Look.Meta);
             GUILayout.Label(Suite.Parts(h.Placed.Count) + " · " + (h.Flights == 0 ? "never flown" : h.Flights + (h.Flights == 1 ? " flight" : " flights")) + (h.Missing.Count > 0 ? " · missing " + h.Missing.Count : ""), Look.Meta);
-            if (BuildsLink.HasPictures)
+            string top = BuildsLink.HasPictures ? BuildsLink.TopDesign(h.Craft) : null, below = BuildsLink.HasPictures ? BuildsLink.UnderDesign(h.Craft) : null;
+            Texture2D topPic = BuildsLink.Picture(top), belowPic = BuildsLink.Picture(below);
+            if (topPic != null || belowPic != null)
             {
-                // Its design's picture; for a stack, the launcher it's on beside it.
+                // Its design's picture; for a stack, the launcher it's on beside it. No picture yet: no empty box.
                 GUILayout.Space(6);
-                string top = BuildsLink.TopDesign(h.Craft), below = BuildsLink.UnderDesign(h.Craft);
                 GUILayout.BeginHorizontal();
-                Look.Picture(BuildsLink.Picture(top), below != null ? 140 : 284, 110, h.Missing.Count > 0);
-                if (below != null) { GUILayout.Space(4); Look.Picture(BuildsLink.Picture(below), 140, 110); }
+                Look.Picture(topPic, below != null ? 140 : 284, 110, h.Missing.Count > 0);
+                if (below != null) { GUILayout.Space(4); Look.Picture(belowPic, 140, 110); }
                 GUILayout.EndHorizontal();
             }
             GUILayout.Space(8);
