@@ -11,10 +11,10 @@ using UnityEngine;
 namespace PhilsReusabilitySuite
 {
     /// <summary>
-    /// The link with Phil's Builds. Phil's Builds tells the suite which design and slot each part was placed
-    /// from (and saved as), and the suite shows hangar copies in Phil's Builds' library window: the flown
-    /// copies of each design with their price, detail and flight log. Picking a flown first stage puts the
-    /// whole launcher on the cursor: that exact stage plus new parts from the design.
+    /// The link with Phil's Builds. Phil's Builds tells the suite which design and slot each part was placed from (used
+    /// to name a new piece that comes home, and for requireDesign), and the suite lists hangar ships in Phil's Builds'
+    /// library window under the design each was first built as, with their price, detail and flight log. Picking one
+    /// there brings in that real ship (Phil, round 4); loading a design is always a new build.
     /// </summary>
     [KSPAddon(KSPAddon.Startup.MainMenu, true)]
     public class BuildsLink : MonoBehaviour, ICopies
@@ -55,7 +55,7 @@ namespace PhilsReusabilitySuite
         void OnPlaced(Placed p)
         {
             Stamp(p.Design, p.Parts);
-            EditorAddon.CheckParts(p.Parts);   // picked up from a file: the editor's one serial rule, at once
+            EditorAddon.Arrive(p.Parts);   // from a file: new parts, unless the suite itself is bringing a hangar copy in
             Log.Info("Phil's Builds placed " + p.Design?.Name + " (" + p.How + ", " + p.Parts?.Count + " parts): parts stamped with their design slots");
         }
 
@@ -68,12 +68,8 @@ namespace PhilsReusabilitySuite
 
         static Core.Settings S => Suite.Settings;
 
-        /// <summary>
-        /// The design a hangar ship is a copy of: the one design every design-placed part of it came from (parts
-        /// added by hand don't count). A ship made of two designs, such as a payload stacked on a launcher, is a
-        /// copy of neither: it waits in the hangar as itself, until its first stage comes home on its own.
-        /// </summary>
-        public static string DesignOf(HangarShip h) => SingleDesign(h.Craft.Children("PART").Select(DesignIn));
+        /// <summary>The design a hangar ship was first built as (set once, never changed: Phil's Builds lists it there).</summary>
+        public static string DesignOf(HangarShip h) => h?.Ship.DesignId;
 
         /// <summary>The one design id among these (blanks ignored), or null when there are none or several.</summary>
         public static string SingleDesign(IEnumerable<string> designs)
@@ -126,30 +122,56 @@ namespace PhilsReusabilitySuite
         static readonly Dictionary<string, KeyValuePair<Node, string>> underCache = new Dictionary<string, KeyValuePair<Node, string>>();
 
         /// <summary>
-        /// What a hangar ship is stacked on (Phil: "could the UI show that it's the Argo on a Rockall?"): another
-        /// hangar ship's own hardware by its name and number ("Rockall 002 #1"), or a design built new with it
-        /// ("Rockall 002"). Null for a ship of one piece. Parts added by hand don't count.
+        /// What a hangar ship sits on (Phil: "could the UI show that it's the Argo on a Rockall?", and round 4: "on X"
+        /// names only what the ship sits on): another ship riding inside it as itself ("Rockall 002 #1", a flown first
+        /// stage), or a launcher design built new with it ("Boulder 001"). Null for a ship of one piece.
         /// </summary>
         public static string Under(HangarShip h)
         {
             if (h?.Craft == null) return null;
             if (underCache.TryGetValue(h.Id, out var cached) && ReferenceEquals(cached.Key, h.Craft)) return cached.Value;
-            var parts = h.Craft.Children("PART").ToList();
-            string rootDesign = parts.Count > 0 ? DesignIn(parts[0]) : null;
             var labels = new List<string>();
-            foreach (Node p in parts)
+            PRSScenario sc = PRSScenario.Instance;
+            Craft read = Core.Craft.Read(h.Craft);
+            foreach (string id in h.Pieces.Values.Distinct())
             {
-                Node m = p.Children("MODULE").FirstOrDefault(x => x.Get("name") == Core.Craft.ModuleName);
-                if (m == null) continue;
-                string hull = m.Get("hull"), design = m.Get("design"), label = null;
-                if (!string.IsNullOrEmpty(hull) && hull != h.Hull && HangarShip.ParseHull(hull, out string name, out int number)) label = name + " #" + number;
-                else if (!string.IsNullOrEmpty(design) && design != rootDesign) label = NameOf(design);
-                if (label != null && !labels.Contains(label)) labels.Add(label);
+                // Only a ship riding below this ship's own parts is what it sits on.
+                int top = read.Highest(h.Pieces.Where(p => p.Value == id).Select(p => p.Key));
+                bool below = false;
+                for (CraftPart a = top >= 0 ? read.Parts[top].Parent : null; a != null && !below; a = a.Parent) below = !h.Pieces.ContainsKey(a.Index);
+                string name = below ? sc?.ShipOf(id)?.DisplayName : null;
+                if (name != null) labels.Add(name);
             }
-            string under = labels.Count == 0 ? null : string.Join(" and ", labels);
+            var parts = h.Craft.Children("PART").ToList();
+            string topDesign = TopDesign(h.Craft);
+            for (int i = 0; i < parts.Count; i++)
+            {
+                if (h.Pieces.ContainsKey(i)) continue;
+                string design = DesignIn(parts[i]);
+                if (string.IsNullOrEmpty(design) || design == topDesign) continue;
+                Design d;
+                try { d = BuildsApi.Find(design); } catch (Exception) { d = null; }
+                if (d != null && d.Kind == DesignKind.Launcher && !labels.Contains(d.Name)) labels.Add(d.Name);
+            }
+            string under = labels.Count == 0 ? null : string.Join(" and ", labels.ToArray());
             underCache[h.Id] = new KeyValuePair<Node, string>(h.Craft, under);
             return under;
         }
+
+        /// <summary>
+        /// The name a ship made of these parts goes by: its one design ("Kopje 005"), or else the design of its root part
+        /// (a payload stacked on a launcher: "Seeker I"). Null when neither is a filed design. The one naming rule, for
+        /// builds and for new pieces coming home.
+        /// </summary>
+        public static string NameFor(IEnumerable<string> designs, string rootDesign)
+        {
+            string id = DesignIdFor(designs, rootDesign);
+            return id != null ? NameOf(id) : null;
+        }
+
+        /// <summary>The design a new ship of these parts belongs to (by the same rule as its name), or null.</summary>
+        public static string DesignIdFor(IEnumerable<string> designs, string rootDesign) =>
+            SingleDesign(designs) ?? (string.IsNullOrEmpty(rootDesign) ? null : rootDesign);
 
         /// <summary>The design's file, read fresh (cached while the file doesn't change).</summary>
         static readonly Dictionary<string, KeyValuePair<DateTime, Node>> designFiles = new Dictionary<string, KeyValuePair<DateTime, Node>>();
@@ -188,13 +210,6 @@ namespace PhilsReusabilitySuite
             }
         }
 
-        /// <summary>A hangar ship completed to its design: its own parts in their slots, the rest new.</summary>
-        public static CompletionResult Complete(Design d, HangarShip h)
-        {
-            Node file = DesignFile(d);
-            return file == null ? null : Completion.Complete(file, d.Id, h.Craft.Children("PART"), p => Pip.PartName(Pip.Preview(p)));
-        }
-
         static string Price(Quote q) => Pricing.Funds(q.Total) + " · " + Pricing.Duration(q.Seconds, S);
 
         // ---- Building a filed design without opening the editor ----
@@ -217,18 +232,13 @@ namespace PhilsReusabilitySuite
             public void Requote() { Quote = PRSScenario.Instance?.QuoteFor(Craft, Design.Name, null, Skip); }
         }
 
-        /// <summary>The design as a brand-new build: every part new, each with a serial of its own.</summary>
+        /// <summary>The design as a brand-new build: every part new.</summary>
         public static Node FreshCraft(Design d)
         {
             Node file = DesignFile(d);
             if (file == null) return null;
-            Node craft = Completion.Complete(file, d.Id, new Node[0]).Craft;
+            Node craft = Hardware.Stamped(file, d.Id);
             craft.Set("ship", d.Name);
-            foreach (Node part in craft.Children("PART"))
-            {
-                Node m = part.Children("MODULE").FirstOrDefault(x => x.Get("name") == Core.Craft.ModuleName);
-                if (m != null) m.Set("serial", PRSPart.NewSerial());
-            }
             // New parts are what the VAB would make: each Phil's Iterative Parts part at its program's current Mk,
             // not the Mk the design file was saved with (play-test #7: Gallant I #4 flew Mk 1 parts, paid as Mk 3).
             Pip.MakeCurrent(craft, p => true);
@@ -319,10 +329,9 @@ namespace PhilsReusabilitySuite
             return new Vector3(v[0], v[1], v[2]);
         }
 
-        /// <summary>"Restore to design" for a hangar ship: its own parts in their slots, new parts for the rest.</summary>
+        /// <summary>"Restore" for a hangar ship: rebuilt from its own blueprint, its parts in their places, new ones for what it lost.</summary>
         public sealed class Restore
         {
-            public Design Design;
             public Node Craft;
             public Quote Quote;
             public string ShipName;
@@ -335,36 +344,21 @@ namespace PhilsReusabilitySuite
         }
 
         /// <summary>
-        /// The hangar ship built back up to its whole design (a flown first stage becomes the whole launcher
-        /// again), or null when it isn't a copy of a filed design or already has every part.
+        /// The hangar ship rebuilt from its own blueprint (Phil, round 4: "couldn't it have a blueprint of the 'Peleus III #2'
+        /// and restore uses that?"), or null when it has lost nothing.
         /// </summary>
         public static Restore RestoreOf(HangarShip h, HashSet<string> skip = null)
         {
             PRSScenario sc = PRSScenario.Instance;
-            string id = DesignOf(h);
-            if (sc == null || id == null) return null;
-            Design d;
-            try { d = BuildsApi.Find(id); } catch (Exception) { return null; }
-            if (d == null) return null;
-            CompletionResult c = Complete(d, h);
-            if (c == null || c.NewSlots.Count == 0) return null;
-            Node craft = c.Craft;
-            craft.Set("ship", h.Name);
-            foreach (Node part in craft.Children("PART"))
-            {
-                Node m = part.Children("MODULE").FirstOrDefault(x => x.Get("name") == Core.Craft.ModuleName);
-                if (m == null || !string.IsNullOrEmpty(m.Get("serial"))) continue;
-                m.Set("serial", PRSPart.NewSerial());
-                // A new part, as the VAB would make it (its own parts keep the Mk they were built at).
-                Pip.MakeCurrent(part);
-            }
+            if (sc == null) return null;
+            Node craft = sc.RestoreCraft(h, out int newParts);
+            if (craft == null || newParts == 0) return null;
             string facility = Suite.FacilityOf(craft);
             var r = new Restore
             {
-                Design = d,
                 Craft = craft,
                 ShipName = h.DisplayName,
-                NewParts = c.NewSlots.Count,
+                NewParts = newParts,
                 Facility = facility,
                 Blocked = WhyNot(craft, facility),
             };
@@ -381,7 +375,7 @@ namespace PhilsReusabilitySuite
             if (sc == null || r == null) { error = "There's nothing to restore."; return null; }
             if (r.Blocked != null) { error = h.DisplayName + " can't be restored yet. " + r.Blocked; return null; }
             BuildJob job = sc.StartBuild(r.Craft, h.Name, r.Facility, r.Quote, overtime, outsource, h.Id, out error);
-            if (job != null && !outsource) Suite.Message(h.DisplayName + " is being restored to " + r.Design.Name + ": " + Pricing.Duration(job.SecondsLeft(S), S));
+            if (job != null && !outsource) Suite.Message(h.DisplayName + " is being restored: " + Pricing.Duration(job.SecondsLeft(S), S));
             return job;
         }
 
@@ -397,6 +391,9 @@ namespace PhilsReusabilitySuite
             return job;
         }
 
+        /// <summary>What picking a hangar ship up brings in: the whole ship from its own blueprint (what it lost new), or as stored.</summary>
+        static Node WholeShip(PRSScenario sc, HangarShip h, out int newParts) => sc.RestoreCraft(h, out newParts) ?? h.Noted();
+
         public IList<CopyRow> CopiesOf(Design design)
         {
             var rows = new List<CopyRow>();
@@ -405,24 +402,18 @@ namespace PhilsReusabilitySuite
             if (design.Kind == DesignKind.Launcher || design.Kind == DesignKind.UpperStage)
             {
                 Node file = DesignFile(design);
-                if (file != null)
-                {
-                    Node fresh = Completion.Complete(file, design.Id, new Node[0]).Craft;
-                    rows.Add(new CopyRow { Id = "new", IsNew = true, Label = "New", Text = "built from the design", Price = Price(sc.QuoteFor(fresh, design.Name, null)) });
-                }
+                if (file != null) rows.Add(new CopyRow { Id = "new", IsNew = true, Label = "New", Text = "built from the design", Price = Price(sc.QuoteFor(Hardware.Stamped(file, design.Id), design.Name, null)) });
             }
+            // The design each ship was first built as, for good (Phil: "The Peleus III #2 knows it's a Peleus III").
             foreach (HangarShip h in sc.Hangar.Where(x => DesignOf(x) == design.Id))
             {
-                CompletionResult c = Complete(design, h);
-                Quote q = c != null ? sc.QuoteFor(c.Craft, h.DisplayName, null) : sc.QuoteFor(h.Craft, h.DisplayName, null);
-                bool whole = c == null || c.NewSlots.Count == 0;
-                string what = whole ? (h.Ready ? "ready" : "complete") : (design.Kind == DesignKind.Launcher ? "first stage" : "part of it");
+                Quote q = sc.QuoteFor(WholeShip(sc, h, out _), h.DisplayName, null);
                 rows.Add(new CopyRow
                 {
                     Id = h.Id,
                     Label = "#" + h.Number,
-                    Text = what + " · " + (h.Flights == 0 ? "never flown" : h.Flights + (h.Flights == 1 ? " flight" : " flights")) + (h.Flights > 0 || h.Wear >= 0.005 ? " · wear " + Core.Wear.Percent(h.Wear) : ""),
-                    Warning = h.Missing.Count > 0 ? "missing " + Suite.Parts(h.Missing.Count) : "",
+                    Text = (h.Ready ? "ready" : "stored") + " · " + (h.Flights == 0 ? "never flown" : h.Flights + (h.Flights == 1 ? " flight" : " flights")) + (h.Flights > 0 || h.Wear >= 0.005 ? " · wear " + Core.Wear.Percent(h.Wear) : ""),
+                    Warning = h.Missing > 0 ? "missing " + Suite.Parts(h.Missing) : "",
                     Price = Price(q),
                     Reserved = h.ReservedBy != null,
                     ReservedText = h.ReservedBy != null ? "in the build of " + (sc.Jobs.FirstOrDefault(j => j.Id == h.ReservedBy) is BuildJob bj ? sc.TitleOf(bj) : "a ship") : "",
@@ -440,7 +431,7 @@ namespace PhilsReusabilitySuite
             int ready = copies.Count(x => x.Ready), flown = copies.Count - ready;
             var bits = new List<string>();
             if (ready > 0) bits.Add(ready + " ready");
-            if (flown > 0) bits.Add(flown + (design.Kind == DesignKind.Launcher ? (flown == 1 ? " flown first stage" : " flown first stages") : " flown"));
+            if (flown > 0) bits.Add(flown + " flown");
             return string.Join(", ", bits.ToArray()) + " in the hangar";
         }
 
@@ -453,43 +444,41 @@ namespace PhilsReusabilitySuite
             {
                 Node file = DesignFile(design);
                 if (file == null) return null;
-                Quote q = sc.QuoteFor(Completion.Complete(file, design.Id, new Node[0]).Craft, design.Name, null);
+                Quote q = sc.QuoteFor(Hardware.Stamped(file, design.Id), design.Name, null);
                 var d = new CopyDetail { Eyebrow = kind + " · " + design.Family + " family", Title = design.Name + ", new", TotalLabel = "Total · build time", Total = Price(q) };
                 d.Lines.Add(new CopyLine("New parts", Pricing.Funds(q.NewPrice)));
-                if (q.RefurbishPrice > 0) d.Lines.Add(new CopyLine("From the parts bin (refurbished)", Pricing.Funds(q.RefurbishPrice), true));
+                if (q.BinParts > 0) d.Lines.Add(new CopyLine(Suite.Parts(q.BinParts) + " from the parts bin, already paid for", Pricing.Funds(0), true));
                 d.Lines.Add(new CopyLine("Fuel", Pricing.Funds(q.FuelPrice)));
                 d.Hint = "A brand-new " + design.Name + ".";
                 return d;
             }
             HangarShip h = sc.Hangar.FirstOrDefault(x => x.Id == row.Id);
             if (h == null) return null;
-            CompletionResult c = Complete(design, h);
-            Quote cq = sc.QuoteFor(c != null ? c.Craft : h.Craft, h.DisplayName, null);
+            Quote cq = sc.QuoteFor(WholeShip(sc, h, out int newCount), h.DisplayName, null);
             var detail = new CopyDetail
             {
-                Eyebrow = "Hangar copy · " + design.Name,
+                Eyebrow = "In the hangar · " + design.Name,
                 Title = h.DisplayName,
                 TotalLabel = "Total · build time",
                 Total = Price(cq),
                 LogTitle = "Flights",
             };
-            detail.Chips.Add(new CopyChip((c != null && c.NewSlots.Count > 0 && design.Kind == DesignKind.Launcher ? "First stage · " : "") + (h.Flights == 1 ? "1 flight" : h.Flights + " flights"), ChipTone.Good));
-            detail.Chips.Add(h.Missing.Count > 0 ? new CopyChip("Missing " + Suite.Parts(h.Missing.Count), ChipTone.Warn) : new CopyChip(h.Ready ? "Ready" : "Complete"));
+            detail.Chips.Add(new CopyChip(h.Flights == 1 ? "1 flight" : h.Flights + " flights", ChipTone.Good));
+            detail.Chips.Add(h.Missing > 0 ? new CopyChip("Missing " + Suite.Parts(h.Missing), ChipTone.Warn) : new CopyChip(h.Ready ? "Ready" : "Stored"));
             detail.Chips.Add(new CopyChip("Wear " + Core.Wear.Percent(h.Wear), Core.Wear.WornOut(h.Wear) ? ChipTone.Warn : ChipTone.Plain));
             // Its own Phil's Iterative Parts parts that are behind their programs (updated from the suite's hangar).
             int behind = h.Craft.Children("PART").Count(p => Pip.Behind(p) > 0);
             if (behind > 0) detail.Chips.Add(new CopyChip((behind == 1 ? "1 PIP part" : behind + " PIP parts") + " behind", ChipTone.Warn));
             if (cq.RefurbishPrice >= 0.5) detail.Lines.Add(new CopyLine("Refurbish to 0% wear", Pricing.Funds(cq.RefurbishPrice), true));
-            int newCount = c != null ? c.NewSlots.Count : 0;
-            if (newCount > 0) detail.Lines.Add(new CopyLine(Suite.Parts(newCount).Replace(" part", " new part") + (design.Kind == DesignKind.Launcher && h.Missing.Count == 0 ? " (upper stage)" : ""), Pricing.Funds(cq.NewPrice)));
+            if (newCount > 0) detail.Lines.Add(new CopyLine(Suite.Parts(newCount).Replace(" part", " new part") + " for what it lost", Pricing.Funds(cq.NewPrice)));
             detail.Lines.Add(new CopyLine(h.Ready ? "Fuel (full)" : "Fuel top-up", Pricing.Funds(cq.FuelPrice)));
             detail.Log.AddRange(sc.LogOf(h).Take(6));
-            // Phil: "load", not "pick up". Phil's Builds' own button says Load (or "Add to craft" when the editor
-            // already has one); "Load as stored" beside it (Phil's Builds 2 and later) brings only what's stored.
+            // Phil: "load", not "pick up". Phil's Builds' own button brings the whole ship (what it lost new); "Load as
+            // stored" beside it (Phil's Builds 2 and later) brings only what's stored.
             bool canOpen = h.ReservedBy == null && openLabel != null && openAction != null;
             detail.Hint = newCount > 0
-                ? "The whole " + design.Name + ": " + h.DisplayName + " plus " + Suite.Parts(newCount).Replace(" part", " new part") + " from the design."
-                  + (canOpen ? " Load as stored brings only its own " + Suite.Parts(h.Placed.Count) + "." : "")
+                ? h.DisplayName + " whole again: its own parts and " + Suite.Parts(newCount).Replace(" part", " new part") + " for what it lost."
+                  + (canOpen ? " Load as stored brings only its own " + Suite.Parts(h.PartCount) + "." : "")
                 : h.DisplayName + " exactly as it is.";
             if (canOpen) OfferOpen(detail, h);
             return detail;
@@ -508,6 +497,7 @@ namespace PhilsReusabilitySuite
             }));
         }
 
+        /// <summary>Phil's Builds' Load (or Pick up) on a hangar ship: the real ship, whole, onto the cursor or into the editor.</summary>
         public void Build(Design design, CopyRow row, Action<ShipConstruct> hold)
         {
             try
@@ -515,24 +505,22 @@ namespace PhilsReusabilitySuite
                 PRSScenario sc = PRSScenario.Instance;
                 HangarShip h = sc?.Hangar.FirstOrDefault(x => x.Id == row.Id);
                 if (h == null || h.ReservedBy != null) { hold(null); return; }
-                CompletionResult c = Complete(design, h);
-                Node craft = c != null ? c.Craft : h.Craft;
-                IEnumerable<string> keep = c != null ? c.Used : (IEnumerable<string>)h.Placed;
-                // The flown parts keep their serials in the editor; new parts get theirs when they're made.
-                EditorAddon.Claim(keep);
+                Node craft = WholeShip(sc, h, out int newParts);
+                // Its own parts come in as its hardware (noted by the suite itself); what it lost comes in new.
+                EditorAddon.Expect(h.CraftId);
                 ConfigNode n = KspNodes.ToKsp(craft, "");
-                n.SetValue("ship", h.DisplayName, true);
+                n.SetValue("ship", h.Name, true);
                 var template = new ShipTemplate();
                 template.LoadShip(n);
                 ShipConstruction.CreateConstructFromTemplate(template, ship =>
                 {
-                    if (ship != null) Log.Info("Picked up " + h.DisplayName + " from the hangar as a whole " + design.Name + " (" + ship.parts.Count + " parts)");
+                    if (ship != null) Log.Info("Picked up " + h.DisplayName + " from the hangar (" + ship.parts.Count + " parts, " + newParts + " of them new)");
                     hold(ship);
                 });
             }
             catch (Exception ex)
             {
-                Log.Error("Couldn't build " + design?.Name + " from the hangar: " + ex);
+                Log.Error("Couldn't bring " + row?.Id + " in from the hangar: " + ex);
                 hold(null);
             }
         }

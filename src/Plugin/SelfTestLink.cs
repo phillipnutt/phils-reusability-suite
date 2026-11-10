@@ -130,9 +130,14 @@ namespace PhilsReusabilitySuite
             yield return new WaitForSeconds(0.5f);
         }
 
+        /// <summary>A part stamped with a design, hanging under the craft's last part (a stack, top first).</summary>
         static void StampedPart(Node craft, string designId)
         {
-            Node m = craft.AddNode("PART").AddNode("MODULE");
+            Node last = craft.Children("PART").LastOrDefault();
+            Node part = craft.AddNode("PART");
+            part.Add("part", "stamped_" + (1000 + craft.Children("PART").Count()));
+            if (last != null) last.Add("link", part.Get("part"));
+            Node m = part.AddNode("MODULE");
             m.Set("name", Core.Craft.ModuleName);
             m.Set("design", designId);
         }
@@ -206,8 +211,8 @@ namespace PhilsReusabilitySuite
                     var probe = new ConfigNode("PART");
                     ConfigNode pm = probe.AddNode("MODULE");
                     pm.AddValue("name", Core.Craft.ModuleName);
-                    pm.AddValue("serial", "not-hardware-" + Guid.NewGuid().ToString("N"));
-                    Check(!hook(probe), "a part with a serial nobody owns is a new part to PIP");
+                    pm.AddValue(Hardware.Field, Guid.NewGuid().ToString("N") + ":0");
+                    Check(!hook(probe), "a part whose note points at no stored ship is a new part to PIP");
                 }
                 var stock = new Node("PART");
                 stock.Add("part", "mk1pod.v2_1");
@@ -237,7 +242,6 @@ namespace PhilsReusabilitySuite
             EditorAddon.Instance.OpenBuildPanel();
             BuildPanel panel = EditorAddon.Instance.Panel;
             Check(!panel.Unfiled, "a filed design shows no 'Not filed' warning");
-            Check(panel.HangarCopy == null, "nothing ready in the hangar to offer yet");
             PRSScenario sc = PRSScenario.Instance;
             Check(panel.Confirm(), "building the Hopper " + panel.Error);
             string jobId = sc.Jobs.LastOrDefault()?.Id;
@@ -250,24 +254,27 @@ namespace PhilsReusabilitySuite
             string err = "";
             Check(job != null && sc.Outsource(job, out err), "outsourcing the build " + err);
             HangarShip ready = sc.Hangar.FirstOrDefault(h => h.Ready);
-            Check(ready != null && BuildsLink.DesignOf(ready) == d.Id, "the ready ship is a copy of the design (" + ready?.DisplayName + ")");
+            Check(ready != null && BuildsLink.DesignOf(ready) == d.Id, "the ready ship belongs to the design it was built as (" + ready?.DisplayName + ")");
             if (ready == null) yield break;
             Check(ready.Name == DesignName, "it's named after the design, not 'Untitled Space Craft' (" + ready.Name + ")");
-            // A payload stacked on a launcher is a copy of neither design; parts added by hand don't count.
-            var mixed = new HangarShip { Craft = new Node("SHIP") };
-            var handAdded = new HangarShip { Craft = new Node("SHIP") };
-            foreach (string id in new[] { d.Id, d.Id, "another-design" }) StampedPart(mixed.Craft, id);
-            foreach (string id in new[] { d.Id, d.Id, "" }) StampedPart(handAdded.Craft, id);
-            Check(BuildsLink.DesignOf(mixed) == null, "a ship made of two designs (a payload on a launcher) is a copy of neither");
-            Check(BuildsLink.DesignOf(handAdded) == d.Id, "a copy with a part added by hand is still a copy of its design");
-            // What a stacked ship is on, for its hangar card: a design built new with it, or another ship's hardware.
-            var onDesign = new HangarShip { Id = "under-test-1", Name = "Top", Number = 1, Craft = new Node("SHIP") };
+            // A new ship's design, by the rule that names it: its one design (parts added by hand don't count), else its root
+            // part's (a payload stacked on a launcher belongs to the payload).
+            Check(BuildsLink.DesignIdFor(new[] { d.Id, d.Id, "" }, d.Id) == d.Id, "a ship with a part added by hand belongs to its design");
+            Check(BuildsLink.DesignIdFor(new[] { "payload", d.Id, d.Id }, "payload") == "payload", "a payload stacked on a launcher belongs to the payload's design");
+            // What a stacked ship is on, for its hangar card (Phil, round 4: only what it sits on): a launcher design built new
+            // with it, or another ship riding inside it as itself (a flown first stage).
+            var onDesign = new HangarShip { Ship = new Ship { Id = "under-test-1", Name = "Top", Number = 1 }, Craft = new Node("SHIP") };
             foreach (string id in new[] { "another-design", d.Id }) StampedPart(onDesign.Craft, id);
             Check(BuildsLink.Under(onDesign) == DesignName, "a payload built new on a launcher is 'on' the launcher's design (" + BuildsLink.Under(onDesign) + ")");
-            var onShip = new HangarShip { Id = "under-test-2", Name = "Top", Number = 1, Craft = new Node("SHIP") };
+            var onShip = new HangarShip { Ship = new Ship { Id = "under-test-2", Name = "Top", Number = 1 }, Craft = new Node("SHIP") };
             foreach (string id in new[] { "another-design", d.Id }) StampedPart(onShip.Craft, id);
-            onShip.Craft.Children("PART").Last().Children("MODULE").First().Set("hull", "Rockall 002|1");
-            Check(BuildsLink.Under(onShip) == "Rockall 002 #1", "stacked on a hangar ship's own hardware, it names that ship (" + BuildsLink.Under(onShip) + ")");
+            Ship rockall = sc.NewShip("Rockall 002");
+            onShip.Pieces[1] = rockall.Id;
+            Check(BuildsLink.Under(onShip) == "Rockall 002 #1", "with a hangar ship riding inside it, it names that ship (" + BuildsLink.Under(onShip) + ")");
+            sc.Ships.Remove(rockall.Id);
+            var onCraft = new HangarShip { Ship = new Ship { Id = "under-test-3", Name = "Top", Number = 1 }, Craft = new Node("SHIP") };
+            foreach (string id in new[] { d.Id, "another-design" }) StampedPart(onCraft.Craft, id);
+            Check(BuildsLink.Under(onCraft) == null, "another design that isn't a launcher under it (a capsule from another design, say) isn't what it's 'on' (" + BuildsLink.Under(onCraft) + ")");
             Check(BuildsLink.Under(ready) == null, "a ship of one piece isn't 'on' anything");
             string readyId = ready.Id;
             rows = Link.CopiesOf(d);
@@ -299,7 +306,7 @@ namespace PhilsReusabilitySuite
             BuildJob libJob = BuildsLink.BuildFromLibrary(hop, false, true, out err);
             Check(libJob != null && libJob.Name == DesignName && libJob.Facility == "VAB", "Build from the library queued " + libJob?.Name + " " + err);
             HangarShip libShip = sc.Hangar.FirstOrDefault(h => h.Ready && h.Id != readyId && h.Name == DesignName);
-            Check(libShip != null && BuildsLink.DesignOf(libShip) == d.Id && libShip.Placed.Count == 8 && libShip.Placed.Distinct().Count() == 8, "outsourced, it's a ready copy of the design with 8 parts of its own (" + libShip?.DisplayName + ")");
+            Check(libShip != null && BuildsLink.DesignOf(libShip) == d.Id && libShip.PartCount == 8 && libShip.Flights == 0, "outsourced, it's a ready copy of the design with 8 parts of its own (" + libShip?.DisplayName + ")");
             Check(Near(fLib - Funds, hop.Quote.Total + Pricing.OutsourceCharge(hop.Quote.BuildPrice, 1, Suite.Settings), 1), "it was charged its price plus outsourcing (" + Pricing.Funds(fLib - Funds) + ")");
             if (libShip != null) sc.Sell(libShip);   // keep the hangar as the next steps expect
             // A design too big for a brand-new career is refused, with the reason.
@@ -307,19 +314,24 @@ namespace PhilsReusabilitySuite
             string why = BuildsLink.WhyNot(kerbalX, "VAB");
             Check(why != null && (why.StartsWith("It uses the") || why.StartsWith("It has")), "the Kerbal X can't be built in a new career: " + why);
 
-            // 4. The design placed again: the Build panel offers the ready one, and Use it makes the VAB ship that ship.
+            // 4. The design placed again is a new build: the Build panel never decides by itself that it's a hangar ship
+            // (Phil, round 4). Opening the ready Hopper from the hangar is that ship.
             yield return ToEditor();
             yield return Place(d);
             EditorAddon.Instance.OpenBuildPanel();
             panel = EditorAddon.Instance.Panel;
-            Check(panel.HangarCopy != null && panel.HangarCopy.Id == readyId, "the Build panel offers the ready Hopper");
+            Check(panel.ReadyShip == null && panel.MainShip == null && panel.Quote.Lines.All(l => l.Kind == OwnerKind.New), "the design loaded again is all new parts, a new ship");
+            panel.Showing = false;
+            EditorAddon.LoadHangarShip(PRSScenario.Instance.HangarOf(readyId));
+            yield return new WaitForSeconds(2f);
+            EditorAddon.Instance.OpenBuildPanel();
+            panel = EditorAddon.Instance.Panel;
             yield return new WaitForSeconds(1f);
-            Shot("build_panel_use_it");
+            Shot("build_panel_ready");
             yield return new WaitForSeconds(1f);
-            panel.UseHangarCopy();
-            Check(panel.ReadyShip != null && panel.ReadyShip.Id == readyId, "after Use it, the VAB ship is the ready hangar ship");
-            var inVab = EditorLogic.fetch.ship.parts.Select(PRSPart.SerialOf).ToList();
-            Check(inVab.Count == ready.Placed.Count && inVab.All(ready.Placed.Contains), "its parts carry the ready ship's serials");
+            Check(panel.ReadyShip != null && panel.ReadyShip.Id == readyId, "opened from the hangar, the VAB ship is the ready hangar ship");
+            Check(EditorLogic.fetch.ship.parts.All(EditorAddon.IsHardware) && PRSScenario.Instance.ExactShipOf(EditorAddon.EditorCraft())?.Id == readyId, "its parts are the ready ship's hardware");
+            int readyParts = ready.PartCount;
             panel.Showing = false;
 
             // Leaving with KSP's own exit button and clicking the VAB again: KSP brings the ship back from its
@@ -333,8 +345,7 @@ namespace PhilsReusabilitySuite
             typeof(VehicleAssemblyBuilding).GetMethod("OnClicked", BindingFlags.Instance | BindingFlags.NonPublic).Invoke(vabBuilding, null);
             yield return WaitFor(() => HighLogic.LoadedScene == GameScenes.EDITOR && EditorLogic.fetch != null && EditorAddon.Instance != null && EditorLogic.fetch.ship != null && EditorLogic.fetch.ship.parts.Count > 0, 90, "clicking the VAB brought the ship back");
             yield return new WaitForSeconds(3f);
-            var back = EditorLogic.fetch.ship.parts.Select(PRSPart.SerialOf).ToList();
-            Check(back.Count == ready.Placed.Count && back.All(ready.Placed.Contains), "back in the VAB, it's still the ready ship's own parts (" + back.Count(ready.Placed.Contains) + " of " + ready.Placed.Count + ")");
+            Check(EditorLogic.fetch.ship.parts.All(EditorAddon.IsHardware) && PRSScenario.Instance.ExactShipOf(EditorAddon.EditorCraft())?.Id == readyId, "back in the VAB, it's still the ready ship's own parts (" + EditorLogic.fetch.ship.parts.Count(EditorAddon.IsHardware) + " of " + readyParts + ")");
             EditorAddon.Instance.OpenBuildPanel();
             Check(EditorAddon.Instance.Panel.ReadyShip != null && EditorAddon.Instance.Panel.ReadyShip.Id == readyId, "and the Build panel still knows it as the ready " + ready.DisplayName);
             EditorAddon.Instance.Panel.Showing = false;
@@ -343,16 +354,14 @@ namespace PhilsReusabilitySuite
             // parts): loading it gives new parts. It must never quietly take the hangar ship's hardware.
             string copyPath = Path.Combine(SuiteFiles.SaveDir, "test-saved-from-hangar-parts.craft");
             EditorLogic.fetch.ship.SaveShip().Save(copyPath);
-            Check(File.ReadAllText(copyPath).Contains(ready.Placed[0]), "a craft saved in the VAB keeps its parts' serials (this one carries the ready Hopper's)");
+            Check(File.ReadAllText(copyPath).Contains(ready.CraftId), "a craft saved in the VAB keeps its parts' notes (this one carries the ready Hopper's)");
             EditorLogic.LoadShipFromFile(copyPath);
             yield return new WaitForSeconds(2f);
-            var loaded = EditorLogic.fetch.ship.parts.Select(PRSPart.SerialOf).ToList();
-            Check(loaded.Count == ready.Placed.Count && !loaded.Any(ready.Placed.Contains), "loading that craft gives new parts: " + loaded.Count(ready.Placed.Contains) + " of " + loaded.Count + " carry the ready ship's serials");
+            Check(EditorLogic.fetch.ship.parts.Count == readyParts && EditorLogic.fetch.ship.parts.All(p => PRSPart.NoteOf(p) == null), "loading that craft gives new parts: the notes saved with it are cleared (" + EditorLogic.fetch.ship.parts.Count(EditorAddon.IsHardware) + " of " + EditorLogic.fetch.ship.parts.Count + " count as hardware)");
             RaisePlaced(d, PlaceHow.Load, EditorLogic.fetch.ship.parts, null);
             EditorAddon.Instance.OpenBuildPanel();
             panel = EditorAddon.Instance.Panel;
             Check(panel.ReadyShip == null && panel.Editing == null && panel.Quote != null && panel.Quote.Lines.All(l => l.Kind == OwnerKind.New), "the Build panel prices it as all new parts, not the hangar ship");
-            Check(panel.HangarCopy != null && panel.HangarCopy.Id == readyId, "and offers the ready Hopper with Use it instead");
             panel.Showing = false;
             HangarShip readyNow = PRSScenario.Instance.Hangar.FirstOrDefault(h => h.Id == readyId);
             Check(readyNow != null && readyNow.ReservedBy == null, "the ready Hopper is still in the hangar, free");
@@ -361,7 +370,7 @@ namespace PhilsReusabilitySuite
             EditorAddon.LoadHangarShip(readyNow);
             yield return new WaitForSeconds(2f);
             var ownParts = new HashSet<Part>(EditorLogic.fetch.ship.parts);
-            Check(ownParts.Count == ready.Placed.Count && ownParts.All(p => ready.Placed.Contains(PRSPart.SerialOf(p))), "the hangar's own Load keeps the ready ship's serials");
+            Check(ownParts.Count == readyParts && ownParts.All(EditorAddon.IsHardware), "the hangar's own Load brings the ready ship in as its hardware");
             MethodInfo toLoad = typeof(EditorLogic).GetMethods(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)
                 .FirstOrDefault(m => m.Name == "ShipToLoadSelected" && m.GetParameters().Length == 2 && m.GetParameters()[0].ParameterType == typeof(string));
             Check(toLoad != null, "found KSP's Merge");
@@ -372,9 +381,9 @@ namespace PhilsReusabilitySuite
                 var all = new HashSet<Part>(EditorLogic.fetch.ship.parts);
                 Part held = EditorLogic.SelectedPart;
                 if (held != null) { all.Add(held); foreach (Part c in held.FindChildParts<Part>(true)) all.Add(c); }
-                var merged = all.Where(p => !ownParts.Contains(p)).Select(PRSPart.SerialOf).ToList();
-                Check(merged.Count == ready.Placed.Count && !merged.Any(ready.Placed.Contains), "the merged design came in as new parts (" + merged.Count + " parts, " + merged.Count(ready.Placed.Contains) + " with the ready ship's serials)");
-                Check(ownParts.All(p => p != null && ready.Placed.Contains(PRSPart.SerialOf(p))), "and the hangar ship already in the VAB kept its own");
+                var merged = all.Where(p => !ownParts.Contains(p)).ToList();
+                Check(merged.Count == readyParts && merged.All(p => PRSPart.NoteOf(p) == null), "the merged design came in as new parts (" + merged.Count + " parts, " + merged.Count(p => PRSPart.NoteOf(p) != null) + " with a note)");
+                Check(ownParts.All(p => p != null && EditorAddon.IsHardware(p)), "and the hangar ship already in the VAB is still its hardware");
                 // KSP's New clears the hangar ship away: a design merged into the empty VAB after it is new parts too.
                 MethodInfo newShip = typeof(EditorLogic).GetMethod("OnNewShipConfirm", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
                 Check(newShip != null, "found KSP's New");
@@ -386,8 +395,7 @@ namespace PhilsReusabilitySuite
                     yield return new WaitForSeconds(2f);
                     var afterNew = new HashSet<Part>(EditorLogic.fetch.ship.parts);
                     if (EditorLogic.SelectedPart != null) { afterNew.Add(EditorLogic.SelectedPart); foreach (Part c in EditorLogic.SelectedPart.FindChildParts<Part>(true)) afterNew.Add(c); }
-                    var newSerials = afterNew.Select(PRSPart.SerialOf).ToList();
-                    Check(newSerials.Count == ready.Placed.Count && !newSerials.Any(ready.Placed.Contains), "after New, the same design merged in is new parts (" + newSerials.Count(ready.Placed.Contains) + " of " + newSerials.Count + " with the ready ship's serials)");
+                    Check(afterNew.Count == readyParts && afterNew.All(p => PRSPart.NoteOf(p) == null), "after New, the same design merged in is new parts (" + afterNew.Count(p => PRSPart.NoteOf(p) != null) + " of " + afterNew.Count + " with a note)");
                 }
                 EditorAddon.LoadHangarShip(readyNow);    // drops the merged copy
                 yield return new WaitForSeconds(2f);
@@ -403,36 +411,37 @@ namespace PhilsReusabilitySuite
             Part chute = v.parts.FirstOrDefault(p => p.partInfo.name == "parachuteSingle");
             Check(chute != null, "the Hopper has its chute");
             if (chute == null) yield break;
-            string chuteSerial = PRSPart.SerialOf(chute);
-            int chuteSlot = PRSPart.Of(chute).slot;
+
             chute.Die();
             yield return new WaitForSeconds(2f);
-            var home = v.parts.Select(PRSPart.SerialOf).ToList();
+            int homeCount = v.parts.Count;
             yield return Recover(RecoverChoice.Hangar);
             sc = PRSScenario.Instance;
-            HangarShip flown = sc.Hangar.FirstOrDefault(h => h.Placed.Count == home.Count && h.Placed.All(home.Contains));
-            Check(flown != null && BuildsLink.DesignOf(flown) == d.Id && flown.Flights == 1, "a filed design's piece comes home to the hangar (" + flown?.DisplayName + ", " + home.Count + " parts)");
+            HangarShip flown = sc.HangarOf(readyId);
+            Check(flown != null && flown.PartCount == homeCount && BuildsLink.DesignOf(flown) == d.Id && flown.Flights == 1 && flown.Missing == 1, "a filed design's piece comes home to the hangar as the ship it launched as, missing its chute (" + flown?.DisplayName + ", " + homeCount + " parts)");
             if (flown == null) yield break;
             // A hop from the pad adds next to no wear: give it 30% so the refurbish has a price to check.
             Check(flown.Wear < 0.02, "a hop from the pad adds next to no wear (" + Core.Wear.Percent(flown.Wear) + ")");
-            flown.SetWear(0.3);
-            CompletionResult c5 = BuildsLink.Complete(d, flown);
-            Check(c5 != null && c5.Used.Count == home.Count && c5.NewSlots.Count == 1 && c5.NewSlots[0] == chuteSlot, "completing it to the design: its own " + c5?.Used.Count + " parts, and a new part in the chute's slot");
+            flown.Wear = 0.3;
+            Node c5 = sc.RestoreCraft(flown, out int c5New);
+            List<Node> c5Parts = c5?.Children("PART").ToList() ?? new List<Node>();
+            Check(c5 != null && c5New == 1 && c5Parts.Count(p => Hardware.Of(p) != null) == homeCount && c5Parts.Any(p => Hardware.PartName(p) == "parachuteSingle" && Hardware.Of(p) == null),
+                  "its own blueprint gives it back whole: its " + homeCount + " parts, and a new chute");
             rows = Link.CopiesOf(d);
             CopyRow flownRow = rows.FirstOrDefault(r => r.Id == flown.Id);
             // The chute was destroyed while attached, so the copy is missing it (a spent upper stage wouldn't be).
-            Check(flownRow != null && flownRow.Text == "first stage · 1 flight · wear 30%" && flownRow.Warning == "missing 1 part", "its library row (" + flownRow?.Label + " " + flownRow?.Text + " " + flownRow?.Warning + ")");
-            Check(Link.Note(d) == "1 flown first stage in the hangar", "the design's note: " + Link.Note(d));
+            Check(flownRow != null && flownRow.Text == "stored · 1 flight · wear 30%" && flownRow.Warning == "missing 1 part", "its library row (" + flownRow?.Label + " " + flownRow?.Text + " " + flownRow?.Warning + ")");
+            Check(Link.Note(d) == "1 flown in the hangar", "the design's note: " + Link.Note(d));
             CopyDetail fd = flownRow != null ? Link.Detail(d, flownRow) : null;
             Check(fd != null && fd.Lines.Any(l => l.Label.StartsWith("1 new part")) && fd.Lines.Any(l => l.Label == "Refurbish to 0% wear") && fd.Chips.Any(ch => ch.Text == "Wear 30%"), "its detail panel shows its wear and prices the refurbish and the new part");
             var openField = typeof(CopyDetail).GetField("Open");
             if (openField != null) Check(fd != null && openField.GetValue(fd) != null, "its detail panel offers Load as stored beside Load");
             else Note("this Phil's Builds has no Load as stored button yet");
             Check(fd != null && fd.Log.Count > 0, "its detail panel shows its flight log (" + (fd?.Log.FirstOrDefault() ?? "none") + ")");
-            Quote cq = sc.QuoteFor(c5.Craft, flown.DisplayName, null);
+            Quote cq = sc.QuoteFor(c5, flown.DisplayName, null);
             float chutePrice = PartLoader.getPartInfoByName("parachuteSingle").cost;
             Check(Near(cq.NewPrice, chutePrice, 1) && cq.RefurbishPrice > 0, "the whole Hopper from it: the chute new (" + Pricing.Funds(cq.NewPrice) + " of " + Pricing.Funds(chutePrice) + "), the rest refurbished (" + Pricing.Funds(cq.RefurbishPrice) + ")");
-            string flownId = flown.Id, flownHull = flown.Hull;
+            string flownId = flown.Id;
             string flownDisplay = flown.DisplayName;
 
             // 6. Picked up in the VAB: the flown parts in their slots plus a new chute.
@@ -440,21 +449,16 @@ namespace PhilsReusabilitySuite
             sc = PRSScenario.Instance;
             flown = sc.Hangar.FirstOrDefault(h => h.Id == flownId);
 
-            // 5b. The plain design loaded in the VAB (Phil, 2026-11-08: loading Gallant I said nothing about the flown
-            // Gallant I #1): the Build panel points out the flown copy, short its chute, and "Use it" builds from it,
-            // its own parts refurbished and only the chute new. Built, it would stay that ship.
-            yield return Place(d);
+            // 5b. Opened from the hangar, short its chute: the build is that ship, its own parts refurbished.
+            EditorAddon.LoadHangarShip(flown);
+            yield return new WaitForSeconds(2f);
             EditorAddon.Instance.OpenBuildPanel();
             BuildPanel bp = EditorAddon.Instance.Panel;
-            double allNew = bp.Quote?.Total ?? 0, offered = bp.CopyQuote?.Total ?? 0;
-            Check(bp.HangarCopy?.Id == flownId && !bp.CopyWhole && bp.CopyQuote != null && offered < allNew, "the Build panel offers the flown Hopper, short its chute, for " + Pricing.Funds(offered) + " instead of " + Pricing.Funds(allNew));
             yield return new WaitForSeconds(1f);
-            Shot("build_panel_flown_copy");
-            bp.UseHangarCopy();
-            Quote uq = bp.Quote;
-            Check(uq != null && uq.HangarShips.Contains(flownId) && uq.RefurbishPrice > 0 && (uq.NewPrice < 1 || Near(uq.NewPrice, chutePrice, 1)) && Near(uq.Total, offered, 1),
-                  "Use it: the flown parts refurbished (" + Pricing.Funds(uq?.RefurbishPrice ?? 0) + "), only the chute new (" + Pricing.Funds(uq?.NewPrice ?? 0) + "), the price it offered");
-            Check(bp.Kept?.Id == flownId && bp.HangarCopy == null, "built from it, it would stay " + flownDisplay + " (" + bp.Kept?.DisplayName + "), and nothing more is offered");
+            Shot("build_panel_flown");
+            Check(bp.AsIs?.Id == flownId && bp.KeepShipId == flownId && bp.Title == flownDisplay && bp.Quote.HangarShips.Contains(flownId) && bp.Quote.NewPrice < 1,
+                  "opened as it is, it's " + flownDisplay + ": all its own parts, nothing new (" + bp.Title + ")");
+            bp.Showing = false;
             MethodInfo clearVab = typeof(EditorLogic).GetMethod("OnNewShipConfirm", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
             clearVab?.Invoke(EditorLogic.fetch, null);
             yield return new WaitForSeconds(2f);
@@ -464,15 +468,14 @@ namespace PhilsReusabilitySuite
             if (flownRow != null) Link.Build(d, flownRow, s => { got = s; called = true; });
             yield return WaitFor(() => called, 30, "the hangar copy was built for the cursor");
             yield return new WaitForSeconds(1f);
-            Check(got != null && got.parts.Count == 8, "picking up the flown copy gives the whole design (" + got?.parts.Count + " parts)");
+            Check(got != null && got.parts.Count == 8, "picking up the flown copy gives the whole ship, from its own blueprint (" + got?.parts.Count + " parts)");
             if (got != null)
             {
                 RaisePlaced(d, PlaceHow.Copy, got.parts, flownId);
-                var mods = got.parts.Select(PRSPart.Of).ToList();
-                Check(mods.Count(m => home.Contains(m.serial) && m.flights == 1 && m.hull == flownHull) == home.Count, "the flown parts keep their serials, flight and hull");
+                Check(got.parts.Count(p => PRSPart.NoteOf(p) != null) == homeCount, "the flown parts come in noted as its hardware (" + got.parts.Count(p => PRSPart.NoteOf(p) != null) + " of " + homeCount + ")");
                 PRSPart nc = got.parts.Where(p => p.partInfo.name == "parachuteSingle").Select(PRSPart.Of).FirstOrDefault();
-                Check(nc != null && !string.IsNullOrEmpty(nc.serial) && nc.serial != chuteSerial && nc.flights == 0 && nc.hull == "", "the chute is a new part (" + nc?.serial + ")");
-                Check(Stamped(got.parts, d), "every part is in its design slot");
+                Check(nc != null && string.IsNullOrEmpty(nc.hw), "the chute is a new part");
+                Check(got.parts.All(p => PRSPart.Of(p)?.design == d.Id), "every part still carries its design");
                 foreach (Part p in got.parts) Destroy(p.gameObject);
             }
 
@@ -495,13 +498,14 @@ namespace PhilsReusabilitySuite
             HangarShip plain = sc.Hangar.FirstOrDefault(h => h.Ready);
             Check(plain != null && BuildsLink.DesignOf(plain) == null, "it's ready in the hangar, a copy of no design");
             if (plain == null) yield break;
-            var plainSerials = plain.Placed.ToList();
+            string plainId = plain.Id;
+            int plainParts = plain.PartCount, binBefore = sc.Bin.Sum(k => k.Count);
             int hangarBefore = sc.Hangar.Count - 1;
             yield return ToPad(plain);
             yield return Recover(RecoverChoice.Hangar);
             sc = PRSScenario.Instance;
-            Check(!sc.Hangar.Any(h => h.Placed.Any(plainSerials.Contains)) && sc.Hangar.Count == hangarBefore, "the unfiled ship didn't come home to the hangar");
-            Check(sc.Bin.Count(b => plainSerials.Contains(b.Serial)) == plainSerials.Count, "all " + plainSerials.Count + " of its parts went to the parts bin");
+            Check(sc.HangarOf(plainId) == null && sc.Hangar.Count == hangarBefore, "the unfiled ship didn't come home to the hangar");
+            Check(sc.Bin.Sum(k => k.Count) - binBefore == plainParts, "all " + plainParts + " of its parts went to the parts bin");
 
             // 7b. A ship that comes down while you watch from the Tracking Station is still judged and recovered.
             yield return ToEditor();
@@ -522,7 +526,7 @@ namespace PhilsReusabilitySuite
             yield return ToPad(dropper);
             Vessel dv = FlightGlobals.ActiveVessel;
             uint dropId = dv.persistentId;
-            var dropSerials = dv.parts.Select(PRSPart.SerialOf).Where(s => s != null).ToList();
+            int dropParts = dv.parts.Count, dropBinBefore = PRSScenario.Instance.Bin.Sum(k => k.Count);
             // KSP's own "set orbit" cheat: up at 80 km over Kerbin and falling (periapsis deep underground).
             CelestialBody kerbin = FlightGlobals.GetHomeBody();
             double rA = kerbin.Radius + 80000, rP = kerbin.Radius - 300000;
@@ -553,20 +557,20 @@ namespace PhilsReusabilitySuite
             sc = PRSScenario.Instance;
             bool lostIt = outcome != null && outcome.Contains(" was lost");
             // A hard landing (6 to 12 m/s) can break outer parts off: those are lost, the rest go to the bin.
-            int inBin = sc.Bin.Count(b => dropSerials.Contains(b.Serial));
-            Check(outcome != null && (lostIt || (inBin > 0 && inBin <= dropSerials.Count)), "it came home to the parts bin (it was never filed): " + inBin + " parts in the bin, " + (dropSerials.Count - inBin) + " lost in the landing");
+            int inBin = sc.Bin.Sum(k => k.Count) - dropBinBefore;
+            Check(outcome != null && (lostIt || (inBin > 0 && inBin <= dropParts)), "it came home to the parts bin (it was never filed): " + inBin + " parts in the bin, " + (dropParts - inBin) + " lost in the landing");
             Check(outcome == null || lostIt || outcome.Contains("filed in Phil's Builds"), "the message says why it went to the bin");
 
-            // 7c. Restore to design from the hangar: the flown Hopper gets its chute back (new, or one from the bin)
+            // 7c. Restore from the hangar: the flown Hopper gets its chute back from its own blueprint (new, or one from the bin)
             // and is ready again as itself, with its own flown parts.
             yield return ToSpaceCenter();
             sc = PRSScenario.Instance;
             // A price made before a bin part was sold doesn't hold: the build is refused, not charged the old price.
             BuildsLink.LibraryBuild stale = BuildsLink.Library().FirstOrDefault(i => i.Design.Id == d.Id);
-            if (stale != null && stale.Quote.BinSerials.Count > 0)
+            if (stale != null && stale.Quote.BinParts > 0)
             {
-                string gone = stale.Quote.BinSerials[0];
-                sc.Sell(sc.Bin.Where(b => b.Serial == gone).ToList());
+                string gone = stale.Quote.BinTaken.Keys.First();
+                sc.Sell(sc.Bin.Where(k => k.Key == gone).ToList());
                 double fStale = Funds;
                 BuildJob staleJob = BuildsLink.BuildFromLibrary(stale, false, false, out string staleErr);
                 Check(staleJob == null && staleErr != null && staleErr.Contains("changed") && Near(Funds, fStale, 0.5), "a library build priced with a bin part that was then sold is refused, nothing charged (" + staleErr + ")");
@@ -584,17 +588,17 @@ namespace PhilsReusabilitySuite
             Shot("suite_restore");
             yield return new WaitForSeconds(1f);
             if (SuiteWindow.Instance != null) SuiteWindow.Instance.Show = false;
-            Check(rs != null && rs.NewParts == 1 && rs.Blocked == null && rs.Design.Id == d.Id, "Restore to design: the flown Hopper needs 1 part (" + rs?.NewParts + ") " + rs?.Blocked);
+            Check(rs != null && rs.NewParts == 1 && rs.Blocked == null, "Restore: the flown Hopper needs 1 part from its blueprint (" + rs?.NewParts + ") " + rs?.Blocked);
             if (rs != null)
             {
-                bool chuteFromBin = rs.Quote.BinSerials.Count == 1;
+                bool chuteFromBin = rs.Quote.BinParts == 1;
                 Check(rs.Quote.RefurbishPrice > 0 && (chuteFromBin ? rs.Quote.NewPrice < 1 : Near(rs.Quote.NewPrice, chutePrice, 1)), "it costs a chute (" + (chuteFromBin ? "from the bin" : "new, " + Pricing.Funds(rs.Quote.NewPrice)) + ") and the refurbish of the rest (" + Pricing.Funds(rs.Quote.RefurbishPrice) + ")");
                 BuildJob rj = BuildsLink.RestoreBuild(toRestore, rs, false, true, out err);
                 Check(rj != null, "restoring it " + err);
                 HangarShip restored = sc.Hangar.FirstOrDefault(h => h.Id == flownId);
-                Check(restored != null && restored.Ready && restored.Placed.Count == 8 && home.All(restored.Placed.Contains), "it's ready again with its own flown parts and a chute (" + restored?.Placed.Count + " parts)");
+                Check(restored != null && restored.Ready && restored.PartCount == 8 && restored.Missing == 0 && restored.Pieces.Count == 0, "it's ready again with its own flown parts and a chute (" + restored?.PartCount + " parts)");
                 Check(restored != null && restored.DisplayName == flownDisplay, "as the same ship (" + restored?.DisplayName + ")");
-                Check(restored != null && restored.Wear == 0 && restored.Craft.Children("PART").All(p => Core.Wear.In(p.Children("MODULE").FirstOrDefault(m => m.Get("name") == Core.Craft.ModuleName)) == 0), "restoring refurbishes the rest too: the whole craft leaves at 0% wear");
+                Check(restored != null && restored.Wear == 0 && restored.Flights == 1, "restoring refurbishes the rest too: the whole craft leaves at 0% wear, still on its one flight");
             }
 
             // 8. The VAB landing check on the stock Kerbal X: launch clamps stay on the pad, and the same ship

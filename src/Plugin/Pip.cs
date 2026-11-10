@@ -152,7 +152,7 @@ namespace PhilsReusabilitySuite
             string after = part.Get("part");
             if (changed && craft != null && !string.IsNullOrEmpty(before) && !string.IsNullOrEmpty(after) && before != after)
                 foreach (Node other in craft.Children("PART"))
-                    if (!ReferenceEquals(other, part)) Completion.RenameRef(other, before, after);
+                    if (!ReferenceEquals(other, part)) Hardware.RenameRef(other, before, after);
             return changed;
         }
 
@@ -174,24 +174,8 @@ namespace PhilsReusabilitySuite
             return now + " → " + current;
         }
 
-        /// <summary>
-        /// Gives a live editor part a stored part's hardware modules (its own program and Mk): "Use it" turns new parts
-        /// into a hangar copy's hardware. PIP leaves an assigned part's data as it's loaded.
-        /// </summary>
-        public static void LoadHardware(Part part, Node stored)
-        {
-            if (part == null || stored == null) return;
-            foreach (string name in Completion.HardwareModules)
-            {
-                var from = stored.Children("MODULE").Where(m => m.Get("name") == name).ToList();
-                var live = part.Modules.Cast<PartModule>().Where(m => m.moduleName == name).ToList();
-                for (int i = 0; i < Math.Min(from.Count, live.Count); i++)
-                {
-                    try { live[i].Load(KspNodes.ToKsp(from[i], "MODULE")); }
-                    catch (Exception ex) { Log.Warn("Couldn't give " + part.partInfo?.title + " its own " + name + " data: " + ex.Message); }
-                }
-            }
-        }
+        /// <summary>Forgets what PIP said about a part (it was just changed by hand: the self-tests).</summary>
+        public static void Forget(Node part) { if (part != null) cache.Remove(part); }
 
         /// <summary>The part's own program and Mk ("Augur I Mk. 1"), or null when it isn't PIP.</summary>
         public static string Title(Node part) => TitleOf == null || part == null ? null : Info(part).Title;

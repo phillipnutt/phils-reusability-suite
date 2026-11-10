@@ -6,18 +6,6 @@ using UnityEngine;
 
 namespace PhilsReusabilitySuite
 {
-    static class Builds
-    {
-        /// <summary>A copy of a part node as a loose part: it no longer belongs to any hangar ship.</summary>
-        public static Node Loose(Node part)
-        {
-            Node c = part.Clone();
-            Node m = c.Children("MODULE").FirstOrDefault(x => x.Get("name") == Core.Craft.ModuleName);
-            if (m != null) m.Set("hull", "");
-            return c;
-        }
-    }
-
     /// <summary>The build queue: jobs on build lines, paid once at Build, finished ships into the hangar.</summary>
     public partial class PRSScenario
     {
@@ -26,93 +14,129 @@ namespace PhilsReusabilitySuite
 
         static Core.Settings S => Suite.Settings;
 
-        // ---- Who owns a part ----
+        // ---- Which parts are a real, built ship's ----
 
-        /// <summary>The hangar ship or bin part a serial belongs to, or null for a new part. Parts already
-        /// taken by another build count as new (they can't be used twice).</summary>
-        public Owner OwnerOf(string serial, BuildJob editing)
+        /// <summary>The hangar ship whose current craft a VAB note points at.</summary>
+        public HangarShip HangarOfCraft(string craftId) => craftId == null ? null : Hangar.FirstOrDefault(h => h.CraftId == craftId);
+
+        /// <summary>The queued build whose current craft a VAB note points at.</summary>
+        public BuildJob JobOfCraft(string craftId) => craftId == null ? null : Jobs.FirstOrDefault(j => j.CraftId == craftId);
+
+        /// <summary>
+        /// Builds cancelled lately, by their craft's id: which hangar parts their parts were. Pressing Build notes the VAB's
+        /// ship as the build; cancelled, those parts are still the hangar ship's own hardware.
+        /// </summary>
+        readonly List<KeyValuePair<string, Dictionary<int, string>>> cancelled = new List<KeyValuePair<string, Dictionary<int, string>>>();
+
+        Dictionary<int, string> CancelledOwners(string craftId) => cancelled.FirstOrDefault(c => c.Key == craftId).Value;
+
+        /// <summary>A VAB note's craft is one the suite still knows: a hangar ship's, a queued build's or a cancelled build's.</summary>
+        public bool Knows(string craftId) => HangarOfCraft(craftId) != null || JobOfCraft(craftId) != null || CancelledOwners(craftId) != null;
+
+        /// <summary>
+        /// A part with a note, as a build sees it: the hangar ship part it is, if that ship is still in the hangar with
+        /// this very part, and free (or taken by this build). A queued build's own parts point at the hangar parts it
+        /// took. Anything else is a new part: a note from an older copy of a ship points at nothing.
+        /// </summary>
+        public Owner OwnerOf(Node part, BuildJob editing)
         {
-            foreach (HangarShip h in Hangar)
-                if (h.Placed.Contains(serial))
-                {
-                    if (h.ReservedBy != null && (editing == null || h.ReservedBy != editing.Id)) return null;
-                    return new Owner { Kind = OwnerKind.Hangar, ShipId = h.Id, Label = h.DisplayName, Ready = h.Ready };
-                }
-            foreach (BinPart b in Bin)
-                if (b.Serial == serial)
-                {
-                    if (b.ReservedBy != null && (editing == null || b.ReservedBy != editing.Id)) return null;
-                    return new Owner { Kind = OwnerKind.Bin };
-                }
-            return null;
+            if (!Hardware.Parse(Hardware.Of(part), out string craftId, out int at)) return null;
+            HangarShip h = HangarOfCraft(craftId);
+            if (h == null)
+            {
+                BuildJob j = JobOfCraft(craftId);
+                Dictionary<int, string> owners = j == null ? CancelledOwners(craftId) : j == editing ? j.Owners : null;
+                if (owners == null || !owners.TryGetValue(at, out string token) || !Hardware.Parse(token, out string id, out at)) return null;
+                h = HangarOf(id);
+            }
+            if (h == null || (h.ReservedBy != null && h.ReservedBy != editing?.Id)) return null;
+            Node stored = h.Craft.Children("PART").ElementAtOrDefault(at);
+            if (stored == null || Hardware.PartName(stored) != Hardware.PartName(part)) return null;
+            h.CameBack.TryGetValue(at, out Dictionary<string, double> left);
+            // Anything added to it in the VAB (cargo, a bigger size or a dearer variant) is new: it costs its full price.
+            double added = Math.Max(0, KspCosts.Instance.Cost(part).Dry - KspCosts.Instance.Cost(stored).Dry);
+            return new Owner { Kind = OwnerKind.Hangar, ShipId = h.Id, Index = at, Label = h.DisplayName, Ready = h.Ready, Wear = h.Wear, Left = h.Ready ? null : left, Added = added };
         }
 
-        IDictionary<string, double> CameBackOf(string serial)
+        /// <summary>The hangar ship this craft is exactly (every part its own, nothing else), free of any build; or null.</summary>
+        public HangarShip ExactShipOf(Node craft)
         {
-            foreach (HangarShip h in Hangar)
-                if (h.CameBack.TryGetValue(serial, out Dictionary<string, double> d)) return d;
-            foreach (BinPart b in Bin)
-                if (b.Serial == serial) return b.Left;
-            return null;
+            List<Node> parts = craft?.Children("PART").ToList();
+            if (parts == null || parts.Count == 0 || !Hardware.Parse(Hardware.Of(parts[0]), out string craftId, out _)) return null;
+            HangarShip h = HangarOfCraft(craftId);
+            if (h == null || h.ReservedBy != null || h.PartCount != parts.Count) return null;
+            List<Node> stored = h.Craft.Children("PART").ToList();
+            var seen = new HashSet<int>();
+            foreach (Node p in parts)
+                if (!Hardware.Parse(Hardware.Of(p), out string c, out int at) || c != craftId || at >= stored.Count || !seen.Add(at) || !SamePart(stored[at], p) || !SameLoad(stored[at], p)) return null;
+            return h;
+        }
+
+        /// <summary>A stored part and an editor part are exactly the same: the same part at the same price (nothing resized,
+        /// switched or added to its cargo).</summary>
+        static bool SamePart(Node stored, Node part) =>
+            Hardware.PartName(stored) == Hardware.PartName(part) && Math.Abs(KspCosts.Instance.Cost(stored).Dry - KspCosts.Instance.Cost(part).Dry) < 0.5;
+
+        /// <summary>The same resources loaded (a ship changed only in its tanks isn't exactly the stored ship).</summary>
+        static bool SameLoad(Node stored, Node part)
+        {
+            PartCost a = KspCosts.Instance.Cost(stored), b = KspCosts.Instance.Cost(part);
+            return a.Amounts.Count == b.Amounts.Count && a.Amounts.All(kv => b.Amounts.TryGetValue(kv.Key, out double v) && Math.Abs(v - kv.Value) < 0.01);
+        }
+
+        /// <summary>The queued build these parts are (most of their notes point at its craft), if any.</summary>
+        public BuildJob JobOf(Node craft)
+        {
+            var counts = new Dictionary<BuildJob, int>();
+            foreach (Node p in craft.Children("PART"))
+            {
+                BuildJob j = Hardware.Parse(Hardware.Of(p), out string c, out _) ? JobOfCraft(c) : null;
+                if (j != null) counts[j] = (counts.TryGetValue(j, out int n) ? n : 0) + 1;
+            }
+            return counts.OrderByDescending(kv => kv.Value).Select(kv => kv.Key).FirstOrDefault();
         }
 
         /// <summary>In a build's skip list: the player answered "No" to updating old-Mk bin parts, so none are offered.</summary>
         public const string SkipOldParts = "*old-mk";
 
-        /// <param name="skipBin">Bin parts this build mustn't use (by serial), or SkipOldParts: no old-Mk part is offered.</param>
+        /// <param name="skipBin">SkipOldParts: no old-Mk bin part is offered.</param>
         public Quote QuoteFor(Node craft, string name, BuildJob editing, ICollection<string> skipBin = null)
         {
-            return Quotes.Make(craft, name, s => OwnerOf(s, editing), KspCosts.Instance, CameBackOf, S, BinMatcher(editing, craft, skipBin));
+            return Quotes.Make(craft, name, p => OwnerOf(p, editing), KspCosts.Instance, S, BinMatcher(editing, skipBin), id => HangarOf(id)?.Craft.Children("PART"));
         }
 
+        /// <summary>A hangar ship as it is: refurbishing it, refuelling it, launching it.</summary>
+        public Quote QuoteFor(HangarShip h) => QuoteFor(h.Noted(), h.DisplayName, null);
+
         /// <summary>
-        /// Matches a new part to a loose part in the bin, as ScrapYard did: the same part at the same price (so
-        /// the same variant and options), not taken by another build, each bin part used once. A Phil's Iterative
-        /// Parts part whose program has moved on since it was built is never used as it is: it comes back marked
-        /// Old, so the build can ask whether to update it (Phil: old-Mk parts never fly unless updated). A current
-        /// one is taken first.
+        /// Matches a new part to the parts bin: a part of the same kind (part, Phil's Iterative Parts Mk and price), as many
+        /// as the bin holds. A PIP part whose program has moved on since it was built is never used as it is: it comes back
+        /// marked Old, so the build can ask whether to update it (Phil: old-Mk parts never fly unless updated).
         /// </summary>
-        Func<Node, Owner> BinMatcher(BuildJob editing, Node craft, ICollection<string> skipBin)
+        Func<Node, Owner> BinMatcher(BuildJob editing, ICollection<string> skipBin)
         {
-            // A bin part already in the ship (its own serial is in the craft) can't also stand in for a new part.
-            var used = new HashSet<string>(craft.Children("PART").Select(Core.Craft.SerialOf).Where(s => !string.IsNullOrEmpty(s)));
-            var dryCache = new Dictionary<string, double>();
-            var behindCache = new Dictionary<string, Owner>();
+            var left = Bin.ToDictionary(k => k.Key, k => k.Count);
+            if (editing != null) foreach (KeyValuePair<string, int> t in editing.BinTaken) left[t.Key] = (left.TryGetValue(t.Key, out int n) ? n : 0) + t.Value;
             bool noOld = skipBin != null && skipBin.Contains(SkipOldParts);
+            Dictionary<string, KeyValuePair<BinKind, string>> old = null;   // an old kind, by the kind it becomes once updated
             return part =>
             {
-                string r = part.Get("part") ?? "";
-                string name = r.Contains("_") ? r.Substring(0, r.LastIndexOf('_')) : r;
-                double dry = -1;
-                Owner old = null;
-                foreach (BinPart b in Bin)
+                string key = BinKeyOf(part);
+                if (left.TryGetValue(key, out int n) && n > 0) { left[key] = n - 1; return new Owner { Kind = OwnerKind.Bin, BinKey = key, Label = "From the parts bin" }; }
+                if (noOld) return null;
+                if (old == null)
                 {
-                    if (b.PartNode == null || used.Contains(b.Serial)) continue;
-                    if (b.ReservedBy != null && (editing == null || b.ReservedBy != editing.Id)) continue;
-                    if (skipBin != null && skipBin.Contains(b.Serial)) continue;
-                    if (!behindCache.TryGetValue(b.Serial, out Owner behind))
+                    old = new Dictionary<string, KeyValuePair<BinKind, string>>();
+                    foreach (BinKind k in Bin.Where(b => b.Count > 0 && Pip.Behind(b.Sample) > 0))
                     {
-                        int marks = Pip.Behind(b.PartNode, out string now, out string current);
-                        behind = marks <= 0 ? null : new Owner
-                        {
-                            Kind = OwnerKind.Bin, Old = true, BinSerial = b.Serial, Flights = b.Flights, Wear = b.Wear, BinPart = b.PartNode,
-                            Marks = marks, Now = now, Current = current, Label = "From the parts bin",
-                        };
-                        behindCache[b.Serial] = behind;
+                        string becomes = BinKeyOf(Pip.Preview(k.Sample));
+                        if (!old.ContainsKey(becomes)) old[becomes] = new KeyValuePair<BinKind, string>(k, k.Key);
                     }
-                    // An old part is compared as it would be once updated: an old version becomes the newest one's part.
-                    Node like = behind != null ? Pip.Preview(b.PartNode) : b.PartNode;
-                    if ((behind != null ? Pip.PartName(like) : b.Part) != name) continue;
-                    if (dry < 0) dry = KspCosts.Instance.Cost(part).Dry;
-                    if (!dryCache.TryGetValue(b.Serial, out double bd)) dryCache[b.Serial] = bd = KspCosts.Instance.Cost(like).Dry;
-                    if (Math.Abs(bd - dry) > 1) continue;
-                    // Answered "No, build them new": old-Mk parts aren't offered again for this build.
-                    if (behind != null) { if (old == null && !noOld) old = behind; continue; }
-                    used.Add(b.Serial);
-                    return new Owner { Kind = OwnerKind.Bin, BinSerial = b.Serial, Flights = b.Flights, Wear = b.Wear, BinPart = b.PartNode, Label = "From the parts bin" };
                 }
-                if (old != null) used.Add(old.BinSerial);
-                return old;
+                if (!old.TryGetValue(key, out KeyValuePair<BinKind, string> o) || !left.TryGetValue(o.Value, out int on) || on <= 0) return null;
+                left[o.Value] = on - 1;
+                int marks = Pip.Behind(o.Key.Sample, out string now, out string current);
+                return new Owner { Kind = OwnerKind.Bin, Old = true, BinKey = o.Value, Marks = marks, Now = now, Current = current, Label = "From the parts bin" };
             };
         }
 
@@ -139,61 +163,91 @@ namespace PhilsReusabilitySuite
             return total;
         }
 
+        /// <summary>What updating these bin kinds costs (each part of each), and how many parts that is.</summary>
+        public double PipUpdatePrice(IEnumerable<KeyValuePair<BinKind, int>> kinds, out int parts)
+        {
+            double total = 0;
+            parts = 0;
+            foreach (KeyValuePair<BinKind, int> k in kinds)
+            {
+                total += PipUpdatePrice(k.Key.Sample, out int marks) * k.Value;
+                if (marks > 0) parts += k.Value;
+            }
+            return total;
+        }
+
         /// <summary>
-        /// "Update PIP parts": brings each part that's behind to its program's current Mk (PIP's own step, the one the
-        /// VAB uses for a new part), paid now. Wear, flights and fuel stay as they are.
+        /// "Update PIP parts" on a hangar ship: brings each part that's behind to its program's current Mk (PIP's own step,
+        /// the one the VAB uses for a new part), paid now. Its wear and fuel stay as they are.
         /// </summary>
-        bool UpdatePip(List<Node> parts, Node craft, string what, out string error)
-        {
-            error = null;
-            double price = PipUpdatePrice(parts, out int behind);
-            if (behind == 0) { error = "Its Phil's Iterative Parts parts are all at their program's current Mk."; return false; }
-            if (Suite.Career && price > Suite.Funds) { error = "Not enough funds: updating costs " + Pricing.Funds(price) + "."; return false; }
-            int done = 0;
-            foreach (Node p in parts) if (Pip.Behind(p) > 0 && Pip.MakeCurrent(p, craft)) done++;
-            if (done == 0) { error = "Phil's Iterative Parts couldn't update them."; return false; }
-            // Charged for what was updated (all of them, unless PIP refused one).
-            Suite.Charge(done == behind ? price : price * done / behind);
-            Changed();
-            Log.Info("Updated " + Suite.Parts(done) + " of " + what + " to their programs' current Mk, for " + Pricing.Funds(done == behind ? price : price * done / behind));
-            return true;
-        }
-
-        public bool UpdatePip(IEnumerable<BinPart> parts, out string error)
-        {
-            List<BinPart> list = parts.Where(b => b.ReservedBy == null && b.PartNode != null).ToList();
-            if (!UpdatePip(list.Select(b => b.PartNode).ToList(), null, "the parts bin", out error)) return false;
-            // An old version's part is now the newest version's part.
-            foreach (BinPart b in list) b.Part = Pip.PartName(b.PartNode);
-            return true;
-        }
-
         public bool UpdatePip(HangarShip h, out string error)
         {
+            error = null;
             if (h.ReservedBy != null) { error = h.DisplayName + " is in a build: update it when the build is done."; return false; }
-            if (!UpdatePip(h.Craft.Children("PART").ToList(), h.Craft, h.DisplayName, out error)) return false;
+            List<Node> parts = h.Craft.Children("PART").ToList();
+            double price = PipUpdatePrice(parts, out int behind);
+            if (behind == 0) { error = "Its Phil's Iterative Parts parts are all at their program's current Mk."; return false; }
+            if (!CanAfford(price)) { error = "Not enough funds: updating costs " + Pricing.Funds(price) + "."; return false; }
+            int done = 0;
+            foreach (Node p in parts) if (Pip.Behind(p) > 0 && Pip.MakeCurrent(p, h.Craft)) done++;
+            if (done == 0) { error = "Phil's Iterative Parts couldn't update them."; return false; }
+            double paid = done == behind ? price : price * done / behind;
+            Suite.Charge(paid);
             h.UpdateFuel();
+            Changed();
+            Log.Info("Updated " + Suite.Parts(done) + " of " + h.DisplayName + " to their programs' current Mk, for " + Pricing.Funds(paid));
             return true;
         }
 
-        /// <summary>The bin parts behind old-Mk offers in a quote, as they are now.</summary>
-        public List<BinPart> BinPartsOf(IEnumerable<Owner> old)
+        /// <summary>"Update PIP parts" in the parts bin (all of a kind, or as many as a build needs): each becomes its program's current Mk.</summary>
+        public bool UpdatePip(IEnumerable<KeyValuePair<BinKind, int>> kinds, out string error)
         {
-            var serials = new HashSet<string>(old.Select(o => o.BinSerial));
-            return Bin.Where(b => serials.Contains(b.Serial)).ToList();
+            error = null;
+            List<KeyValuePair<BinKind, int>> list = kinds.Where(k => k.Value > 0 && k.Key.Count >= k.Value && Pip.Behind(k.Key.Sample) > 0).ToList();
+            double price = PipUpdatePrice(list, out int parts);
+            if (parts == 0) { error = "The parts bin's Phil's Iterative Parts parts are all at their program's current Mk."; return false; }
+            if (!CanAfford(price)) { error = "Not enough funds: updating costs " + Pricing.Funds(price) + "."; return false; }
+            int done = 0;
+            foreach (KeyValuePair<BinKind, int> k in list)
+            {
+                Node updated = k.Key.Sample.Clone();
+                if (!Pip.MakeCurrent(updated)) continue;
+                k.Key.Count -= k.Value;
+                AddToBin(updated, k.Value);
+                done += k.Value;
+            }
+            if (done == 0) { error = "Phil's Iterative Parts couldn't update them."; return false; }
+            double paid = done == parts ? price : price * done / parts;
+            Suite.Charge(paid);
+            Bin.RemoveAll(k => k.Count <= 0 && !Jobs.Any(j => j.BinTaken.ContainsKey(k.Key)));
+            Changed();
+            Log.Info("Updated " + Suite.Parts(done) + " in the parts bin to their programs' current Mk, for " + Pricing.Funds(paid));
+            return true;
         }
+
+        /// <summary>The bin kinds behind old-Mk offers in a quote, with how many of each the build wants.</summary>
+        public List<KeyValuePair<BinKind, int>> BinKindsOf(IEnumerable<Owner> old) =>
+            old.GroupBy(o => o.BinKey).Select(g => new KeyValuePair<BinKind, int>(Bin.FirstOrDefault(b => b.Key == g.Key), g.Count()))
+               .Where(k => k.Key != null).ToList();
 
         // ---- Taking apart and selling ----
 
-        /// <summary>Takes a stored ship apart: every part goes to the parts bin.</summary>
-        public bool TakeApart(HangarShip h)
+        /// <summary>What taking a stored ship apart costs: its parts are refurbished as they go into the bin (by its wear).</summary>
+        public double TakeApartPrice(HangarShip h) => h.Craft.Children("PART").Sum(p => KspCosts.Instance.Cost(p).Dry) * Pricing.RefurbishShare(h.Wear, S);
+
+        /// <summary>Takes a stored ship apart: every part goes to the parts bin, refurbished (paid now). The ship ends.</summary>
+        public bool TakeApart(HangarShip h, out string error)
         {
-            if (h.ReservedBy != null) return false;
-            Craft c = Core.Craft.Read(h.Craft);
-            foreach (CraftPart cp in c.Parts) if (!string.IsNullOrEmpty(cp.Serial)) Bin.Add(BinPartFrom(cp, h));
+            error = null;
+            if (h.ReservedBy != null) { error = h.DisplayName + " is in a build in the queue."; return false; }
+            double price = TakeApartPrice(h);
+            if (!CanAfford(price)) { error = "Not enough funds: refurbishing its parts for the bin costs " + Pricing.Funds(price) + "."; return false; }
+            Suite.Charge(price);
+            int n = 0;
+            foreach (Node p in h.Craft.Children("PART")) { AddToBin(p); n++; }
             Hangar.Remove(h);
             Changed();
-            Log.Info("Took " + h.DisplayName + " apart: " + c.Parts.Count + " parts to the parts bin");
+            Log.Info("Took " + h.DisplayName + " apart: " + n + " parts to the parts bin, refurbished for " + Pricing.Funds(price));
             return true;
         }
 
@@ -201,19 +255,20 @@ namespace PhilsReusabilitySuite
         public double ScrapValue(HangarShip h)
         {
             double total = 0;
+            int i = -1;
             foreach (Node p in h.Craft.Children("PART"))
             {
+                i++;
                 PartCost c = KspCosts.Instance.Cost(p);
                 total += c.Dry;
-                string serial = Core.Craft.SerialOf(p);
-                IDictionary<string, double> left = !h.Ready && serial != null && h.CameBack.TryGetValue(serial, out Dictionary<string, double> d) ? d : null;
+                IDictionary<string, double> left = !h.Ready && h.CameBack.TryGetValue(i, out Dictionary<string, double> d) ? d : null;
                 foreach (KeyValuePair<string, double> res in c.Amounts)
                     total += (h.Ready ? res.Value : left != null && left.TryGetValue(res.Key, out double l) ? l : 0) * KspCosts.Instance.UnitCost(res.Key);
             }
             return total * S.ScrapValue;
         }
 
-        public double ScrapValue(BinPart b) => b.PartNode != null ? KspCosts.Instance.Cost(b.PartNode).Dry * S.ScrapValue : 0;
+        public double ScrapValue(BinKind k) => KspCosts.Instance.Cost(k.Sample).Dry * S.ScrapValue * k.Count;
 
         public bool Sell(HangarShip h)
         {
@@ -226,38 +281,19 @@ namespace PhilsReusabilitySuite
             return true;
         }
 
-        public double Sell(IEnumerable<BinPart> parts)
+        public double Sell(IEnumerable<BinKind> kinds)
         {
             double v = 0;
-            foreach (BinPart b in parts.Where(x => x.ReservedBy == null).ToList())
+            foreach (BinKind k in kinds.ToList())
             {
-                v += ScrapValue(b);
-                Bin.Remove(b);
+                v += ScrapValue(k);
+                k.Count = 0;
             }
+            Bin.RemoveAll(k => k.Count <= 0 && !Jobs.Any(j => j.BinTaken.ContainsKey(k.Key)));
             Suite.Charge(-v);
+            Changed();
             if (v > 0) Log.Info("Sold parts from the bin for scrap: " + Pricing.Funds(v));
             return v;
-        }
-
-        /// <summary>The queued build these serials belong to (the editor ship being edited), if any.</summary>
-        public BuildJob JobOf(ICollection<string> serials)
-        {
-            BuildJob best = null;
-            int bestCount = 0;
-            foreach (BuildJob j in Jobs)
-            {
-                var js = new HashSet<string>(j.Serials());
-                int n = serials.Count(js.Contains);
-                if (n > bestCount) { best = j; bestCount = n; }
-            }
-            return best;
-        }
-
-        /// <summary>A ready hangar ship whose parts are exactly these (launching it costs nothing).</summary>
-        public HangarShip ReadyShipOf(ICollection<string> serials)
-        {
-            if (serials.Count == 0) return null;
-            return Hangar.FirstOrDefault(h => h.Ready && h.ReservedBy == null && h.Placed.Count == serials.Count && serials.All(h.Placed.Contains));
         }
 
         static bool CanAfford(double amount) => amount <= 0 || !Suite.Career || Suite.Funds >= amount - 0.5;
@@ -265,33 +301,40 @@ namespace PhilsReusabilitySuite
         // ---- Starting, changing and ending builds ----
 
         /// <summary>
-        /// Why a quote no longer holds, or null if it does: a bin part it uses was sold or went into another build,
-        /// or a hangar ship it uses was taken apart, sold or put in another build since it was priced.
+        /// Why a quote no longer holds, or null if it does: a bin part it uses was sold or went into another build, or
+        /// a hangar ship it uses was taken apart, sold or put in another build since it was priced.
         /// </summary>
-        public string StaleQuote(Quote q, BuildJob editing, string fromShipId)
+        public string StaleQuote(Quote q, BuildJob editing, string keepShipId)
         {
             string mine = editing?.Id;
             if (editing != null && !Jobs.Contains(editing)) return "that build has been finished or cancelled";
-            if (q.BinSerials.Count != q.BinSerials.Distinct().Count()) return "a part from the parts bin was counted twice";
-            foreach (string s in q.BinSerials)
+            foreach (string id in q.HangarShips)
             {
-                BinPart b = Bin.FirstOrDefault(x => x.Serial == s);
-                if (b == null) return "a part from the parts bin is gone";
-                if (b.ReservedBy != null && b.ReservedBy != mine) return "a part from the parts bin is in another build now";
-            }
-            foreach (string id in q.HangarShips.Concat(fromShipId != null ? new[] { fromShipId } : new string[0]))
-            {
-                HangarShip h = Hangar.FirstOrDefault(x => x.Id == id);
+                HangarShip h = HangarOf(id);
                 if (h == null) return "a hangar ship it uses is gone";
                 if (h.ReservedBy != null && h.ReservedBy != mine) return h.DisplayName + " is in another build now";
+            }
+            // The ship it keeps must still exist (a ship riding inside another hangar ship has no hangar entry of its own).
+            if (keepShipId != null)
+            {
+                if (ShipOf(keepShipId) == null) return "the ship it keeps no longer exists";
+                HangarShip k = HangarOf(keepShipId);
+                if (k != null && k.ReservedBy != null && k.ReservedBy != mine) return k.DisplayName + " is in another build now";
+            }
+            foreach (KeyValuePair<string, int> t in q.BinTaken)
+            {
+                int have = (Bin.FirstOrDefault(b => b.Key == t.Key)?.Count ?? 0) + (editing != null && editing.BinTaken.TryGetValue(t.Key, out int mineN) ? mineN : 0);
+                if (have < t.Value) return "a part from the parts bin is gone";
             }
             return null;
         }
 
-        public BuildJob StartBuild(Node craft, string name, string facility, Quote q, bool overtime, bool outsource, string fromShipId, out string error)
+        /// <param name="keepShipId">The ship this build is (Restore and Refurbish say so). Null: the hangar ship it starts from, if
+        /// any (Phil, round 4: a build from a hangar ship is always that ship, whatever it's saved as), else a new ship.</param>
+        public BuildJob StartBuild(Node craft, string name, string facility, Quote q, bool overtime, bool outsource, string keepShipId, out string error)
         {
             error = null;
-            string stale = StaleQuote(q, null, fromShipId);
+            string stale = StaleQuote(q, null, keepShipId);
             if (stale != null) { error = "Something changed since this was priced: " + stale + ". Check the new price and try again."; return null; }
             // Old-Mk bin parts that would fit: the build asks first (update them, or build those parts new).
             if (q.OldBin.Count > 0) { error = "Answer the question about the parts bin's older parts first."; return null; }
@@ -300,21 +343,15 @@ namespace PhilsReusabilitySuite
             if (!CanAfford(total)) { error = "Not enough funds: this costs " + Pricing.Funds(total) + "."; return null; }
             var job = new BuildJob
             {
-                Id = Guid.NewGuid().ToString("N"),
-                Name = name,
+                Id = HangarShip.NewId(),
                 Facility = facility,
-                Craft = WithHardware(q.WithBinParts(craft)),
-                NewPrice = q.NewPrice,
-                RefurbishPrice = q.RefurbishPrice,
-                FuelPrice = q.FuelPrice,
-                Paid = q.Total,
                 Overtime = overtime && !outsource,
                 CreatedUT = Planetarium.GetUniversalTime(),
-                FromShipId = fromShipId,
             };
+            Apply(job, craft, name, q, keepShipId);
             Suite.Charge(total);
             Jobs.Add(job);
-            Reserve(job, q);
+            Reserve(job);
             Changed();
             Log.Info("Build started: " + TitleOf(job) + " (" + facility + "), paid " + Pricing.Funds(total) + ", " + Pricing.Duration(job.SecondsLeft(S), S)
                      + (overtime ? " with overtime" : "") + (outsource ? ", outsourced" : ""));
@@ -322,35 +359,46 @@ namespace PhilsReusabilitySuite
             return job;
         }
 
-        /// <summary>
-        /// Hardware keeps its own Phil's Iterative Parts Mk in a build, whatever the editor made of it ("Use it" turns new
-        /// editor parts into a hangar copy's hardware): each part that is a hangar ship's or a bin part's takes that stored
-        /// part's hardware modules (Completion.CarryHardware). Changes the craft it's given (already a copy).
-        /// </summary>
-        Node WithHardware(Node craft)
+        void Apply(BuildJob job, Node craft, string name, Quote q, string keepShipId)
         {
-            var stored = new Dictionary<string, Node>();
-            foreach (HangarShip h in Hangar)
-                foreach (Node p in h.Craft.Children("PART"))
-                {
-                    string s = Core.Craft.SerialOf(p);
-                    if (!string.IsNullOrEmpty(s) && h.Placed.Contains(s)) stored[s] = p;
-                }
-            foreach (BinPart b in Bin) if (b.PartNode != null && !string.IsNullOrEmpty(b.Serial)) stored[b.Serial] = b.PartNode;
-            foreach (Node part in craft.Children("PART"))
+            job.Name = name;
+            job.Craft = WithHardware(Hardware.Plain(craft.Clone()), q);
+            job.CraftId = HangarShip.NewId();
+            job.NewPrice = q.NewPrice;
+            job.RefurbishPrice = q.RefurbishPrice;
+            job.FuelPrice = q.FuelPrice;
+            job.Paid = q.Total;
+            // The ship it keeps must be in it (its hardware); otherwise it's the hangar ship it starts from, or a new ship.
+            job.ShipId = keepShipId != null && ShipsIn(q).Contains(keepShipId) ? keepShipId : MainShipOf(q);
+            job.Owners.Clear();
+            foreach (KeyValuePair<int, string> o in q.Owners) job.Owners[o.Key] = o.Value;
+            job.BinTaken.Clear();
+            foreach (KeyValuePair<string, int> t in q.BinTaken) job.BinTaken[t.Key] = t.Value;
+        }
+
+        /// <summary>
+        /// Hardware keeps its own Phil's Iterative Parts Mk in a build, whatever the editor made of it: each hangar part
+        /// takes its stored part's hardware modules (Hardware.CarryHardware). Changes the craft it's given (already a copy).
+        /// </summary>
+        Node WithHardware(Node craft, Quote q)
+        {
+            List<Node> parts = craft.Children("PART").ToList();
+            foreach (KeyValuePair<int, string> o in q.Owners)
             {
-                string s = Core.Craft.SerialOf(part);
-                if (!string.IsNullOrEmpty(s) && stored.TryGetValue(s, out Node from) && !ReferenceEquals(from, part)) Completion.CarryHardware(from, part);
+                if (o.Key >= parts.Count || !Hardware.Parse(o.Value, out string id, out int at)) continue;
+                Node stored = HangarOf(id)?.Craft.Children("PART").ElementAtOrDefault(at);
+                if (stored != null) Hardware.CarryHardware(stored, parts[o.Key]);
             }
             return craft;
         }
 
         /// <summary>Applies an edit to a queued build: pays or refunds the difference and keeps the work done.</summary>
-        public bool UpdateBuild(BuildJob job, Node craft, string name, Quote q, out string error)
+        public bool UpdateBuild(BuildJob job, Node craft, string name, Quote q, string keepShipId, out string error)
         {
             error = null;
-            string stale = StaleQuote(q, job, job.FromShipId);
+            string stale = StaleQuote(q, job, keepShipId);
             if (stale != null) { error = "Something changed since this was priced: " + stale + ". Check the new price and try again."; return false; }
+            if (q.OldBin.Count > 0) { error = "Answer the question about the parts bin's older parts first."; return false; }
             double workDone = job.Progress * job.BuildPrice;
             double newProgress = q.BuildPrice > 0 ? Math.Min(1, workDone / q.BuildPrice) : 1;
             double overtimeDiff = job.Overtime ? Pricing.OvertimeCharge(q.BuildPrice, 1 - newProgress, S) - Pricing.OvertimeCharge(job.BuildPrice, 1 - job.Progress, S) : 0;
@@ -358,14 +406,9 @@ namespace PhilsReusabilitySuite
             if (!CanAfford(diff)) { error = "Not enough funds: the change costs " + Pricing.Funds(diff) + "."; return false; }
             Suite.Charge(diff);
             Release(job);
-            job.Craft = WithHardware(q.WithBinParts(craft));
-            job.Name = name;
-            job.NewPrice = q.NewPrice;
-            job.RefurbishPrice = q.RefurbishPrice;
-            job.FuelPrice = q.FuelPrice;
-            job.Paid = q.Total;
+            Apply(job, craft, name, q, keepShipId);
             job.Progress = newProgress;
-            Reserve(job, q);
+            Reserve(job);
             Changed();
             Log.Info("Build updated: " + TitleOf(job) + ", " + (diff >= 0 ? "paid " + Pricing.Funds(diff) : "refunded " + Pricing.Funds(-diff)) + ", " + Math.Round(newProgress * 100) + "% done");
             if (job.Progress >= 1) Finish(job);
@@ -379,6 +422,8 @@ namespace PhilsReusabilitySuite
             Suite.Charge(-refund);
             Release(job);
             Jobs.Remove(job);
+            cancelled.Add(new KeyValuePair<string, Dictionary<int, string>>(job.CraftId, new Dictionary<int, string>(job.Owners)));
+            if (cancelled.Count > 10) cancelled.RemoveAt(0);
             Changed();
             Log.Info("Build cancelled: " + TitleOf(job) + ", refunded " + Pricing.Funds(refund));
         }
@@ -421,110 +466,139 @@ namespace PhilsReusabilitySuite
         /// <summary>Starts a refurbish of a hangar ship on its own: when done, it's at 0% wear, fuelled and ready to launch.</summary>
         public BuildJob RefurbishBuild(HangarShip h, out string error)
         {
-            Quote q = QuoteFor(h.Craft, h.DisplayName, null);
-            return StartBuild(h.Craft, h.Name, Suite.FacilityOf(h.Craft), q, false, false, h.Id, out error);
+            Quote q = QuoteFor(h);
+            return StartBuild(h.Noted(), h.Name, Suite.FacilityOf(h.Craft), q, false, false, h.Id, out error);
         }
 
-        void Reserve(BuildJob job, Quote q)
+        /// <summary>
+        /// The ship the hangar hardware nearest a build's root is (Phil, round 4: "once I build the Peleus III #2, that ship
+        /// should always be the Peleus III #2"), or null when the build has no hangar hardware.
+        /// </summary>
+        public string MainShipOf(Quote q) => q.Main.Kind == OwnerKind.Hangar ? HangarOf(q.Main.ShipId)?.MemberOf(q.Main.Index) : null;
+
+        /// <summary>Every ship whose hardware is in a build.</summary>
+        HashSet<string> ShipsIn(Quote q) => new HashSet<string>(q.Owners.Values
+            .Select(t => Hardware.Parse(t, out string id, out int at) ? HangarOf(id)?.MemberOf(at) : null).Where(x => x != null));
+
+        /// <summary>
+        /// A hangar ship rebuilt from its own blueprint ("Restore"): each part it still has in its place, as its own
+        /// hardware, and every part it lost new (as the VAB would make it). Null when it has no blueprint.
+        /// </summary>
+        public Node RestoreCraft(HangarShip h, out int newParts)
         {
-            foreach (HangarShip h in Hangar) if (q.HangarShips.Contains(h.Id)) h.ReservedBy = job.Id;
-            foreach (BinPart b in Bin) if (q.BinSerials.Contains(b.Serial)) b.ReservedBy = job.Id;
-            if (job.FromShipId != null) foreach (HangarShip h in Hangar) if (h.Id == job.FromShipId) h.ReservedBy = job.Id;
+            newParts = 0;
+            if (h.Blueprint == null) return null;
+            Node craft = Hardware.Restore(h.Blueprint, h.Slots, h.Craft.Children("PART").ToList(), h.CraftId, out List<int> fresh);
+            newParts = fresh.Count;
+            Pip.MakeCurrent(craft, p => Hardware.Of(p) == null);
+            return craft;
         }
 
+        /// <summary>The build takes its hangar ships (greyed out until it's done) and its parts from the bin.</summary>
+        void Reserve(BuildJob job)
+        {
+            foreach (string id in ShipsOf(job)) { HangarShip h = HangarOf(id); if (h != null) h.ReservedBy = job.Id; }
+            foreach (KeyValuePair<string, int> t in job.BinTaken)
+            {
+                BinKind k = Bin.FirstOrDefault(b => b.Key == t.Key);
+                if (k != null) k.Count = Math.Max(0, k.Count - t.Value);
+            }
+        }
+
+        /// <summary>Gives back what a build took: its hangar ships, and its parts to the bin.</summary>
         void Release(BuildJob job)
         {
             foreach (HangarShip h in Hangar) if (h.ReservedBy == job.Id) h.ReservedBy = null;
-            foreach (BinPart b in Bin) if (b.ReservedBy == job.Id) b.ReservedBy = null;
+            foreach (KeyValuePair<string, int> t in job.BinTaken)
+            {
+                BinKind k = Bin.FirstOrDefault(b => b.Key == t.Key);
+                if (k != null) k.Count += t.Value;
+            }
         }
 
-        /// <summary>A finished build becomes a ready hangar ship; hangar ships it used are absorbed into it.</summary>
+        /// <summary>The hangar ships a build uses (their hardware).</summary>
+        static IEnumerable<string> ShipsOf(BuildJob job)
+        {
+            var ids = new HashSet<string>();
+            foreach (string token in job.Owners.Values) if (Hardware.Parse(token, out string id, out _)) ids.Add(id);
+            return ids;
+        }
+
+        /// <summary>
+        /// A finished build is a ready hangar ship. It's the ship it keeps (the same name, number, flights and log, however
+        /// it was changed), or a new one with the design's next number. Any other hangar ship inside it whose own root
+        /// part is in it rides along as itself (a flown first stage under a new payload). Parts a hangar ship had that the
+        /// build left out go to the parts bin (refurbished in the build's price). What was built is the ship's blueprint.
+        /// </summary>
         void Finish(BuildJob job)
         {
             Jobs.Remove(job);
-            var serials = new HashSet<string>(job.Serials());
-            // A build made from hangar ships (Argo I #1 stacked on Rockall 002 #1) stays the ship at its top: same
-            // name, number and flight log, with the others under it. Phil, 2026-11-08: keep the top piece's identity.
-            string keepId = KeptShipOf(job)?.Id;
-            foreach (HangarShip h in Hangar.Where(x => x.ReservedBy == job.Id && x.Id != keepId).ToList())
+            Craft built = Core.Craft.Read(job.Craft);
+            var memberOf = new Dictionary<int, string>();
+            var used = new Dictionary<string, HashSet<int>>();
+            foreach (KeyValuePair<int, string> o in job.Owners)
             {
-                // Parts taken off a stored ship in the VAB go to the parts bin.
-                Craft c = Core.Craft.Read(h.Craft);
-                foreach (string s in h.Placed.Where(x => !serials.Contains(x)))
-                    if (c.BySerial.TryGetValue(s, out CraftPart cp)) Bin.Add(BinPartFrom(cp, h));
-                Hangar.Remove(h);
+                if (!Hardware.Parse(o.Value, out string id, out int at)) continue;
+                HangarShip h = HangarOf(id);
+                if (h == null) continue;
+                memberOf[o.Key] = h.MemberOf(at);
+                if (!used.TryGetValue(id, out HashSet<int> set)) used[id] = set = new HashSet<int>();
+                set.Add(at);
             }
-            Bin.RemoveAll(b => b.ReservedBy == job.Id);
+            Ship main = ShipOf(job.ShipId);
+            var riding = new HashSet<string>();
+            foreach (KeyValuePair<string, HashSet<int>> u in used)
+            {
+                HangarShip h = HangarOf(u.Key);
+                Craft hc = Core.Craft.Read(h.Craft);
+                foreach (string m in new[] { h.Id }.Concat(h.Pieces.Values).Distinct())
+                {
+                    if (m == main?.Id) continue;
+                    int mRoot = m == h.Id ? hc.RootPart.Index : hc.Highest(h.Pieces.Where(p => p.Value == m).Select(p => p.Key));
+                    if (u.Value.Contains(mRoot)) riding.Add(m);
+                }
+            }
+            if (main == null)
+            {
+                // A new ship belongs to its design for good: Phil's Builds counts it there, whatever it's rebuilt into.
+                main = NewShip(job.Name);
+                main.DesignId = BuildsLink.DesignIdFor(built.Parts.Select(p => Hardware.Module(p.Node)?.Get("design")), Hardware.Module(built.RootPart?.Node)?.Get("design"));
+            }
 
-            HangarShip ready = keepId != null ? Hangar.FirstOrDefault(x => x.Id == keepId) : null;
-            if (ready == null)
+            HangarShip ready = HangarOf(main.Id);
+            foreach (HangarShip h in Hangar.Where(x => x.ReservedBy == job.Id).ToList())
             {
-                lastNumber.TryGetValue(job.Name, out int last);
-                ready = new HangarShip { Id = Guid.NewGuid().ToString("N"), Name = job.Name, Number = last + 1 };
-                lastNumber[job.Name] = ready.Number;
-                Hangar.Add(ready);
+                int i = -1;
+                used.TryGetValue(h.Id, out HashSet<int> mine);
+                foreach (Node p in h.Craft.Children("PART")) { i++; if (mine == null || !mine.Contains(i)) AddToBin(p); }
+                if (h != ready) Hangar.Remove(h);
             }
-            else
-            {
-                // A ship rebuilt as itself (restored to its design, which can leave out a part added by hand, or
-                // built on as the top of a stack): anything not in the new build goes to the parts bin.
-                Craft old = Core.Craft.Read(ready.Craft);
-                foreach (string s in ready.Placed.Where(x => !serials.Contains(x)))
-                    if (old.BySerial.TryGetValue(s, out CraftPart cp)) Bin.Add(BinPartFrom(cp, ready));
-            }
+            if (ready == null) { ready = new HangarShip { Ship = main }; Hangar.Add(ready); }
+            ready.Built(Hardware.Plain(job.Craft.Clone()));
+            // The same id as the build's craft, so the ship left in the VAB after pressing Build is this ship.
+            ready.CraftId = job.CraftId;
+            ready.Pieces.Clear();
+            foreach (KeyValuePair<int, string> m in memberOf) if (riding.Contains(m.Value)) ready.Pieces[m.Key] = m.Value;
             ready.UT = Planetarium.GetUniversalTime();
-            ready.Craft = job.Craft.Clone();
-            ready.Placed.Clear();
-            ready.Placed.AddRange(serials);
-            ready.Missing.Clear();
             ready.CameBack.Clear();
+            ready.Missing = 0;
             ready.Ready = true;
             ready.Fuel = 1;
             // Built or refurbished: the whole craft leaves at 0% wear (Phil: Restore refurbishes the surviving parts too).
-            ready.SetWear(0);
+            ready.Wear = 0;
             ready.ReservedBy = null;
-            // New parts now belong to this ship; reused ones keep their own ship (a flown first stage stays
-            // "Oak 005 #4" under its new payload, and comes home as itself).
-            ready.StampHull(false);
-            ready.Flights = Core.Craft.Read(ready.Craft).Parts.Select(p => FlightsIn(p.Node)).DefaultIfEmpty(0).Max();
-            Log.Info("Build finished: " + ready.DisplayName + " is ready in the hangar");
+            Log.Info("Build finished: " + ready.DisplayName + " is ready in the hangar"
+                     + (ready.Pieces.Count > 0 ? ", with " + string.Join(", ", ready.Pieces.Values.Distinct().Select(id => ShipOf(id)?.DisplayName ?? "?").ToArray()) + " in it" : ""));
             Suite.Message(ready.DisplayName + " is ready in the hangar");
             if (TimeWarp.fetch != null && TimeWarp.CurrentRateIndex > 0) TimeWarp.SetRate(0, true, false);
             Changed();
         }
 
-        /// <summary>
-        /// The hangar ship whose identity a build keeps: the one it refurbishes or restores, or the one it's built on
-        /// top of (taken into the build, holding its root part, under the same name). Null for a new ship.
-        /// </summary>
-        public HangarShip KeptShipOf(BuildJob job) => job.FromShipId != null ? Hangar.FirstOrDefault(h => h.Id == job.FromShipId) : TopShipOf(job);
+        /// <summary>The ship a build keeps (a refit, refurbish or restore), or null for a new ship.</summary>
+        public Ship KeptShipOf(BuildJob job) => ShipOf(job.ShipId);
 
-        /// <summary>What a build is called on screen and in the log: the hangar ship it keeps ("Gallant I #1"), or its name.</summary>
+        /// <summary>What a build is called on screen and in the log: the ship it keeps ("Peleus III #2"), or the design's name.</summary>
         public string TitleOf(BuildJob job) => KeptShipOf(job)?.DisplayName ?? job.Name;
-
-        HangarShip TopShipOf(BuildJob job)
-        {
-            // KSP writes a craft's root part first.
-            Node first = job.Craft?.Children("PART").FirstOrDefault();
-            string root = first != null ? Core.Craft.SerialOf(first) : null;
-            if (string.IsNullOrEmpty(root)) return null;
-            return Hangar.FirstOrDefault(h => h.ReservedBy == job.Id && h.Placed.Contains(root) && h.Name == job.Name);
-        }
-
-        static int FlightsIn(Node part)
-        {
-            Node m = part.Children("MODULE").FirstOrDefault(x => x.Get("name") == Core.Craft.ModuleName);
-            return int.TryParse(m?.Get("flights"), out int f) ? f : 0;
-        }
-
-        /// <summary>A hangar ship's part as a loose bin part, holding what it held in that ship (a ready ship's are full).</summary>
-        static BinPart BinPartFrom(CraftPart cp, HangarShip from)
-        {
-            Dictionary<string, double> left = from.Ready ? BinPart.Held(cp.Node)
-                : from.CameBack.TryGetValue(cp.Serial, out Dictionary<string, double> d) ? new Dictionary<string, double>(d)
-                : new Dictionary<string, double>();
-            return new BinPart { Serial = cp.Serial, Part = cp.PartName, Flights = FlightsIn(cp.Node), PartNode = Builds.Loose(cp.Node), Left = left };
-        }
 
         // ---- Time passing ----
 
@@ -538,6 +612,12 @@ namespace PhilsReusabilitySuite
 
         void Update()
         {
+            if (refundDue > 0 && Suite.Career && !Krash.SimActive)
+            {
+                Suite.Charge(-refundDue);
+                Log.Info("Refunded " + Pricing.Funds(refundDue) + " for builds queued under the older save format");
+                refundDue = 0;
+            }
             if (!HighLogic.LoadedSceneHasPlanetarium || Planetarium.fetch == null) return;
             double now = Planetarium.GetUniversalTime();
             if (lastUT < 0 || now < lastUT) { lastUT = now; return; }
@@ -593,6 +673,7 @@ namespace PhilsReusabilitySuite
             }
             List<ProtoCrewMember> going = crew.GetAllCrew(false);
             Log.Info("Launching " + h.DisplayName + " from the hangar with " + (going.Count == 0 ? "no crew" : string.Join(", ", going.Select(c => c.name).ToArray())));
+            Launching(h);
             FlightDriver.StartWithNewLaunch(path, HighLogic.CurrentGame.flagURL, site, crew);
             return true;
         }
@@ -635,7 +716,7 @@ namespace PhilsReusabilitySuite
         }
 
         /// <summary>What refuelling a hangar ship to its launch levels costs (nothing once it's fuelled).</summary>
-        public double RefuelPrice(HangarShip h) => h.Ready ? 0 : QuoteFor(h.Craft, h.DisplayName, null).FuelPrice;
+        public double RefuelPrice(HangarShip h) => h.Ready ? 0 : QuoteFor(h).FuelPrice;
 
         /// <summary>Refuels a hangar ship to its launch levels without refurbishing it: it keeps its wear, and launches free.</summary>
         public bool Refuel(HangarShip h, out string error)
@@ -655,77 +736,7 @@ namespace PhilsReusabilitySuite
             return true;
         }
 
-        /// <summary>A hangar ship, ready or not, whose parts are exactly these and that no build has taken.</summary>
-        public HangarShip HangarShipOf(ICollection<string> serials)
-        {
-            if (serials.Count == 0) return null;
-            return Hangar.FirstOrDefault(h => h.ReservedBy == null && h.Placed.Count == serials.Count && serials.All(h.Placed.Contains));
-        }
-
         static bool OnlyLaunchClamps(ProtoVessel pv) =>
             pv.protoPartSnapshots.Count > 0 && pv.protoPartSnapshots.All(ps => ps.partInfo?.partPrefab != null && ps.partInfo.partPrefab.FindModuleImplementing<LaunchClamp>() != null);
-
-        /// <summary>At rollout: a ready hangar ship launches free (KSP charges its price at rollout, so refund it).</summary>
-        /// <summary>True if the ship rolling out is a ready hangar ship (launched free).</summary>
-        bool ReadyShipRollout(ShipConstruct ship)
-        {
-            if (Krash.SimActive) return false;
-            var serials = ship.parts.Select(PRSPart.SerialOf).Where(s => s != null).ToList();
-            HangarShip h = ReadyShipOf(serials);
-            if (h == null)
-            {
-                if (serials.Count > 0) Log.Warn(KSP.Localization.Localizer.Format(ship.shipName) + " launched without being built: KSP charged its normal price");
-                return false;
-            }
-            float cost = ship.GetShipCosts(out float dry, out float fuel, ShipConstruction.ShipManifest);
-            if (Suite.Career) Funding.Instance.AddFunds(cost, TransactionReasons.VesselRollout);
-            Hangar.Remove(h);
-            Changed();
-            Log.Info("Launched " + h.DisplayName + " from the hangar: already paid for, " + Pricing.Funds(cost) + " handed back");
-            return true;
-        }
-
-        /// <summary>Serials of hardware the suite keeps: hangar ships', bin parts' and builds'.</summary>
-        public HashSet<string> StoredSerials()
-        {
-            var stored = new HashSet<string>(Hangar.SelectMany(x => x.Placed));
-            stored.UnionWith(Bin.Select(b => b.Serial));
-            stored.UnionWith(Jobs.SelectMany(j => j.Serials()));
-            return stored;
-        }
-
-        /// <summary>Serials that are some particular piece of hardware: stored, or on a ship in flight.</summary>
-        public HashSet<string> TakenSerials()
-        {
-            HashSet<string> taken = StoredSerials();
-            if (HighLogic.CurrentGame?.flightState != null)
-                foreach (ProtoVessel pv in HighLogic.CurrentGame.flightState.protoVessels)
-                    foreach (ProtoPartSnapshot ps in pv.protoPartSnapshots)
-                    {
-                        string s = PRSPart.ValueIn(ps, "serial");
-                        if (!string.IsNullOrEmpty(s)) taken.Add(s);
-                    }
-            return taken;
-        }
-
-        /// <summary>
-        /// A ship launched without being built (KSP's own launch-pad dialog launches a saved craft file straight
-        /// into flight) can carry serials saved in the file: those of parts that are still hangar ships, bin parts,
-        /// builds or flying ships. Those parts are new, so they get new serials.
-        /// </summary>
-        void RenewTakenSerials(List<Part> parts)
-        {
-            HashSet<string> taken = TakenSerials();
-            int renewed = 0;
-            var seen = new HashSet<string>();
-            foreach (PRSPart m in parts.Select(PRSPart.Of).Where(x => x != null))
-            {
-                if (string.IsNullOrEmpty(m.serial) || (!taken.Contains(m.serial) && seen.Add(m.serial))) continue;
-                m.MakeNew();
-                seen.Add(m.serial);
-                renewed++;
-            }
-            if (renewed > 0) Log.Info("Gave " + renewed + " parts of a ship launched without being built new serial numbers (their saved ones belong to other hardware)");
-        }
     }
 }

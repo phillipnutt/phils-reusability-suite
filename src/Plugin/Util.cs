@@ -65,10 +65,11 @@ namespace PhilsReusabilitySuite
             }
         }
 
-        /// <summary>Writes a hangar ship as a .craft file the editor can load, and returns its path.</summary>
+        /// <summary>Writes a hangar ship as a .craft file the editor or a launch can load (every part noted as its
+        /// hardware), and returns its path.</summary>
         public static string WriteCraft(HangarShip h)
         {
-            ConfigNode c = KspNodes.ToKsp(h.Craft, "");
+            ConfigNode c = KspNodes.ToKsp(h.Noted(), "");
             c.SetValue("ship", h.DisplayName, true);
             string path = Path.Combine(SaveDir, "hangar-" + h.Id + ".craft");
             c.Save(path);

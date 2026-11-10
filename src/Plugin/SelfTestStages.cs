@@ -111,20 +111,22 @@ namespace PhilsReusabilitySuite
             double podAlone = StageReturns.MeasureAlone(podPiece).CdA;
             List<Part> oneBooster = radial != null ? Subtree(radial) : new List<Part>();
             double boosterAlone = oneBooster.Count > 0 ? StageReturns.MeasureAlone(oneBooster).CdA : 0;
-            string boosterSerial = oneBooster.Select(PRSPart.SerialOf).FirstOrDefault(s => s != null);
+            uint boosterId = oneBooster.Select(p => p.flightID).FirstOrDefault();
 
             // 3. Drop the boosters and the pod, then switch to the core and move it far away.
-            var podSerials = podPiece.Select(PRSPart.SerialOf).ToList();
-            var boosterSerials = v.parts.Where(IsBooster).Select(PRSPart.SerialOf).ToList();
+            var podIds = podPiece.Select(p => p.flightID).ToList();
+            var boosterIds = v.parts.Where(IsBooster).Select(p => p.flightID).ToList();
+            string podRootName = podPiece.Count > 0 ? podPiece[0].partInfo.name : "";
+            int hangarBefore = PRSScenario.Instance.Hangar.Count;
             foreach (ModuleAnchoredDecoupler d in v.FindPartModulesImplementing<ModuleAnchoredDecoupler>().ToList()) if (!d.isDecoupled) d.Decouple();
             ModuleDecouple sd = decoupler.FindModuleImplementing<ModuleDecouple>();
             if (sd != null && !sd.isDecoupled) sd.Decouple();
             yield return new WaitForSeconds(1.5f);
-            Vessel core = FlightGlobals.Vessels.Where(x => x != null && x.loaded && x != FlightGlobals.ActiveVessel && !x.parts.Any(p => podSerials.Contains(PRSPart.SerialOf(p))) && !x.parts.Any(p => boosterSerials.Contains(PRSPart.SerialOf(p))))
+            Vessel core = FlightGlobals.Vessels.Where(x => x != null && x.loaded && x != FlightGlobals.ActiveVessel && !x.parts.Any(p => podIds.Contains(p.flightID)) && !x.parts.Any(p => boosterIds.Contains(p.flightID)))
                                        .OrderByDescending(x => x.parts.Count).FirstOrDefault();
             Check(core != null, "the core stage separated from the pod");
             if (core == null) yield break;
-            Vessel boosterVessel = FlightGlobals.Vessels.FirstOrDefault(x => x != null && x.loaded && x.parts.Any(p => PRSPart.SerialOf(p) == boosterSerial));
+            Vessel boosterVessel = FlightGlobals.Vessels.FirstOrDefault(x => x != null && x.loaded && x.parts.Any(p => p.flightID == boosterId));
             StageReturns.Profile boosterReal = boosterVessel != null ? StageReturns.MeasuredFor(boosterVessel.persistentId) : null;
             Note("booster drag: measured on its own before dropping " + boosterAlone.ToString("0.00") + ", after dropping " + (boosterReal != null ? boosterReal.CdA.ToString("0.00") : "not measured"));
             Check(boosterReal != null && Math.Abs(boosterAlone - boosterReal.CdA) <= boosterReal.CdA * 0.15, "a booster measured on its own before it drops reads the same as after (" + boosterAlone.ToString("0.00") + " vs " + (boosterReal?.CdA.ToString("0.00") ?? "none") + ")");
@@ -143,11 +145,12 @@ namespace PhilsReusabilitySuite
             Check(outcomes.Count >= 7, "all seven falling pieces were handled (" + outcomes.Count + ")");
             Check(outcomes.Count(o => o.Contains("was lost")) >= 6, "the six boosters without chutes were lost (" + outcomes.Count(o => o.Contains("was lost")) + ")");
             PRSScenario sc = PRSScenario.Instance;
-            HangarShip podShip = sc.Hangar.FirstOrDefault(h => h.Placed.Any(podSerials.Contains));
+            List<HangarShip> cameHome = sc.Hangar.Skip(hangarBefore).ToList();
+            HangarShip podShip = cameHome.FirstOrDefault(h => h.Craft.Children("PART").Any(p => Hardware.PartName(p) == podRootName));
             Check(podShip != null, "the crew pod came home to the hangar (" + podShip?.DisplayName + ")");
             Check(outcomes.Any(o => o.Contains("came home")), "its message says it came home");
             Check(podShip == null || podShip.Flights == 1, "the pod has 1 flight");
-            Check(!sc.Hangar.Any(h => h.Placed.Any(boosterSerials.Contains)), "no lost booster is in the hangar");
+            Check(cameHome.Count == 1, "no lost booster is in the hangar: only the pod came home (" + cameHome.Count + ")");
 
             // The pod was measured for real when it went out of range (it was the ship being flown when it dropped).
             StageReturns.Profile podReal = StageReturns.MeasuredFor(podId);

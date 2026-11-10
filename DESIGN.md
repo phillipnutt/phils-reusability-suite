@@ -52,9 +52,10 @@ booster under a newly built payload.
 4. **Whole ships on top of simple part accounting** (Phil, 2026-11-07: "Brilliant. Let's go with this
    idea."). He'd asked how to keep "I have flown this exact booster" without the mess of editing stored
    craft:
-   - **Every part has a serial number and a flight count.** Price and build time are always counted part
-     by part: parts you already own cost refurbishment; new parts cost full price and full build time. This
-     is ScrapYard's simplicity underneath.
+   - **Price and build time are counted part by part:** parts you already own cost their refurbishment; new
+     parts cost full price and full build time. This is ScrapYard's simplicity underneath. (Until round 4 every
+     part carried a serial number and a flight count; since then a ship's identity is the suite's own record,
+     not something kept on its parts: see "Ship identity, rebuilt" below.)
    - **The hangar keeps whole ships, exactly as they came back.** A grid fin that broke off is gone. Each
      ship has a number and a log, for example "Oak 030 #3, 4 flights".
    - **Stored ships aren't locked.** Open one in the VAB and change anything. Added parts are new parts,
@@ -69,8 +70,8 @@ booster under a newly built payload.
      hardware is never lost; only those bits lose the "same ship" identity.
    - **What a returning piece is compared against:** its own side of the separation in the launch
      record. A payload you released through a decoupler or docking port isn't "missing". A fin that
-     broke off is. Each part also remembers which hangar ship it belongs to ("Oak 030 #3"), so a booster
-     that flew under a new payload comes home as itself, one flight older.
+     broke off is. The launch record also lists the ships that went up in it ("Oak 030 #3" under a new
+     payload), so that booster comes home as itself, one flight older.
 
 5. **Refuelling is automatic** (Phil, 2026-11-07: "if you think it works and it's not too hacky let's
    do it"). He sets spaceplane tanks to chosen levels on purpose, so:
@@ -724,6 +725,113 @@ Changed:
   the checks (in a build, worn out, the pad clear), so nothing is charged until the crew step's Launch. KSP's own
   crew panel can't be borrowed: it lives only inside its launch-pad dialog (which lists every craft file) and the
   VAB. Mockup sent to Phil with the build.
+
+## Ship identity, rebuilt (round 4, 2026-11-09)
+
+Phil's sixth play-test found ships coming back to life and one ship logged under three names: Peleus
+III #2 launched as "Peleus IV #1", came home as Peleus III #2, was taken apart, and then came home again as the
+Kupe's capsule. The cause was the foundation: identity was copied onto every part (serial, hull, flights, wear) and
+four separate guesses rebuilt it from those copies. Phil: "please favor simplifying code rather than accumulating
+patch after patch on a dubious foundation". The proposal and his decisions are in Phil's Mods' notes
+(`suite-foundation-v2.md`, including its later sections). This section replaces everything above about serials,
+hulls, `WhoIs`, per-part flight counts and wear, "Use it", Restore to design, and bin parts keeping their fuel.
+
+**Phil's rules:**
+- **A. Ship of Theseus** (Phil: "once I build the Peleus III #2, that ship should always be the Peleus III #2,
+  regardless of if I add that barometer, save that new ship design as the Peleus IV ... that ship is still the Peleus
+  III #2"). A build that starts from a hangar ship is always that ship, whatever it's saved as and however much is
+  changed: its name, number, flights and log stay, and no new number is used up. There's no prompt. To get a new ship
+  from old hardware, take the old one apart first; the build from the bin then gets the design's next number.
+- **No "built as" text** (Phil: "The ship is the Peleus III #2, period"). Cards, the Build panel, the queue, logs and
+  messages show the ship's own name only.
+- **B.** A ship's flight count is its own launches.
+- **C.** The parts bin is a plain inventory ("hey we have this thing"). A part going in forgets its ship, its
+  flights and all its fuel, and is refurbished as it goes in (paid then). After that it's exactly like a new part
+  that's already paid for. Mk 2 and Mk 3 of a PIP program are different parts.
+- **D.** Owned parts are cheaper only because they're already paid for; flights never change a price. Price lines
+  say "from the parts bin, already paid for", never "flown parts". "On X" names only what a ship sits on.
+- **E.** On return, "see what launch that something came from and what ships (and their IDs) were used in that
+  launch, and then categorize them accordingly."
+- **Its own blueprint** (Phil: "couldn't it have a blueprint of the 'Peleus III #2' and restore uses that?"). Every
+  ship keeps the whole ship as it was last built, hidden in the suite's save, and Restore uses it.
+- **Its design, for good** (Phil: "The Peleus III #2 knows it's a Peleus III ... It just also knows that it is
+  SPECIFICALLY the Peleus III #2"). A ship belongs to the design it was first built as; Phil's Builds counts it there.
+- **Picked explicitly.** Built ships are opened, launched or picked up from the hangar, or from Phil's Builds' hangar
+  list ("Peleus III · 1 in hangar: Peleus III #2"), which brings in the real ship. Loading a design is always a new
+  build; the Build panel never decides by itself that it's a hangar ship.
+
+**The records** (`Records.cs`), each in one place, nothing kept on parts:
+- **`Ship`**: id, name, number, the design it was first built as (`DesignId`, set once), its own flights, its flight
+  log. It lives while it exists anywhere: in the hangar, riding inside another hangar ship (a flown first stage under
+  a new payload), kept by a build, or in flight while the part it rides on (its root part) is still flying. Ships that
+  exist nowhere are dropped at the Space Center (`Tidy`).
+- **`HangarShip`**: the ship, its craft, an id for this copy of the craft (`CraftId`, new whenever its parts change),
+  ready, wear (one number per craft), what each part came home with, parts missing, `Pieces` (its parts that are
+  another ship's: a flown first stage under it), and its **blueprint** with each part's place in it (`Slots`).
+- **`LaunchRecord`**: KSP's own launch id, KSP's own part id for each part of the craft as launched (matched to the
+  launched-ship config by the craft's id for each part, so the order of the ship's part list doesn't matter), its wear
+  as it left, the ships that went up (each with the part it rides on) and which ship each part is. KSP writes both ids
+  at launch, docking only reads them, and the save keeps them (checked in KSP's own code, and in game by
+  `SelfTestIds`). One record per launch: going back to the pad or quickloading finds it by its launch id.
+- **`BuildJob`**: the ship it keeps, or none (a new ship), which of its parts are which hangar ship's hardware, and the
+  parts it took from the bin (counts, given back on Cancel).
+- **`BinKind`**: one kind of part and how many. The kind is the part, its PIP program and Mk, and its price (which
+  covers variants and rescaling). One sample part node, empty, with no ship.
+
+**The VAB** (Phil: "the VAB to understand if I've got an actual ship that is loaded in there ... and it knows that the
+new part I just added is not a built part"). A part is real hardware only if it carries a note the suite put there
+itself when it brought a stored ship in ("craftId:index", `Core.Hardware`): Open in the VAB, Edit a queued build, a
+hangar ship picked up in Phil's Builds. The note is checked against the hangar whenever it's used (that ship, its
+current craft, the same part there), so a note from an older copy of a ship points at nothing. Parts that arrive any
+other way (KSP's craft browser, a merge, a subassembly, a Phil's Builds design) are new parts: their notes are cleared
+as they arrive (`onEditorLoad` and a Harmony prefix on `EditorLogic.SpawnConstruct`, the two places every arriving
+part passes); so is a copy of a part already on the editor's ship (a merge of a file saved from it). A copy made with
+the editor's tools is a new part (`OnCopy`). KSP's undo and its cache (as the editor opens) keep the notes of the ship
+that was there. Launching ends them. A build that's cancelled keeps a short list of which hangar parts its parts were
+(`cancelled`, the last 10), so the VAB's ship is still that hardware. PIP's `IsHardware` hook asks the same rule. A
+hangar part with something added to it in the VAB (cargo, a bigger size, a dearer variant) is still that hardware;
+what was added costs its full price (`Owner.Added`). The VAB ship of a hangar ship is named after the ship's name
+("Peleus III"), never its number.
+
+**A build** is the hangar ship whose hardware is nearest its root (its root part, unless that's a new part), whatever
+the craft is saved as (`MainShipOf`). Any other ship in the build whose own root part is in it rides along as itself
+(Pieces). With no hangar hardware it's a new ship, which belongs to its design for good (the design of all its parts,
+or of its root part, the rule that also names it) and gets that design's next number when it's finished. Restore and
+Refurbish keep their ship explicitly; a kept ship must be in the build. A hangar ship's parts the build leaves out go
+to the parts bin, refurbished at that ship's wear, priced in the build ("1 part left out goes to the parts bin"). What
+was built becomes the ship's blueprint.
+
+**A launch** of a hangar ship is always started by the suite (the Space Center's Launch, the Build panel's Launch,
+the VAB's launch-site list), which notes which hangar ship is launching (`PendingLaunch`). At the launch record, only
+that ship counts, and only if every launched part is exactly its hardware. It lists the ship (riding on the craft's
+root part) and every ship inside it (each on its own highest part), counts a flight for each, and takes the ship out
+of the hangar. A launch from KSP's own launch-pad dialog lists no ships, whatever its file says.
+
+**A return** (`RecoverLaunch`): parts are grouped by launch (two launches docked together are filed per launch). For
+each, the record gives each part's place by its KSP part id; the piece is rebuilt (`Pieces.Build`), and it's the
+launch's ship whose root part it carries (the highest in the launch's tree if several; the others ride inside it as
+themselves). If it carries none it's a new piece, named after its design (or its root part's design) and belonging to
+it, on its first flight. Wear = the craft's wear at launch plus this flight's peaks. Its blueprint is the ship as it
+launched less what it dropped on purpose (stages, payloads), so Restore puts back only what it lost. Each part's
+cargo is taken as it came home, so cargo used or taken out in flight is gone. Parts not in the record (added in
+flight), parts that can't be placed and dangling struts go to the parts bin, refurbished at that wear and paid then.
+A ship whose root part didn't come home is closed as lost. The flight forecast names a falling piece by the same rule
+(`PRSScenario.ShipIn`).
+
+**Restore** rebuilds a hangar ship from its own blueprint (`Hardware.Restore`): each part it still has in its place,
+as its own hardware (its Mk, its cargo as it is), and every part it lost new (PIP's current Mk). The button just says
+"Restore". Phil's Builds' Load or Pick up on a hangar ship brings in the same whole ship.
+
+**The bin** is matched only when pricing, by kind and count, at no cost ("from the parts bin, already paid for").
+Bin parts are filled from empty. An old-Mk kind that would be the part once updated is offered ("Update and use",
+"No"), as before. Taking a ship apart costs its parts' refurbish at its wear ("Take apart · refurbish N"); stage
+recovery adds the bin's refurbish to its transport line; the Recover prompt shows it, launch by launch, when parts
+will go to the bin.
+
+**Older saves** (format 1, before round 4) start the suite fresh on load (Phil: start fresh, no
+converter): empty hangar, bin and queue, queued builds refunded, numbers already given out kept. Ships still in flight
+have no launch record any more, so their parts go to the parts bin when they're recovered (Phil: "Parts bin"). The save
+file itself isn't touched; the next save writes format 2.
 
 ## Open questions
 

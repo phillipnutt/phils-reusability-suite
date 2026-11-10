@@ -142,15 +142,25 @@ namespace PhilsReusabilitySuite
             if (lines.Count > 0) Suite.Message(string.Join("\n", lines.ToArray()), 6f);
         }
 
-        /// <summary>A piece as the hangar will name it ("Kopje 005 #1"; a new one without its number yet), else KSP's vessel name.</summary>
+        /// <summary>
+        /// A piece as the hangar will name it: the ship from its launch whose root part it carries ("Oak 005 #4"), or a new
+        /// piece named after its design ("Kopje 005", its number still to give). Else KSP's vessel name.
+        /// </summary>
         static string PieceName(Vessel v)
         {
             try
             {
-                var mods = v.parts.Select(PRSPart.Of).Where(m => m != null && !string.IsNullOrEmpty(m.serial)).GroupBy(m => m.serial).ToDictionary(g => g.Key, g => g.First());
-                LaunchRecord rec = PRSScenario.Instance?.FindRecord(mods.Keys);
-                string name = PRSScenario.WhoIs(mods.Keys, s => mods[s].hull, s => mods[s].design, rec != null ? Core.Craft.Read(rec.Craft) : null, out int number, out _);
-                if (name != null) return number < 0 ? name : name + " #" + number;
+                PRSScenario sc = PRSScenario.Instance;
+                IGrouping<uint, Part> launch = v.parts.GroupBy(p => p.launchID).OrderByDescending(g => g.Count()).FirstOrDefault();
+                LaunchRecord rec = launch == null ? null : launch.Select(p => sc?.RecordOf(p.launchID, p.flightID)).FirstOrDefault(r => r != null);
+                if (rec != null)
+                {
+                    var at = launch.Select(p => rec.IndexOf(p.flightID)).Where(i => i >= 0).ToList();
+                    Ship ship = sc.ShipOf(PRSScenario.ShipIn(rec, at, Core.Craft.Read(rec.Craft), out _));
+                    if (ship != null) return ship.DisplayName;
+                }
+                string name = BuildsLink.NameFor(v.parts.Select(p => PRSPart.Of(p)?.design), PRSPart.Of(v.rootPart)?.design);
+                if (name != null) return name;
             }
             catch (Exception) { }
             return Name(v);
@@ -158,7 +168,7 @@ namespace PhilsReusabilitySuite
 
         static void Remember(Vessel v)
         {
-            if (v == null || !v.loaded || v.isEVA || !v.parts.Any(p => PRSPart.SerialOf(p) != null)) return;
+            if (v == null || !v.loaded || v.isEVA || !v.parts.Any(p => PRSPart.Of(p) != null)) return;
             try { measured[v.persistentId] = Measure(v.parts); }
             catch (Exception ex) { Log.Warn("Couldn't measure " + v.vesselName + "'s drag: " + ex.Message); }
         }
@@ -289,10 +299,8 @@ namespace PhilsReusabilitySuite
             if (v.mainBody != FlightGlobals.GetHomeBody() || v.mainBody.GetPressure(altitude) <= 0) return false;
             if (v.situation != Vessel.Situations.FLYING && v.situation != Vessel.Situations.SUB_ORBITAL && v.situation != Vessel.Situations.ORBITING) return false;
             ProtoVessel pv = v.protoVessel;
-            return pv != null && pv.protoPartSnapshots.Any(ps => !string.IsNullOrEmpty(SerialOf(ps)));
+            return pv != null && pv.protoPartSnapshots.Any(PRSPart.Has);
         }
-
-        static string SerialOf(ProtoPartSnapshot ps) => PRSPart.ValueIn(ps, "serial");
 
         public void Process(Vessel v)
         {
@@ -328,7 +336,7 @@ namespace PhilsReusabilitySuite
             }
 
             // A hard landing: outer parts with nothing attached to them can break off.
-            var broke = new List<string>();
+            var broke = new List<uint>();
             double chance = Landing.BreakChance(landing);
             if (chance > 0)
             {
@@ -337,8 +345,7 @@ namespace PhilsReusabilitySuite
                 {
                     ProtoPartSnapshot ps = pv.protoPartSnapshots[i];
                     if (i == pv.rootIndex || parents.Contains(i) || ps.protoModuleCrew.Count > 0) continue;
-                    string s = SerialOf(ps);
-                    if (s != null && rng.NextDouble() < chance) broke.Add(s);
+                    if (PRSPart.Has(ps) && rng.NextDouble() < chance) broke.Add(ps.flightID);
                 }
             }
 
@@ -348,7 +355,6 @@ namespace PhilsReusabilitySuite
             sc.LeftBehindOnNextRecovery.UnionWith(broke);
             sc.NextLandingNote = (km < 2 ? "landed at KSC" : "landed " + Math.Round(km).ToString("N0") + " km from KSC") + ", " + landing.ToString("0.0") + " m/s " + how;
             RecoverGate.Choices[pv.persistentId] = RecoverChoice.Hangar;
-            var serials = pv.protoPartSnapshots.Select(SerialOf).Where(s => s != null).ToList();
             // KSP is part-way through deleting this vessel, so recover it without deleting anything ourselves:
             // announce the recovery (stock pays its refund, which the suite settles, returns the crew and credits
             // their science; PIP counts it), then take the crew off so the deletion doesn't kill them.
@@ -359,9 +365,11 @@ namespace PhilsReusabilitySuite
             }
             sc.LeftBehindOnNextRecovery.Clear();
 
-            HangarShip h = sc.Hangar.LastOrDefault(x => x.Placed.Any(serials.Contains));
+            HangarShip h = sc.LastHangarShip;
+            double binned = sc.LastBinPrice;
             string where = km < 2 ? "at KSC" : Math.Round(km).ToString("N0") + " km from KSC";
-            string money = Suite.Career ? " Transport " + Pricing.Funds(value * (1 - factor)) + "." : "";
+            // Parts that go to the parts bin are refurbished as they go in, added to the transport (Phil, round 4).
+            string money = Suite.Career ? " Transport " + Pricing.Funds(value * (1 - factor)) + (binned >= 0.5 ? ", refurbishing parts for the bin " + Pricing.Funds(binned) : "") + "." : "";
             string text;
             if (h != null)
                 text = h.DisplayName + (landing > Landing.SafeSpeed ? " came home hard" : " came home") + ": " + landing.ToString("0.0") + " m/s " + how + ", " + where + "."

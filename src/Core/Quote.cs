@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.Globalization;
 using System.Linq;
 
 namespace PhilsReusabilitySuite.Core
@@ -11,16 +10,19 @@ namespace PhilsReusabilitySuite.Core
     public sealed class Owner
     {
         public OwnerKind Kind;
+        /// <summary>For hangar hardware: the hangar ship it's part of (its id), its place in that ship's craft, the
+        /// ship's name, its wear (one number per craft), whether it's fuelled, and what the part still held when it came home.</summary>
         public string ShipId;
+        public int Index = -1;
         public string Label;
-        /// <summary>A hangar ship that is ready to fly: fuelled (its parts still cost their refurbish, by wear, in a build).</summary>
         public bool Ready;
-        /// <summary>For a bin part swapped in for a new one: its serial, flights and wear.</summary>
-        public string BinSerial;
-        public int Flights = -1;
         public double Wear;
-        /// <summary>The bin part as it is (its own hardware: a Phil's Iterative Parts program and Mk).</summary>
-        public Node BinPart;
+        public IDictionary<string, double> Left;
+        /// <summary>For hangar hardware: what was added to the part in the VAB (cargo, a bigger size), at full price.</summary>
+        public double Added;
+        /// <summary>For a part from the parts bin: its kind (part, Phil's Iterative Parts program and Mk, and price).
+        /// Bin parts were refurbished as they went in, so they're like new parts that are already paid for.</summary>
+        public string BinKey;
         /// <summary>
         /// A bin part that would fit, but its Phil's Iterative Parts program has moved on since it was built: it isn't
         /// used unless it's updated first (Phil: old-Mk parts never fly unless updated). The build asks.
@@ -38,7 +40,7 @@ namespace PhilsReusabilitySuite.Core
     public sealed class QuoteItem
     {
         public Node Part;
-        public double Price, Fuel, Wear;
+        public double Price, Fuel;
     }
 
     /// <summary>A part's price without resources, and the resources it holds in the craft.</summary>
@@ -62,10 +64,13 @@ namespace PhilsReusabilitySuite.Core
         public int Parts;
         public double Price;
         public double Fuel;
-        public int MaxFlights;
-        /// <summary>The wear of the reused parts on this line (one craft's, so one number).</summary>
+        /// <summary>The hangar ship's wear (one craft's, so one number).</summary>
         public double Wear;
         public bool Ready;
+        /// <summary>A hangar ship's parts the build leaves out: they go to the parts bin, refurbished with the rest
+        /// (their price is in Price). Phil, round 4: bin parts are refurbished as they go in.</summary>
+        public int LeftOut;
+        public double LeftOutPrice;
         /// <summary>New parts: the design they were placed from (its Phil's Builds id), or "" for parts from no design.
         /// New parts are split by design: "Cabral I · 1 new part", "Shkhara 022 · 31 new parts".</summary>
         public string Design = "";
@@ -81,56 +86,49 @@ namespace PhilsReusabilitySuite.Core
         public double Total => BuildPrice + FuelPrice;
         public double Seconds;
         public int PartCount;
+        /// <summary>Hangar ships whose hardware the build uses (by id).</summary>
         public readonly HashSet<string> HangarShips = new HashSet<string>();
-        public readonly List<string> BinSerials = new List<string>();
-        public readonly List<string> Serials = new List<string>();
-        /// <summary>New parts in the craft that the build takes from the parts bin instead: craft serial to bin part.</summary>
-        public readonly Dictionary<string, Owner> BinSwaps = new Dictionary<string, Owner>();
+        /// <summary>Which craft parts are hangar hardware: craft part to "hangarShipId:index".</summary>
+        public readonly Dictionary<int, string> Owners = new Dictionary<int, string>();
+        /// <summary>Parts the build takes from the parts bin, by kind.</summary>
+        public readonly Dictionary<string, int> BinTaken = new Dictionary<string, int>();
+        public int BinParts => BinTaken.Values.Sum();
         /// <summary>Bin parts that would fit if they were updated to their program's current Mk (built new until then).</summary>
         public readonly List<Owner> OldBin = new List<Owner>();
         public double UpdatePrice => OldBin.Sum(o => o.UpdatePrice);
         public int NewParts => Lines.Where(l => l.Kind == OwnerKind.New).Sum(l => l.Parts);
-
-        /// <summary>The craft as the build will make it: bin parts swapped in carry their own serial and flights.</summary>
-        public Node WithBinParts(Node craft)
-        {
-            Node c = craft.Clone();
-            foreach (Node part in c.Children("PART"))
-            {
-                Node mod = part.Children("MODULE").FirstOrDefault(m => m.Get("name") == Craft.ModuleName);
-                string serial = mod?.Get("serial");
-                if (serial == null || !BinSwaps.TryGetValue(serial, out Owner b)) continue;
-                mod.Set("serial", b.BinSerial);
-                mod.Set("flights", Math.Max(0, b.Flights).ToString(CultureInfo.InvariantCulture));
-                mod.Set("wear", b.Wear.ToString("R", CultureInfo.InvariantCulture));
-                // It's that bin part's own hardware, not a new one: its program and Mk come with it.
-                if (b.BinPart != null) Completion.CarryHardware(b.BinPart, part);
-            }
-            return c;
-        }
+        /// <summary>The hangar hardware nearest the craft's root (its root part, unless that's new): the ship the build is
+        /// (Phil, round 4: a build that starts from a hangar ship is always that ship). New when it has no hangar hardware.</summary>
+        public Owner Main = Owner.NewPart;
     }
 
     public static class Quotes
     {
-        /// <param name="craft">The ship to build, as a craft node with each part's PRSPart serial and flights.</param>
-        /// <param name="ownerOf">Who owns a serial: the hangar, the parts bin, or nobody (a new part).</param>
-        /// <param name="cameBack">Resources a reused part still holds from its last flight, by serial (or null).</param>
-        /// <param name="binMatch">For a new part: a matching loose part from the bin to use instead, or null.</param>
-        public static Quote Make(Node craft, string shipName, Func<string, Owner> ownerOf, ICostSource costs,
-                                 Func<string, IDictionary<string, double>> cameBack, Settings s, Func<Node, Owner> binMatch = null)
+        /// <param name="craft">The ship to build, as a craft node.</param>
+        /// <param name="hardwareOf">For a part with a hardware note: the hangar ship it is (checked against the hangar), or null for a new part.</param>
+        /// <param name="binMatch">For a new part: a matching part in the bin to use instead (counted), or null.</param>
+        /// <param name="partsOf">A hangar ship's parts (by id), so the parts a build leaves out are priced too.</param>
+        public static Quote Make(Node craft, string shipName, Func<Node, Owner> hardwareOf, ICostSource costs, Settings s,
+                                 Func<Node, Owner> binMatch = null, Func<string, IEnumerable<Node>> partsOf = null)
         {
             var q = new Quote();
             var lines = new Dictionary<string, QuoteLine>();
+            var used = new Dictionary<string, HashSet<int>>();
+            var ships = new Dictionary<string, Owner>();
+            int index = -1;
             foreach (Node part in craft.Children("PART"))
             {
+                index++;
                 q.PartCount++;
-                Node mod = part.Children("MODULE").FirstOrDefault(m => m.Get("name") == Craft.ModuleName);
-                string serial = mod?.Get("serial");
-                double wear = Wear.In(mod);
-                int flights = int.TryParse(mod?.Get("flights"), NumberStyles.Integer, CultureInfo.InvariantCulture, out int f) ? f : 0;
-                Owner owner = (string.IsNullOrEmpty(serial) ? null : ownerOf(serial)) ?? Owner.NewPart;
+                Owner owner = Hardware.Of(part) != null ? hardwareOf(part) : null;
+                // The same hardware twice (a copy that kept its note) is one part and a new one.
+                if (owner != null && owner.Kind == OwnerKind.Hangar)
+                {
+                    if (!used.TryGetValue(owner.ShipId, out HashSet<int> set)) used[owner.ShipId] = set = new HashSet<int>();
+                    if (!set.Add(owner.Index)) owner = null;
+                }
                 PartCost cost = costs.Cost(part) ?? new PartCost();
-                if (owner.Kind == OwnerKind.New && binMatch != null && !string.IsNullOrEmpty(serial))
+                if (owner == null && binMatch != null)
                 {
                     Owner b = binMatch(part);
                     if (b != null && b.Old)
@@ -139,34 +137,25 @@ namespace PhilsReusabilitySuite.Core
                         b.UpdatePrice = Pricing.PipUpdate(cost.Dry, b.Marks, s);
                         q.OldBin.Add(b);
                     }
-                    else if (b != null)
-                    {
-                        owner = b;
-                        flights = Math.Max(0, b.Flights);
-                        wear = b.Wear;
-                        q.BinSwaps[serial] = b;
-                    }
+                    else if (b != null) owner = b;
                 }
-                if (!string.IsNullOrEmpty(serial)) q.Serials.Add(serial);
+                owner = owner ?? Owner.NewPart;
 
-                double price;
-                if (owner.Kind == OwnerKind.New) price = cost.Dry;
-                else price = cost.Dry * Pricing.RefurbishShare(wear, s);
+                // New parts cost their price. Hangar hardware costs its refurbish, by its craft's wear: any build
+                // leaves the whole craft at 0%. Bin parts were refurbished as they went in, so they're already paid for.
+                double added = owner.Kind == OwnerKind.Hangar ? Math.Min(cost.Dry, owner.Added) : 0;
+                double price = owner.Kind == OwnerKind.New ? cost.Dry : owner.Kind == OwnerKind.Hangar ? (cost.Dry - added) * Pricing.RefurbishShare(owner.Wear, s) + added : 0;
 
-                // Fuel: a new part is filled from empty; a reused one only tops up what it came back with; a
-                // ready ship is already full. Reused hardware is refurbished in any build, a ready ship too: the
-                // built craft leaves at 0% wear (Phil: one wear number per craft).
+                // Fuel: a hangar ship's part only tops up what it came home with (a fuelled one is full); every other
+                // part is filled from empty (bin parts are emptied as they go in).
                 double fuel = 0;
-                // A bin part keeps what it came back with too (a pod's monopropellant).
-                IDictionary<string, double> left = owner.Kind == OwnerKind.Hangar && !owner.Ready ? cameBack(serial)
-                                                 : owner.Kind == OwnerKind.Bin ? cameBack(owner.BinSerial ?? serial) : null;
                 foreach (KeyValuePair<string, double> res in cost.Amounts)
                 {
-                    double have = owner.Ready ? res.Value : (left != null && left.TryGetValue(res.Key, out double l) ? l : 0);
+                    double have = owner.Kind != OwnerKind.Hangar ? 0 : owner.Ready ? res.Value : owner.Left != null && owner.Left.TryGetValue(res.Key, out double l) ? l : 0;
                     fuel += Math.Max(0, res.Value - have) * costs.UnitCost(res.Key);
                 }
 
-                string design = owner.Kind == OwnerKind.New ? mod?.Get("design") ?? "" : "";
+                string design = owner.Kind == OwnerKind.New ? Hardware.Module(part)?.Get("design") ?? "" : "";
                 string key = owner.Kind == OwnerKind.New ? "new:" + design : owner.Kind == OwnerKind.Bin ? "bin" : "ship:" + owner.ShipId;
                 if (!lines.TryGetValue(key, out QuoteLine line))
                 {
@@ -175,22 +164,48 @@ namespace PhilsReusabilitySuite.Core
                         Kind = owner.Kind,
                         ShipId = owner.ShipId,
                         Ready = owner.Ready,
+                        Wear = owner.Kind == OwnerKind.Hangar ? owner.Wear : 0,
                         Design = design,
                         Label = owner.Kind == OwnerKind.New ? shipName : owner.Kind == OwnerKind.Bin ? "From the parts bin" : owner.Label,
                     };
                     lines[key] = line;
                 }
-                line.Items.Add(new QuoteItem { Part = part, Price = price, Fuel = fuel, Wear = owner.Kind == OwnerKind.New ? 0 : wear });
+                line.Items.Add(new QuoteItem { Part = part, Price = price, Fuel = fuel });
                 line.Parts++;
                 line.Price += price;
                 line.Fuel += fuel;
-                line.MaxFlights = Math.Max(line.MaxFlights, flights);
-                if (owner.Kind != OwnerKind.New) line.Wear = Math.Max(line.Wear, wear);
-                if (owner.Kind == OwnerKind.New) q.NewPrice += price; else q.RefurbishPrice += price;
+                if (owner.Kind == OwnerKind.New) q.NewPrice += price; else { q.RefurbishPrice += price - added; q.NewPrice += added; }
                 q.FuelPrice += fuel;
-                if (owner.Kind == OwnerKind.Hangar) q.HangarShips.Add(owner.ShipId);
-                if (owner.Kind == OwnerKind.Bin) q.BinSerials.Add(owner.BinSerial ?? serial);
+                if (owner.Kind == OwnerKind.Hangar)
+                {
+                    q.HangarShips.Add(owner.ShipId);
+                    q.Owners[index] = Hardware.Make(owner.ShipId, owner.Index);
+                    ships[owner.ShipId] = owner;
+                }
+                if (owner.Kind == OwnerKind.Bin) q.BinTaken[owner.BinKey] = (q.BinTaken.TryGetValue(owner.BinKey, out int n) ? n : 0) + 1;
             }
+
+            // A hangar ship's parts the build leaves out go to the parts bin, refurbished at that ship's wear like the rest.
+            if (partsOf != null)
+                foreach (KeyValuePair<string, Owner> kv in ships)
+                {
+                    QuoteLine line = lines["ship:" + kv.Key];
+                    int i = -1;
+                    foreach (Node p in partsOf(kv.Key) ?? new Node[0])
+                    {
+                        i++;
+                        if (used[kv.Key].Contains(i)) continue;
+                        double price = (costs.Cost(p) ?? new PartCost()).Dry * Pricing.RefurbishShare(kv.Value.Wear, s);
+                        line.LeftOut++;
+                        line.LeftOutPrice += price;
+                        line.Price += price;
+                        q.RefurbishPrice += price;
+                    }
+                }
+
+            int main = Craft.Read(craft).Highest(q.Owners.Keys);
+            if (main >= 0 && Hardware.Parse(q.Owners[main], out string shipId, out int at) && ships.TryGetValue(shipId, out Owner o))
+                q.Main = new Owner { Kind = OwnerKind.Hangar, ShipId = shipId, Index = at, Label = o.Label, Wear = o.Wear, Ready = o.Ready };
             // Reused pieces first (the flown booster), then the bin, then the new parts.
             q.Lines.AddRange(lines.Values.OrderBy(l => l.Kind == OwnerKind.Hangar ? 0 : l.Kind == OwnerKind.Bin ? 1 : 2));
             q.Seconds = Pricing.BuildSeconds(q.BuildPrice, s);

@@ -1,6 +1,6 @@
 // Checks for the KSP-free craft logic in src/Core. Run with Tools/Test-Core.ps1.
-// It reads the stock craft that ship with KSP (Ships/VAB and Ships/SPH of a KSP install), gives every part a
-// serial number, then pretends pieces came home and checks the rebuilt craft.
+// It reads the stock craft that ship with KSP (Ships/VAB and Ships/SPH of a KSP install), names every part by its
+// place, then pretends pieces came home and checks the rebuilt craft.
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -36,6 +36,7 @@ static class CoreTests
         PricingChecks();
         QuoteChecks();
         RoundTwoChecks();
+        RoundFourChecks();
         int craftCount = 0, pieces = 0;
         foreach (string f in files.OrderBy(x => x))
         {
@@ -100,7 +101,7 @@ static class CoreTests
     {
         public PartCost Cost(Node part)
         {
-            var c = new PartCost { Dry = double.Parse(part.Get("dry"), System.Globalization.CultureInfo.InvariantCulture) };
+            var c = new PartCost { Dry = double.Parse(part.Get("dry") ?? "0", System.Globalization.CultureInfo.InvariantCulture) };
             string fuel = part.Get("fuel");
             if (fuel != null) c.Amounts["LiquidFuel"] = double.Parse(fuel, System.Globalization.CultureInfo.InvariantCulture);
             return c;
@@ -108,56 +109,72 @@ static class CoreTests
         public double UnitCost(string resource) => resource == "LiquidFuel" ? 0.8 : 0;
     }
 
-    static Node QuotePart(string serial, int flights, double dry, double fuel, double wear = 0)
+    static int ids;
+
+    /// <summary>A part node for quotes: a name, a dry price, fuel, and a hardware note if it's a stored ship's part.</summary>
+    static Node QuotePart(string name, double dry, double fuel, string note = null, string design = null, string link = null)
     {
         var p = new Node("PART");
-        p.Add("part", "tank_" + serial);
+        p.Add("part", name + "_" + (1000 + ids++));
+        if (link != null) p.Add("link", link);
         p.Add("dry", dry.ToString(System.Globalization.CultureInfo.InvariantCulture));
         p.Add("fuel", fuel.ToString(System.Globalization.CultureInfo.InvariantCulture));
         Node m = p.AddNode("MODULE");
         m.Add("name", Craft.ModuleName);
-        m.Add("serial", serial);
-        m.Add("flights", flights.ToString());
-        if (wear > 0) m.Add("wear", wear.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        if (design != null) m.Add("design", design);
+        if (note != null) m.Add(Hardware.Field, note);
         return p;
+    }
+
+    /// <summary>A pretend hangar: each ship's parts, wear, whether it's fuelled, and what parts came back with.</summary>
+    sealed class FakeHangar
+    {
+        public readonly Dictionary<string, List<Node>> Parts = new Dictionary<string, List<Node>>();
+        public readonly Dictionary<string, double> Wear = new Dictionary<string, double>();
+        public readonly HashSet<string> Ready = new HashSet<string>();
+        public readonly Dictionary<string, IDictionary<string, double>> Left = new Dictionary<string, IDictionary<string, double>>();
+
+        public Owner OwnerOf(Node part)
+        {
+            if (!Hardware.Parse(Hardware.Of(part), out string ship, out int at) || !Parts.TryGetValue(ship, out List<Node> list) || at >= list.Count) return null;
+            if (Hardware.PartName(list[at]) != Hardware.PartName(part)) return null;
+            Left.TryGetValue(ship + ":" + at, out IDictionary<string, double> left);
+            return new Owner { Kind = OwnerKind.Hangar, ShipId = ship, Index = at, Label = ship + " #1", Wear = Wear.TryGetValue(ship, out double w) ? w : 0, Ready = Ready.Contains(ship), Left = left };
+        }
+
+        public IEnumerable<Node> PartsOf(string ship) => Parts.TryGetValue(ship, out List<Node> l) ? l : null;
     }
 
     // The mockup's Comsat II on Oak 005 #4, in round numbers.
     static void QuoteChecks()
     {
         var s = new Settings();
+        var hangar = new FakeHangar();
+        hangar.Parts["oak"] = new List<Node> { QuotePart("first", 52000, 1000), QuotePart("fin", 400, 0) };
+        hangar.Wear["oak"] = 0.2;
+        hangar.Left["oak:0"] = new Dictionary<string, double> { { "LiquidFuel", 90 } };
+        hangar.Parts["comsat"] = new List<Node> { QuotePart("comsat", 38400, 0) };
+        hangar.Ready.Add("comsat");
         var craft = new Node();
-        craft.Nodes.Add(QuotePart("upper", 0, 16500, 100));     // new upper stage, 100 units of fuel
-        craft.Nodes.Add(QuotePart("first", 1, 52000, 1000, 0.2));    // Oak 005 #4, flown once (20% worn), came back with 90 units
-        craft.Nodes.Add(QuotePart("comsat", 0, 38400, 0));      // a ready Comsat II from the hangar
-        craft.Nodes.Add(QuotePart("binned", 2, 1000, 0, 0.3));       // a battery from the parts bin, 30% worn
-        Func<string, Owner> owner = sn =>
-            sn == "first" ? new Owner { Kind = OwnerKind.Hangar, ShipId = "oak4", Label = "Oak 005 #4" } :
-            sn == "comsat" ? new Owner { Kind = OwnerKind.Hangar, ShipId = "comsat", Label = "Comsat II", Ready = true } :
-            sn == "binned" ? new Owner { Kind = OwnerKind.Bin } : null;
-        Func<string, IDictionary<string, double>> left = sn => sn == "first" ? new Dictionary<string, double> { { "LiquidFuel", 90 } } : null;
-        Quote q = Quotes.Make(craft, "Comsat II", owner, new FakeCosts(), left, s);
+        craft.Nodes.Add(QuotePart("upper", 16500, 100));                       // new upper stage, 100 units of fuel
+        craft.Nodes.Add(QuotePart("first", 52000, 1000, "oak:0"));            // Oak 005 #4, 20% worn, came back with 90 units
+        craft.Nodes.Add(QuotePart("comsat", 38400, 0, "comsat:0"));           // a ready Comsat II from the hangar
+        craft.Nodes.Add(QuotePart("battery", 1000, 50));                      // a battery the bin has one of
+        int binHas = 1;
+        Func<Node, Owner> bin = p => Hardware.PartName(p) == "battery" && binHas-- > 0 ? new Owner { Kind = OwnerKind.Bin, BinKey = "battery|1000" } : null;
+        Quote q = Quotes.Make(craft, "Comsat II", hangar.OwnerOf, new FakeCosts(), s, bin, hangar.PartsOf);
         Check(q.PartCount == 4 && q.Lines.Count == 4, "four parts in four lines (" + q.Lines.Count + ")");
         Check(Near(q.NewPrice, 16500, 0.01), "new parts cost their full price (" + q.NewPrice + ")");
-        Check(Near(q.RefurbishPrice, 52000 * 0.2 * 0.5 + 1000 * 0.3 * 0.5, 0.01), "reused parts cost their refurbish by wear; the unworn ready payload costs nothing (" + q.RefurbishPrice + ")");
-        Check(Near(q.Lines[0].Wear, 0.2, 1e-9) && q.Lines[1].Wear == 0, "each line knows its wear");
-        Check(Near(q.FuelPrice, 100 * 0.8 + 910 * 0.8, 0.01), "fuel: new tanks filled, the flown stage topped up, the ready payload full (" + q.FuelPrice + ")");
+        Check(Near(q.RefurbishPrice, (52000 + 400) * 0.2 * 0.5, 0.01), "hangar parts cost their refurbish by their ship's wear, the fin it leaves out too; the unworn ready payload and the bin battery cost nothing (" + q.RefurbishPrice + ")");
+        QuoteLine oak = q.Lines.First(l => l.ShipId == "oak");
+        Check(oak.LeftOut == 1 && Near(oak.LeftOutPrice, 400 * 0.2 * 0.5, 0.01), "the part Oak 005 #4 leaves out goes to the bin, refurbished with the rest");
+        Check(Near(q.FuelPrice, 100 * 0.8 + 910 * 0.8 + 50 * 0.8, 0.01), "fuel: new tanks filled, the flown stage topped up, the ready payload full, the bin battery filled from empty (" + q.FuelPrice + ")");
         Check(Near(q.Seconds, Pricing.BuildSeconds(q.BuildPrice, s), 1e-6), "build time comes from new parts plus refurbishing");
-        Check(q.Lines[0].Kind == OwnerKind.Hangar && q.Lines[2].Kind == OwnerKind.Bin && q.Lines[3].Kind == OwnerKind.New, "reused pieces first, then the bin, then new parts");
-        Check(q.HangarShips.SetEquals(new[] { "oak4", "comsat" }) && q.BinSerials.SequenceEqual(new[] { "binned" }), "the build knows which hangar ships and bin parts it uses");
-
-        // A new part with a matching loose part in the bin: the bin part is used instead, at its refurbish price.
-        var craft2 = new Node();
-        craft2.Nodes.Add(QuotePart("fresh", 0, 2000, 0));
-        craft2.Nodes.Add(QuotePart("other", 0, 500, 0));
-        Func<Node, Owner> match = p => p.Get("part") == "tank_fresh" ? new Owner { Kind = OwnerKind.Bin, BinSerial = "bin-7", Flights = 3, Wear = 0.4 } : null;
-        Quote q2 = Quotes.Make(craft2, "Probe", sn => null, new FakeCosts(), sn => null, s, match);
-        Check(Near(q2.RefurbishPrice, 2000 * 0.4 * 0.5, 0.01) && Near(q2.NewPrice, 500, 0.01), "a bin part swapped in costs its refurbish; the other part is new (" + q2.RefurbishPrice + ", " + q2.NewPrice + ")");
-        Check(q2.BinSerials.SequenceEqual(new[] { "bin-7" }) && q2.BinSwaps.ContainsKey("fresh"), "the build knows which bin part it takes");
-        Node built = q2.WithBinParts(craft2);
-        Check(Wear.In(built.Children("PART").First().Children("MODULE").First()) == 0.4, "the built craft carries the bin part's wear");
-        Check(Craft.SerialOf(built.Children("PART").First()) == "bin-7" && Craft.SerialOf(built.Children("PART").Last()) == "other", "the built craft carries the bin part's own serial");
-        Check(Craft.SerialOf(craft2.Children("PART").First()) == "fresh", "the editor's craft is left as it was");
+        Check(q.Lines[0].Kind == OwnerKind.Hangar && q.Lines[2].Kind == OwnerKind.Bin && q.Lines[3].Kind == OwnerKind.New, "hangar ships first, then the bin, then new parts");
+        Check(q.HangarShips.SetEquals(new[] { "oak", "comsat" }) && q.BinTaken.Count == 1 && q.BinTaken["battery|1000"] == 1, "the build knows which hangar ships it uses and what it takes from the bin");
+        Check(q.Owners.Count == 2 && q.Owners[1] == "oak:0" && q.Owners[2] == "comsat:0", "the build knows which of its parts are which ship's hardware");
+        Check(q.Main.Kind == OwnerKind.Hangar && q.Main.ShipId == "oak", "the build is the hangar ship whose hardware is nearest its root (Oak 005 #4 here: the root part is new)");
+        Check(q.Lines.First(l => l.Kind == OwnerKind.Bin).Price == 0, "bin parts are already paid for");
     }
 
     static Node PipModule(Node part, int mk)
@@ -171,7 +188,7 @@ static class CoreTests
 
     static string MkOf(Node part) => part.Children("MODULE").FirstOrDefault(x => x.Get("name") == "ModulePipPart")?.Get("mk");
 
-    // Phil's second play-test of 2026-11-08: Phil's Iterative Parts Marks, bin fuel, new parts split by design.
+    // Phil's second play-test of 2026-11-08: Phil's Iterative Parts Marks, new parts split by design, hardware's own Mk.
     static void RoundTwoChecks()
     {
         var s = new Settings();
@@ -180,151 +197,164 @@ static class CoreTests
 
         // An old-Mk bin part that would fit isn't used as it is: the build asks, and the part counts as new till then.
         var craft = new Node();
-        craft.Nodes.Add(QuotePart("fresh", 0, 2000, 0));
-        craft.Nodes.Add(QuotePart("other", 0, 500, 0));
-        Func<Node, Owner> oldMatch = p => p.Get("part") == "tank_fresh" ? new Owner { Kind = OwnerKind.Bin, Old = true, BinSerial = "bin-old", Marks = 2, Now = "Augur I Mk. 1", Current = "Augur I Mk. 3" } : null;
-        Quote q = Quotes.Make(craft, "Probe", sn => null, new FakeCosts(), sn => null, s, oldMatch);
-        Check(q.OldBin.Count == 1 && q.BinSwaps.Count == 0 && q.BinSerials.Count == 0, "an old-Mk bin part is offered, not used");
+        craft.Nodes.Add(QuotePart("fresh", 2000, 0));
+        craft.Nodes.Add(QuotePart("other", 500, 0));
+        Func<Node, Owner> oldMatch = p => Hardware.PartName(p) == "fresh" ? new Owner { Kind = OwnerKind.Bin, Old = true, BinKey = "fresh-mk1", Marks = 2, Now = "Augur I Mk. 1", Current = "Augur I Mk. 3" } : null;
+        Quote q = Quotes.Make(craft, "Probe", p => null, new FakeCosts(), s, oldMatch);
+        Check(q.OldBin.Count == 1 && q.BinTaken.Count == 0, "an old-Mk bin part is offered, not used");
         Check(Near(q.NewPrice, 2500, 0.01) && Near(q.UpdatePrice, 400, 0.01), "until it's updated it's built new; the update is priced (" + q.UpdatePrice + ")");
-
-        // A bin part keeps what it came back with: a build only tops it up (Gallant I #6 paid for a whole load).
-        var craft2 = new Node();
-        craft2.Nodes.Add(QuotePart("pod", 0, 600, 100));
-        Func<Node, Owner> binMatch = p => new Owner { Kind = OwnerKind.Bin, BinSerial = "bin-pod", Flights = 1 };
-        Quote q2 = Quotes.Make(craft2, "Pod", sn => null, new FakeCosts(), sn => sn == "bin-pod" ? new Dictionary<string, double> { { "LiquidFuel", 60 } } : null, s, binMatch);
-        Check(Near(q2.FuelPrice, 40 * 0.8, 0.01), "a bin part that came back with 60 of its 100 units pays for 40 (" + q2.FuelPrice + ")");
-        Quote q2b = Quotes.Make(craft2, "Pod", sn => null, new FakeCosts(), sn => null, s, binMatch);
-        Check(Near(q2b.FuelPrice, 100 * 0.8, 0.01), "a bin part with nothing known left is filled from empty");
 
         // New parts split by design: "Cabral I · 1 new part", "Shkhara 022 · 31 new parts".
         var craft3 = new Node();
-        foreach (string[] d in new[] { new[] { "w", "cabral" }, new[] { "l1", "shkhara" }, new[] { "l2", "shkhara" } })
-        {
-            Node p = QuotePart(d[0], 0, 100, 0);
-            p.Child("MODULE").Add("design", d[1]);
-            craft3.Nodes.Add(p);
-        }
-        Quote q3 = Quotes.Make(craft3, "Cabral I", sn => null, new FakeCosts(), sn => null, s);
+        craft3.Nodes.Add(QuotePart("w", 100, 0, null, "cabral"));
+        craft3.Nodes.Add(QuotePart("l1", 100, 0, null, "shkhara"));
+        craft3.Nodes.Add(QuotePart("l2", 100, 0, null, "shkhara"));
+        Quote q3 = Quotes.Make(craft3, "Cabral I", p => null, new FakeCosts(), s);
         Check(q3.Lines.Count == 2 && q3.Lines[0].Design == "cabral" && q3.Lines[0].Parts == 1 && q3.Lines[1].Design == "shkhara" && q3.Lines[1].Parts == 2,
               "new parts are one line per design, the top design first");
         Check(q3.NewParts == 3 && q3.Lines.Sum(l => l.Items.Count) == 3, "the lines still add up to every new part");
 
         // Flown hardware keeps its own Mk; everything else about it comes from the design.
         var design = new Node();
-        var flown = new List<Node>();
         for (int i = 0; i < 2; i++)
         {
             Node dp = new Node("PART");
             dp.Add("part", "probe_" + (100 + i));
-            Node pm = dp.AddNode("MODULE"); pm.Add("name", Craft.ModuleName); pm.Add("design", "D1"); pm.Add("slot", i.ToString()); pm.Add("serial", "");
+            Node pm = dp.AddNode("MODULE"); pm.Add("name", Craft.ModuleName); pm.Add("design", "D1"); pm.Add("slot", i.ToString());
             PipModule(dp, 1);
             Node dec = dp.AddNode("MODULE"); dec.Add("name", "ModuleDecouple"); dec.Add("isDecoupled", "False");
             design.Nodes.Add(dp);
         }
         Node fp = new Node("PART");
         fp.Add("part", "probe_555");
-        Node fm = fp.AddNode("MODULE"); fm.Add("name", Craft.ModuleName); fm.Add("design", "D1"); fm.Add("slot", "0"); fm.Add("serial", "flown-0"); fm.Add("flights", "1");
+        Node fm = fp.AddNode("MODULE"); fm.Add("name", Craft.ModuleName); fm.Add("design", "D1"); fm.Add("slot", "0"); fm.Add(Hardware.Field, "craftA:3");
         PipModule(fp, 2);
         Node fdec = fp.AddNode("MODULE"); fdec.Add("name", "ModuleDecouple"); fdec.Add("isDecoupled", "True");
-        flown.Add(fp);
-        CompletionResult r = Completion.Complete(design, "D1", flown);
-        Node slot0 = r.Craft.Children("PART").First(), slot1 = r.Craft.Children("PART").Last();
-        Check(MkOf(slot0) == "2", "Restore keeps the flown part's own Mk (play-test #6), not the design file's (" + MkOf(slot0) + ")");
-        Check(slot0.Children("MODULE").First(x => x.Get("name") == "ModuleDecouple").Get("isDecoupled") == "False", "the rest of the part comes from the design: its decoupler isn't fired");
-        Check(MkOf(slot1) == "1" && r.NewSlots.SequenceEqual(new[] { 1 }), "the new slot keeps the design's PIP data, for the current-Mk step");
-
-        // A bin part put into a build brings its own Mk too.
-        var craft4 = new Node();
-        Node np = QuotePart("newone", 0, 700, 0);
-        PipModule(np, 1);
-        craft4.Nodes.Add(np);
-        Node binNode = QuotePart("bin-9", 2, 700, 0);
-        PipModule(binNode, 3);
-        Quote q4 = Quotes.Make(craft4, "Probe", sn => null, new FakeCosts(), sn => null, s, p => new Owner { Kind = OwnerKind.Bin, BinSerial = "bin-9", Flights = 2, BinPart = binNode });
-        Check(MkOf(q4.WithBinParts(craft4).Children("PART").First()) == "3", "the built craft carries the bin part's own PIP Mk");
+        // The ship has one of the blueprint's two parts (its place in the blueprint: 0), at its own Mk 2.
+        Node r = Hardware.Restore(design, new[] { 0 }, new[] { fp }, "craftA", out List<int> newSlots);
+        Node slot0 = r.Children("PART").First(), slot1 = r.Children("PART").Last();
+        Check(MkOf(slot0) == "2", "Restore keeps the flown part's own Mk (play-test #6), not the blueprint's (" + MkOf(slot0) + ")");
+        Check(Hardware.Of(slot0) == "craftA:0", "the part the ship still has fills its place as that hardware (its note)");
+        Check(slot0.Children("MODULE").First(x => x.Get("name") == "ModuleDecouple").Get("isDecoupled") == "False", "the rest of the part comes from the blueprint: its decoupler isn't fired");
+        Check(MkOf(slot1) == "1" && Hardware.Of(slot1) == null && newSlots.SequenceEqual(new[] { 1 }), "the part it lost is new, with the blueprint's PIP data, for the current-Mk step");
 
         // A flown part updated to its program's next version is another part ("PIP.b" for "PIP.a"): it still fits its
         // slot, stays the part it is, and every link to the slot follows it.
         var design2 = new Node();
         Node top = new Node("PART");
         top.Add("part", "PIP.a_100");
-        Node tm = top.AddNode("MODULE"); tm.Add("name", Craft.ModuleName); tm.Add("serial", "");
+        Node tm = top.AddNode("MODULE"); tm.Add("name", Craft.ModuleName);
         design2.Nodes.Add(top);
         Node below = new Node("PART");
         below.Add("part", "tank_200");
         below.Add("attN", "top,PIP.a_100_0|0.5|0");
         below.Add("link", "PIP.a_1001");
-        Node bm = below.AddNode("MODULE"); bm.Add("name", Craft.ModuleName); bm.Add("serial", "");
+        Node bm = below.AddNode("MODULE"); bm.Add("name", Craft.ModuleName);
         design2.Nodes.Add(below);
         Node updated = new Node("PART");
         updated.Add("part", "PIP.b_777");
-        Node um = updated.AddNode("MODULE"); um.Add("name", Craft.ModuleName); um.Add("design", "D2"); um.Add("slot", "0"); um.Add("serial", "flown-a"); um.Add("flights", "2");
+        Node um = updated.AddNode("MODULE"); um.Add("name", Craft.ModuleName); um.Add("design", "D2"); um.Add("slot", "0"); um.Add(Hardware.Field, "craftB:0");
         PipModule(updated, 1);
         Func<Node, string> family = p => (p.Get("part") ?? "").StartsWith("PIP.") ? "PIP.b" : (p.Get("part") ?? "");
-        CompletionResult r2 = Completion.Complete(design2, "D2", new[] { updated }, family);
-        Node t2 = r2.Craft.Children("PART").First(), b2 = r2.Craft.Children("PART").Last();
-        Check(r2.Used.SequenceEqual(new[] { "flown-a" }) && t2.Get("part") == "PIP.b_100", "an updated flown part fills its slot as itself (" + t2.Get("part") + ")");
+        Node r2 = Hardware.Restore(design2, new[] { 0 }, new[] { updated }, "craftB", out List<int> new2);
+        Node t2 = r2.Children("PART").First(), b2 = r2.Children("PART").Last();
+        Check(Hardware.Of(t2) == "craftB:0" && t2.Get("part") == "PIP.b_100" && new2.SequenceEqual(new[] { 1 }), "an updated part fills its place as itself (" + t2.Get("part") + ")");
         Check(b2.Get("attN") == "top,PIP.b_100_0|0.5|0" && b2.Get("link") == "PIP.a_1001", "links to it follow it, and a longer id that only starts the same is left alone");
-        Check(Completion.Complete(design2, "D2", new[] { updated }).Used.Count == 0, "without the family rule, another part doesn't fit the slot");
     }
 
-    static void AddSerials(Node craft)
+    // Phil's round-4 play-test of 2026-11-09: ship identity is the suite's own record, not copies on parts.
+    static void RoundFourChecks()
     {
-        int i = 0;
-        foreach (Node p in craft.Children("PART"))
-        {
-            Node m = p.AddNode("MODULE");
-            m.Add("name", Craft.ModuleName);
-            m.Add("serial", "s" + (i++));
-            m.Add("flights", "1");
-        }
+        var s = new Settings();
+        Check(Hardware.Parse("abc:12", out string c, out int i) && c == "abc" && i == 12 && !Hardware.Parse("abc", out _, out _) && !Hardware.Parse("abc:-1", out _, out _) && !Hardware.Parse("", out _, out _),
+              "a hardware note reads as a stored craft and a place in it");
+        var hangar = new FakeHangar();
+        hangar.Parts["peleus"] = new List<Node> { QuotePart("pod", 600, 10), QuotePart("tank", 300, 100), QuotePart("engine", 900, 0) };
+        hangar.Wear["peleus"] = 0.3;
+
+        // Peleus III #2 in the VAB with a barometer added: its own parts and one new part; the build rides on its pod.
+        var refit = new Node();
+        refit.Nodes.Add(QuotePart("pod", 600, 10, "peleus:0"));
+        refit.Nodes.Add(QuotePart("tank", 300, 100, "peleus:1", null, null));
+        refit.Nodes.Add(QuotePart("engine", 900, 0, "peleus:2"));
+        refit.Nodes.Add(QuotePart("barometer", 50, 0));
+        Quote q = Quotes.Make(refit, "Peleus IV", hangar.OwnerOf, new FakeCosts(), s, null, hangar.PartsOf);
+        Check(q.Main.Kind == OwnerKind.Hangar && q.Main.ShipId == "peleus" && q.Main.Index == 0, "the build is Peleus III #2 (its pod is the root part), whatever it's saved as");
+        Check(q.HangarShips.Count == 1 && q.Owners.Count == 3 && Near(q.NewPrice, 50, 0.01), "three of its parts are its hardware, the barometer is new");
+        Check(Near(q.RefurbishPrice, 1800 * 0.3 * 0.5, 0.01), "its parts are refurbished by its wear (no flight counts in it)");
+
+        // A note that points at another part, a stale index, or the same part twice: none of them is hardware.
+        var odd = new Node();
+        odd.Nodes.Add(QuotePart("pod", 600, 10, "peleus:0"));
+        odd.Nodes.Add(QuotePart("pod", 600, 10, "peleus:0"));      // a copy that kept the note
+        odd.Nodes.Add(QuotePart("tank", 300, 100, "peleus:2"));    // that place holds the engine
+        odd.Nodes.Add(QuotePart("tank", 300, 100, "peleus:9"));    // no such place
+        odd.Nodes.Add(QuotePart("tank", 300, 100, "gone:1"));      // a ship that isn't in the hangar (taken apart)
+        Quote qo = Quotes.Make(odd, "Odd", hangar.OwnerOf, new FakeCosts(), s, null, hangar.PartsOf);
+        Check(qo.Owners.Count == 1 && Near(qo.NewPrice, 600 + 300 * 3, 0.01), "only the first pod is Peleus III #2's hardware; a copy, a wrong place and a ship that's gone are new parts (" + qo.NewPrice + ")");
+        Check(qo.Lines.First(l => l.Kind == OwnerKind.Hangar).LeftOut == 2, "the parts of Peleus III #2 the build doesn't use go to the bin");
+
+        // Something added to a hangar part in the VAB (cargo, a bigger size) is new: full price on top of its refurbish.
+        var grown = new Node();
+        grown.Nodes.Add(QuotePart("pod", 700, 0, "peleus:0"));
+        Quote qg = Quotes.Make(grown, "Grown", p => { Owner o = hangar.OwnerOf(p); if (o != null) o.Added = 100; return o; }, new FakeCosts(), s, null, hangar.PartsOf);
+        double share = Pricing.RefurbishShare(0.3, s);
+        Check(Near(qg.NewPrice, 100, 0.01) && Near(qg.Lines[0].Price, 600 * share + 100 + (300 + 900) * share, 0.01), "a pod with 100 of cargo added costs its refurbish plus the cargo new (" + qg.NewPrice + ")");
+
+        // The bin is counts: two batteries in the bin, three in the craft: two from the bin (free, filled from empty), one new.
+        var bat = new Node();
+        for (int k = 0; k < 3; k++) bat.Nodes.Add(QuotePart("battery", 80, 20));
+        int binCount = 2;
+        Quote qb = Quotes.Make(bat, "Batteries", p => null, new FakeCosts(), s, p => binCount-- > 0 ? new Owner { Kind = OwnerKind.Bin, BinKey = "battery" } : null);
+        Check(qb.BinTaken["battery"] == 2 && qb.BinParts == 2 && Near(qb.NewPrice, 80, 0.01) && qb.RefurbishPrice == 0, "two batteries from the bin cost nothing, the third is new");
+        Check(Near(qb.FuelPrice, 3 * 20 * 0.8, 0.01), "bin parts are emptied as they go in, so every battery is filled (" + qb.FuelPrice + ")");
+
+        // Which ship a piece is: the launch ship whose root part it carries, the highest in the tree if several.
+        var launch = new Node();
+        launch.Nodes.Add(Linked("pod", 0, 1));        // 0: the Kupe's pod, root of the launch
+        launch.Nodes.Add(Linked("dec", 1, 2));        // 1: decoupler under it
+        launch.Nodes.Add(Linked("stage", 2, 3));      // 2: a flown first stage's top (another ship's root)
+        launch.Nodes.Add(Linked("engine", 3, -1));    // 3
+        Craft lc = Craft.Read(launch);
+        Check(lc.Highest(new[] { 3, 2 }) == 2 && lc.Highest(new[] { 2, 0 }) == 0 && lc.Highest(new int[0]) == -1, "the highest of some parts is the one nearest the root");
+        PieceResult stage = Pieces.Build(launch, new[] { 2, 3 });
+        Check(stage.Root == 2 && stage.Placed.SequenceEqual(new[] { 2, 3 }) && stage.Missing.Count == 0, "the first stage comes home on its own, rooted at its top, missing nothing (it left at the decoupler)");
+        PieceResult whole = Pieces.Build(launch, new[] { 0, 1, 2, 3 });
+        Check(whole.Root == 0 && whole.Placed.SequenceEqual(new[] { 0, 1, 2, 3 }), "the whole launch comes home in its own order");
+        PieceResult top = Pieces.Build(launch, new[] { 0, 1, 9 });
+        Check(top.Unplaced.SequenceEqual(new[] { 9 }) && top.Missing.Count == 0, "a part the launch never had can't be placed; the stage under the decoupler left on purpose");
+        PieceResult lostEngine = Pieces.Build(launch, new[] { 2 });
+        Check(lostEngine.Missing.SequenceEqual(new[] { 3 }), "an engine that broke off the stage (no separator between) is missing");
+        PieceResult broke = Pieces.Build(launch, new[] { 0 }, new[] { 1 });
+        Check(broke.Missing.Contains(1) && broke.Missing.Contains(2) && broke.Missing.Contains(3), "a decoupler the landing broke off is lost, with what hung from it");
     }
 
-    // A stock craft as a "design": a piece of it came home (a first stage), and completing it to the design
-    // gives the whole craft back, with the flown parts in their own slots and every other slot new.
-    static void CompletionChecks(string name, Node craft, Craft c, CraftPart realRoot)
+    static Node Linked(string name, int id, int child)
     {
-        var design = craft.Clone();
-        int slot = 0;
-        foreach (Node p in design.Children("PART"))
-        {
-            Node m = p.Children("MODULE").First(x => x.Get("name") == Craft.ModuleName);
-            m.Set("serial", "");      // a design file carries no hardware
-            m.Set("design", "D1");
-            m.Set("slot", (slot++).ToString());
-        }
-        // The flown piece: the subtree under some part, as it was built from the design (stamped slots).
+        var p = new Node("PART");
+        p.Add("part", name + "_" + id);
+        if (child >= 0) p.Add("link", new[] { "pod", "dec", "stage", "engine" }[child] + "_" + child);
+        if (name == "dec") { Node m = p.AddNode("MODULE"); m.Add("name", "ModuleDecouple"); }
+        return p;
+    }
+
+    // A stock craft as a ship's blueprint: a piece of it came home (a first stage), and Restore gives the whole craft back,
+    // with the parts it still has in their own places as its hardware and every other part new.
+    static void RestoreChecks(string name, Node craft, Craft c, CraftPart realRoot)
+    {
         CraftPart top = c.Parts.Where(p => p != realRoot && !p.IsCompound).OrderByDescending(p => Subtree(p).Count).FirstOrDefault();
         if (top == null) return;
-        var flown = new List<Node>();
-        foreach (CraftPart p in Subtree(top))
-        {
-            Node n = p.Node.Clone();
-            Node m = n.Children("MODULE").First(x => x.Get("name") == Craft.ModuleName);
-            m.Set("design", "D1");
-            m.Set("slot", p.Index.ToString());
-            m.Set("flights", "3");
-            m.Set("hull", "Oak 005|4");
-            flown.Add(n);
-        }
-        CompletionResult r = Completion.Complete(design, "D1", flown);
-        string label = name + ": completing a flown piece";
-        Check(r.Craft.Children("PART").Count() == c.Parts.Count, label + " gives the whole design back");
-        Check(r.Used.Count == flown.Count && r.NewSlots.Count == c.Parts.Count - flown.Count, label + ": " + r.Used.Count + " flown parts, " + r.NewSlots.Count + " new");
-        List<Node> parts = r.Craft.Children("PART").ToList();
-        bool slotsRight = Subtree(top).All(p => Craft.SerialOf(parts[p.Index]) == p.Serial);
-        Check(slotsRight, label + ": each flown part sits in its own slot");
-        Check(r.NewSlots.All(i => Craft.SerialOf(parts[i]) == ""), label + ": new slots carry no serial");
-        Check(parts.Where((p, i) => !r.NewSlots.Contains(i)).All(p => p.Children("MODULE").First(x => x.Get("name") == Craft.ModuleName).Get("hull") == "Oak 005|4"), label + ": flown parts keep their ship");
-        Check(Pieces.Validate(r.Craft).Count == 0, label + ": the completed craft is valid");
-        // A different design's parts don't fill this one.
-        Check(Completion.Complete(design, "D2", flown).Used.Count == 0, label + ": parts from another design aren't used");
-        // The design was saved over and a slot now holds another part: that flown part doesn't fit it.
-        Node changed = design.Clone();
-        Node firstFlownSlot = changed.Children("PART").ElementAt(top.Index);
-        firstFlownSlot.Set("part", "someOtherPart_123");
-        CompletionResult rc = Completion.Complete(changed, "D1", flown);
-        Check(rc.Used.Count == flown.Count - 1 && rc.NewSlots.Contains(top.Index), label + ": a slot that changed part in the design is built new");
+        PieceResult piece = Pieces.Build(craft, Subtree(top).Select(p => p.Index).ToList());
+        List<Node> current = piece.Craft.Children("PART").ToList();
+        var slots = piece.Placed.ToList();   // the piece's part k is the blueprint's part Placed[k]
+        Node r = Hardware.Restore(craft, slots, current, "oak4", out List<int> fresh);
+        string label = name + ": restoring a flown piece";
+        List<Node> parts = r.Children("PART").ToList();
+        Check(parts.Count == c.Parts.Count, label + " gives the whole ship back");
+        Check(fresh.Count == c.Parts.Count - current.Count, label + ": " + current.Count + " of its own parts, " + fresh.Count + " new");
+        Check(slots.Select((s, k) => Hardware.Of(parts[s]) == Hardware.Make("oak4", k)).All(x => x), label + ": each of its parts sits in its own place, as that hardware");
+        Check(fresh.All(i => Hardware.Of(parts[i]) == null), label + ": the rest are new parts");
+        Check(Pieces.Validate(r).Count == 0, label + ": the restored craft is valid");
     }
 
     static List<CraftPart> Subtree(CraftPart p)
@@ -336,22 +366,23 @@ static class CoreTests
 
     static int CraftChecks(string name, Node craft)
     {
-        AddSerials(craft);
         Craft c = Craft.Read(craft);
         List<string> orig = Pieces.Validate(craft);
         Check(orig.Count == 0, name + ": stock craft is valid (" + string.Join("; ", orig.Take(3)) + ")");
         if (orig.Count > 0) return 0;
 
         // Everything came home.
-        CraftPart realRoot = c.Parts.First(p => p.Parent == null);
-        PieceResult all = Pieces.Build(craft, c.Parts.Select(p => p.Serial).ToList(), null);
+        CraftPart realRoot = c.RootPart;
+        PieceResult all = Pieces.Build(craft, c.Parts.Select(p => p.Index).ToList(), null);
         Check(all.Placed.Count == c.Parts.Count, name + ": whole craft placed (" + all.Placed.Count + " of " + c.Parts.Count + ")");
-        Check(all.RootSerial == realRoot.Serial, name + ": whole craft keeps its root");
-        Check(Craft.SerialOf(all.Craft.Children("PART").First()) == realRoot.Serial, name + ": root is written first");
+        Check(all.Root == realRoot.Index, name + ": whole craft keeps its root");
+        Check(all.Craft.Children("PART").First().Get("part") == realRoot.Ref && all.Placed[0] == realRoot.Index, name + ": root is written first");
         Check(Pieces.Validate(all.Craft).Count == 0, name + ": whole craft rebuilt valid");
         Check(Node.Parse(all.Craft.WriteContents()).Children("PART").Count() == c.Parts.Count, name + ": whole craft survives write and parse");
+        List<Node> rebuilt = all.Craft.Children("PART").ToList();
+        Check(all.Placed.Select((i, k) => rebuilt[k].Get("part") == c.Parts[i].Ref).All(x => x), name + ": the rebuilt craft's part k is the launch's part Placed[k]");
 
-        CompletionChecks(name, craft, c, realRoot);
+        RestoreChecks(name, craft, c, realRoot);
 
         var rng = new Random(name.GetHashCode() & 0x7fffffff);
         int tried = 1;
@@ -365,8 +396,8 @@ static class CoreTests
             string label = name + ": piece under " + top.Ref;
 
             // The piece came home whole (it was decoupled from the rest).
-            PieceResult r = Pieces.Build(craft, sub.Select(p => p.Serial).ToList(), new string[0]);
-            Check(r.RootSerial == top.Serial, label + ": new root is the piece's top part");
+            PieceResult r = Pieces.Build(craft, sub.Select(p => p.Index).ToList(), new int[0]);
+            Check(r.Root == top.Index, label + ": new root is the piece's top part");
             Check(r.Placed.Count == sub.Count - dropped, label + ": placed " + r.Placed.Count + ", expected " + (sub.Count - dropped));
             Check(r.Dropped.Count == dropped, label + ": dropped struts/fuel lines " + r.Dropped.Count + ", expected " + dropped);
             Check(r.Unplaced.Count == 0 && r.Missing.Count == 0, label + ": nothing unplaced or missing");
@@ -380,24 +411,24 @@ static class CoreTests
             CraftPart leaf = sub.Where(p => p != top && p.Children.Count == 0 && !p.IsCompound).OrderBy(_ => rng.Next()).FirstOrDefault();
             if (leaf != null)
             {
-                var home = sub.Where(p => p != leaf).Select(p => p.Serial).ToList();
+                var home = sub.Where(p => p != leaf).Select(p => p.Index).ToList();
                 PieceResult b = Pieces.Build(craft, home);
                 if (Pieces.IsSeparator(leaf) || Pieces.IsSeparator(leaf.Parent))
                     Check(b.Missing.Count == 0, label + ": " + leaf.Ref + " parted at a separator, so it isn't missing");
                 else
-                    Check(b.Missing.Count == 1 && b.Missing[0] == leaf.Serial, label + ": lost " + leaf.Ref + " is missing");
+                    Check(b.Missing.Count == 1 && b.Missing[0] == leaf.Index, label + ": lost " + leaf.Ref + " is missing");
                 Check(Pieces.Validate(b.Craft).Count == 0, label + ": valid without the lost part");
-                PieceResult d = Pieces.Build(craft, home, new[] { leaf.Serial });
-                Check(d.Missing.Count == 1 && d.Missing[0] == leaf.Serial, label + ": a part the landing broke off is missing");
+                PieceResult d = Pieces.Build(craft, home, new[] { leaf.Index });
+                Check(d.Missing.Count == 1 && d.Missing[0] == leaf.Index, label + ": a part the landing broke off is missing");
             }
 
             // Strangers came home attached (docked or grabbed in flight): they can't be placed.
             if (sub.Count >= 4)
             {
                 var outside = c.Parts.Where(p => !sub.Contains(p) && p.Parent != null && !sub.Contains(p.Parent) && p.Children.Count == 0).OrderBy(_ => rng.Next()).Take(2).ToList();
-                var home = sub.Select(p => p.Serial).Concat(outside.Select(p => p.Serial)).Concat(new[] { "unknown-serial" }).ToList();
-                PieceResult x = Pieces.Build(craft, home, new string[0]);
-                Check(x.RootSerial == top.Serial, label + ": strangers don't change the root");
+                var home = sub.Select(p => p.Index).Concat(outside.Select(p => p.Index)).Concat(new[] { c.Parts.Count + 7 }).ToList();
+                PieceResult x = Pieces.Build(craft, home, new int[0]);
+                Check(x.Root == top.Index, label + ": strangers don't change the root");
                 Check(x.Unplaced.Count == outside.Count + 1, label + ": strangers unplaced " + x.Unplaced.Count + ", expected " + (outside.Count + 1));
             }
         }

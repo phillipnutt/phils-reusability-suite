@@ -22,9 +22,9 @@ it hasn't had much real play yet. Back up your saves. The design is in [DESIGN.m
 - **Wear and refurbishing.** Each craft has one wear number, from how hard its flights were: top speed, how
   close its hottest part came to its heat limit, and G. Fly it again as it is (it's only refuelled), or
   **refurbish** it back to 0% wear whenever you like: the price follows its wear, up to half the price of new.
-  At 100% it must be refurbished first. Wear does nothing else: no failures. A flown first stage, or a ship
-  that came back short of a part, can be **restored to its design** from the hangar: its own parts plus new ones
-  for whatever it's missing, and it stays the same ship.
+  At 100% it must be refurbished first. Wear does nothing else: no failures. A ship that came back short of a
+  part can be **restored** from the hangar, from its own blueprint: its own parts plus new ones for whatever it
+  lost, and it stays the same ship.
 - **Recovery that asks.** The Recover button offers **To the hangar** (you pay the transport home, more the
   farther away it landed) or **Sell for scrap** (half of what it's worth where it landed). Cancel leaves it where it
   is.
@@ -33,9 +33,9 @@ it hasn't had much real play yet. Back up your saves. The design is in [DESIGN.m
   the stage is lost. The VAB shows each dropping piece's landing speed while you design it, and in flight each
   stage says as it drops whether it will come home. It works while you watch from the Space Center or the
   Tracking Station too.
-- **A parts bin.** Loose parts, from ships you take apart or pieces with no engine or probe core, are used
-  automatically in new builds at their refurbish price, and the Build panel lists which ones. They keep the fuel
-  they came back with.
+- **A parts bin.** Loose parts, from ships you take apart or pieces with no engine or probe core, kept as a count
+  of each kind of part. They're refurbished (and emptied of fuel) as they go in, so new builds use them in place of
+  new parts at no cost but their fuel, and the Build panel lists which ones.
 - **Phil's Iterative Parts.** New parts are always their program's current Mk, whether you build in the VAB or
   from the Space Center. Flown parts keep the Mk they were built at until you press **Update PIP parts** (in the
   parts bin or on a hangar ship). A build that could use an old-Mk bin part asks whether to update it first, or
@@ -48,11 +48,12 @@ it hasn't had much real play yet. Back up your saves. The design is in [DESIGN.m
   payload). "Load as stored" brings only what's in the hangar. Only the new parts cost full price and
   full build time.
 - **Built from designs.** Only ships built from a design filed in Phil's Builds come home to the hangar.
-  Pieces of anything else go to the parts bin, and the Build panel warns you first. If a design you load
-  already has a ready copy in the hangar, the Build panel offers to use it.
+  Pieces of anything else go to the parts bin, and the Build panel warns you first. Loading a design is always a
+  new build: open a built ship from the hangar, or from Phil's Builds' hangar list.
 
-Every part has a serial number and a flight count, so a booster comes home as itself: "Oak 005 #4, 5
-flights".
+Every launch records which ships went up in it, so a booster comes home as itself: "Oak 005 #4, 5 flights".
+A ship stays itself however it is rebuilt (open it in the VAB, change it, even save it as another design), and keeps
+its own blueprint for Restore.
 
 ## Requirements
 

@@ -9,8 +9,8 @@ using UnityEngine.UI;
 namespace PhilsReusabilitySuite
 {
     /// <summary>
-    /// In the VAB and SPH: keeps part serials honest, turns the green Launch button into Build (it opens the
-    /// Build panel), and shows the suite window from the toolbar.
+    /// In the VAB and SPH: knows which parts are a real, built ship's, turns the green Launch button into Build (it
+    /// opens the Build panel), and shows the suite window from the toolbar.
     /// </summary>
     [KSPAddon(KSPAddon.Startup.EditorAny, false)]
     public class EditorAddon : MonoBehaviour
@@ -24,13 +24,9 @@ namespace PhilsReusabilitySuite
         {
             Instance = this;
             Look.Init();
-            placed.Clear();
-            // A hangar ship opened from the Space Center comes in as the editor starts: its hardware is the ship.
-            loading = arriving;
-            if (arriving != null) placed.UnionWith(arriving);
-            arriving = null;
-            adoptRestored = EditorDriver.StartupBehaviour == EditorDriver.StartupBehaviours.LOAD_FROM_CACHE;
-            started = true;
+            // KSP brings back the ship that was here (its cache) as this editor starts; any later load replaces it.
+            restoringCache = EditorDriver.StartupBehaviour == EditorDriver.StartupBehaviours.LOAD_FROM_CACHE;
+            if (!restoringCache) live.Clear();
             GameEvents.onEditorShipModified.Add(OnShipModified);
             GameEvents.onEditorLoad.Add(OnEditorLoad);
             GameEvents.onEditorRestart.Add(OnEditorRestart);
@@ -53,15 +49,17 @@ namespace PhilsReusabilitySuite
                 {
                     yield return null;
                     Check(ship);
+                    expect = null;   // a ship opened from the Space Center is in: its notes are the ship's own now
+                    restoringCache = false;
                     yield break;
                 }
                 yield return null;
             }
+            restoringCache = false;
         }
 
         void OnDestroy()
         {
-            started = false;
             GameEvents.onEditorShipModified.Remove(OnShipModified);
             GameEvents.onEditorLoad.Remove(OnEditorLoad);
             GameEvents.onEditorRestart.Remove(OnEditorRestart);
@@ -84,146 +82,148 @@ namespace PhilsReusabilitySuite
 
         void OnLaunchClicked() { OpenBuildPanel(); }
 
-        /// <summary>The ship in the editor is exactly a ready hangar ship (all its parts, nothing more).</summary>
-        public static bool EditorShipIsReady()
+        /// <summary>The editor's ship, as a craft node (KSP writes its parts in the ship's own order).</summary>
+        public static Node EditorCraft() => EditorLogic.fetch?.ship != null ? KspNodes.FromKsp(EditorLogic.fetch.ship.SaveShip()) : null;
+
+        /// <summary>The ready hangar ship the editor's ship is exactly (all its parts, nothing more), or null.</summary>
+        public static HangarShip ReadyShipInEditor()
         {
-            if (!HighLogic.LoadedSceneIsEditor || EditorLogic.fetch == null || EditorLogic.fetch.ship == null || PRSScenario.Instance == null) return false;
-            var serials = EditorLogic.fetch.ship.parts.Select(PRSPart.SerialOf).Where(s => s != null).ToList();
-            return serials.Count == EditorLogic.fetch.ship.parts.Count && PRSScenario.Instance.ReadyShipOf(serials) != null;
+            if (!HighLogic.LoadedSceneIsEditor || EditorLogic.fetch == null || EditorLogic.fetch.ship == null || PRSScenario.Instance == null) return null;
+            HangarShip h = PRSScenario.Instance.ExactShipOf(EditorCraft());
+            return h != null && h.Ready ? h : null;
         }
 
-        /// <summary>Runs the stock launch (for a ready hangar ship, which launches free).</summary>
-        public void StockLaunch()
+        public static bool EditorShipIsReady() => ReadyShipInEditor() != null;
+
+        /// <summary>Runs the stock launch of a hangar ship (it launches free): the suite starts it, so it knows which ship it is.</summary>
+        public void StockLaunch(HangarShip h)
         {
+            PRSScenario.Instance?.Launching(h);
             if (stockLaunch != null) stockLaunch.Invoke();
             else EditorLogic.fetch.launchVessel();
         }
 
-        // ---- Serials: one rule ----
+        // ---- Which parts are a real, built ship's (one rule) ----
         //
-        // A part in the editor keeps its serial if that serial is no particular piece of hardware (a new part), or
-        // if the suite itself put that hardware there: a hangar ship loaded from the hangar, a queued build opened
-        // to edit, "Use it", a hangar copy picked up in Phil's Builds, bin parts a build took, or the ship just
-        // built. Any other serial that belongs to hardware (a hangar ship's, a bin part's, a build's, or a ship in
-        // flight) came with a saved file, or with a ship that has since launched: that part is new, so it gets a
-        // new serial. Craft files keep serials, so without this a design saved from parts that were later built
-        // brought that hangar ship back in, and the next build quietly used it up (Phil's Harris Hawk I and II).
+        // Phil, round 4: "the VAB to understand if I've got an actual ship that is loaded in there. A ship that exists and
+        // has been built. I slap a part on there and the VAB knows that all of those parts are real, have been built, and
+        // that ship is 'The Peleus', and it knows that the new part I just added is not a built part."
+        //
+        // A part is real hardware only if it carries a note the suite put there itself when it brought a stored ship in
+        // (Open in the VAB, a queued build to edit, "Use it", a hangar copy picked up in Phil's Builds), and that note still
+        // points at the ship's current parts in the hangar. Parts that arrive any other way (a saved craft, a merge, a
+        // subassembly, a design) come in as new parts, however they were saved. A copy is a new part. Launching ends it.
 
-        /// <summary>Hardware the suite put in the editor's ship.</summary>
-        static readonly HashSet<string> placed = new HashSet<string>();
-        /// <summary>Hardware the suite is loading as the whole ship (a hangar ship, a queued build).</summary>
-        static HashSet<string> loading;
-        /// <summary>Hardware of a hangar ship opened from the Space Center, for the editor about to start.</summary>
-        static HashSet<string> arriving;
-        /// <summary>Back in the editor, KSP is bringing back the ship that was there: what's still stored of it is
-        /// the hardware it was (the ship just launched is flying now, so its parts aren't).</summary>
-        static bool adoptRestored;
+        /// <summary>The stored craft the suite is bringing into the editor right now, and when. It ends as those parts arrive
+        /// (or after two minutes, for a ship opened from the Space Center whose scene is still loading).</summary>
+        static string expect;
+        static float expectAt;
+        /// <summary>The notes on the editor's own ship (so KSP's undo and its cache keep the hardware as it was).</summary>
+        static readonly HashSet<string> live = new HashSet<string>();
+        /// <summary>The editor is bringing back its cached ship as it opens (KSP's startup flag stays set after that).</summary>
+        static bool restoringCache;
 
-        /// <summary>Marks hardware as put in the editor by the suite.</summary>
-        internal static void Claim(IEnumerable<string> serials) { foreach (string s in serials) if (!string.IsNullOrEmpty(s)) placed.Add(s); }
+        /// <summary>The suite is about to bring this stored craft in: its notes are real.</summary>
+        public static void Expect(string craftId) { expect = craftId; expectAt = Time.realtimeSinceStartup; }
 
-        /// <summary>This addon has started in the current editor (KSP can load the first ship before that).</summary>
-        static bool started;
+        /// <summary>A note that counts: it points at a stored craft, and either the suite is bringing that craft in right
+        /// now, or the part is already the editor ship's hardware (KSP's undo and its cache rebuild it).</summary>
+        static bool Kept(string note) => Hardware.Parse(note, out string craftId, out _) && (Expected(craftId) || live.Contains(note)) && Known(craftId);
+
+        static bool Expected(string craftId) => craftId == expect && Time.realtimeSinceStartup - expectAt < 120f;
+
+        static bool Known(string craftId) => PRSScenario.Instance != null && PRSScenario.Instance.Knows(craftId);
 
         /// <summary>
         /// Is this editor part real hardware (by the rule above), not a new part? Phil's Iterative Parts asks as the editor
         /// builds each part from its saved data: a new part is made current, hardware keeps the version and Mk it was
-        /// built at. Without this, opening Gallant I #1 in the VAB quietly made its flown Mk 1 pod a Mk 2 (play-test
-        /// #6). Asked before the suite's own load checks run, and sometimes before this addon has started (a ship opened
-        /// from the Space Center, or the one KSP brings back after a launch), so it answers from what's coming in too.
+        /// built at (play-test #6: opening Gallant I #1 quietly made its flown Mk 1 pod a Mk 2).
         /// </summary>
         public static bool IsHardwareNode(ConfigNode part)
         {
             if (part == null) return false;
             foreach (ConfigNode m in part.GetNodes("MODULE"))
-                if (m.GetValue("name") == Core.Craft.ModuleName) return IsHardwareSerial(m.GetValue("serial"));
+                if (m.GetValue("name") == Core.Craft.ModuleName) return Kept(m.GetValue(Hardware.Field));
             return false;
         }
 
-        public static bool IsHardware(Part p) => IsHardwareSerial(PRSPart.SerialOf(p));
-
-        static bool IsHardwareSerial(string s)
-        {
-            if (string.IsNullOrEmpty(s)) return false;
-            if (placed.Contains(s) || (loading != null && loading.Contains(s)) || (!started && arriving != null && arriving.Contains(s))) return true;
-            bool comingBack = adoptRestored || (!started && EditorDriver.StartupBehaviour == EditorDriver.StartupBehaviours.LOAD_FROM_CACHE);
-            return comingBack && PRSScenario.Instance != null && PRSScenario.Instance.StoredSerials().Contains(s);
-        }
+        public static bool IsHardware(Part p) => Kept(PRSPart.NoteOf(p));
 
         void OnShipModified(ShipConstruct ship) { Check(ship); }
 
-        /// <summary>
-        /// KSP restarts the editor as it opens, for New, and for every load (not a merge). Except when it opens
-        /// with the ship that was left there, the ship is replaced: only what the suite is loading is hardware now.
-        /// </summary>
+        /// <summary>A new ship (New, or a load): only what the suite is bringing in is hardware now. Not when KSP brings the
+        /// ship back from its cache.</summary>
         void OnEditorRestart()
         {
-            if (EditorDriver.StartupBehaviour == EditorDriver.StartupBehaviours.LOAD_FROM_CACHE) return;
-            placed.Clear();
-            if (loading != null) placed.UnionWith(loading);
-            adoptRestored = false;
+            if (!restoringCache) live.Clear();
         }
 
-        /// <summary>KSP fires this during a load: with the whole new ship, or with only the merged parts for a merge.</summary>
+        /// <summary>KSP's craft browser (and the suite's own loads) fire this with the loaded ship, or with a merge's parts.</summary>
         void OnEditorLoad(ShipConstruct ship, CraftBrowserDialog.LoadType type)
         {
-            if (type == CraftBrowserDialog.LoadType.Merge) { CheckParts(ship?.parts); return; }
-            loading = null;
+            Arrive(ship?.parts);
+            Check(EditorLogic.fetch != null ? EditorLogic.fetch.ship : null);
+        }
+
+        /// <summary>Parts arriving in the editor: unless the suite is bringing them in, they're new parts.</summary>
+        internal static void Arrive(IEnumerable<Part> parts)
+        {
+            if (parts == null) return;
+            List<Part> arriving = parts.ToList();
+            var those = new HashSet<Part>(arriving);
+            // A part that carries a note already on another part of the editor's ship is a copy of it (a merge of a file
+            // saved from it): a new part.
+            ShipConstruct ship = EditorLogic.fetch != null ? EditorLogic.fetch.ship : null;
+            var onShip = new HashSet<string>(ship != null ? ship.parts.Where(p => !those.Contains(p)).Select(PRSPart.NoteOf).Where(n => n != null) : new string[0]);
+            int cleared = 0;
+            foreach (PRSPart m in arriving.Select(PRSPart.Of).Where(x => x != null && !string.IsNullOrEmpty(x.hw)).ToList())
+            {
+                bool ours = Hardware.Parse(m.hw, out string craftId, out _) && Expected(craftId) && Known(craftId) && !onShip.Contains(m.hw);
+                if (!ours) { m.hw = ""; cleared++; }
+            }
+            if (cleared > 0) Log.Info(Suite.Parts(cleared) + " came in as new parts (notes saved with them don't count)");
+        }
+
+        /// <summary>The editor's ship: each note counts once (a copy that kept one is a new part), and these are its hardware.</summary>
+        internal static void Check(ShipConstruct ship)
+        {
+            if (ship == null) return;
+            live.Clear();
+            foreach (PRSPart m in ship.parts.Select(PRSPart.Of).Where(x => x != null && !string.IsNullOrEmpty(x.hw)))
+                if (!live.Add(m.hw)) m.hw = "";
+        }
+
+        /// <summary>After Build: the editor's ship is the build's parts now (and the hangar ship's, once it's done).</summary>
+        internal static void NoteAs(ShipConstruct ship, string craftId)
+        {
+            if (ship == null) return;
+            for (int i = 0; i < ship.parts.Count; i++)
+            {
+                PRSPart m = PRSPart.Of(ship.parts[i]);
+                if (m != null) m.hw = Hardware.Make(craftId, i);
+            }
             Check(ship);
         }
 
-        internal static void Check(ShipConstruct ship)
+        /// <summary>Loads a stored craft into the editor as that hardware (a hangar ship or a queued build).</summary>
+        public static void LoadNoted(Node noted, string shipName, string craftId, string fileTag)
         {
-            if (ship == null || ship.parts.Count == 0) return;
-            if (adoptRestored)
-            {
-                adoptRestored = false;
-                PRSScenario sc = PRSScenario.Instance;
-                if (sc != null) { HashSet<string> stored = sc.StoredSerials(); Claim(ship.parts.Select(PRSPart.SerialOf).Where(s => s != null && stored.Contains(s))); }
-            }
-            Renew(ship.parts, new HashSet<string>());
-        }
-
-        /// <summary>Parts arriving beside the ship (merged, or picked up): checked against the ship's own too.</summary>
-        internal static void CheckParts(IEnumerable<Part> parts)
-        {
-            ShipConstruct ship = EditorLogic.fetch != null ? EditorLogic.fetch.ship : null;
-            if (parts == null) return;
-            var inShip = new HashSet<Part>(ship != null ? ship.parts : new List<Part>());
-            var seen = new HashSet<string>(inShip.Select(PRSPart.SerialOf).Where(s => s != null));
-            Renew(parts.Where(p => !inShip.Contains(p)), seen);
-        }
-
-        static void Renew(IEnumerable<Part> parts, HashSet<string> seen)
-        {
-            HashSet<string> taken = PRSScenario.Instance != null ? PRSScenario.Instance.TakenSerials() : new HashSet<string>();
-            int renewed = 0;
-            foreach (PRSPart m in parts.Select(PRSPart.Of).Where(x => x != null).ToList())
-            {
-                if (!string.IsNullOrEmpty(m.serial) && (!taken.Contains(m.serial) || placed.Contains(m.serial)) && seen.Add(m.serial)) continue;
-                m.MakeNew();
-                seen.Add(m.serial);
-                renewed++;
-            }
-            if (renewed > 0) Log.Info("Gave " + renewed + " parts new serial numbers (new parts, not hangar hardware)");
-        }
-
-        /// <summary>Loads a craft into the editor, keeping its parts' serials (a hangar ship or a queued build).</summary>
-        public static void LoadKeepingSerials(Node craft, string shipName, IEnumerable<string> serials, string fileTag)
-        {
-            ConfigNode c = KspNodes.ToKsp(craft, "");
+            ConfigNode c = KspNodes.ToKsp(noted, "");
             c.SetValue("ship", shipName, true);
             string path = System.IO.Path.Combine(SuiteFiles.SaveDir, fileTag + ".craft");
             c.Save(path);
-            loading = new HashSet<string>(serials);
+            Expect(craftId);
             EditorLogic.LoadShipFromFile(path);
+            expect = null;
         }
 
         public static void LoadHangarShip(HangarShip h)
         {
-            LoadKeepingSerials(h.Craft, h.DisplayName, h.Placed, "hangar-" + h.Id);
-            Log.Info("Loaded " + h.DisplayName + " from the hangar (" + h.Placed.Count + " parts)");
+            LoadNoted(h.Noted(), h.Name, h.CraftId, "hangar-" + h.Id);
+            Log.Info("Loaded " + h.DisplayName + " from the hangar (" + h.PartCount + " parts)");
         }
+
+        public static void LoadBuild(BuildJob j) => LoadNoted(j.Noted(), j.Name, j.CraftId, "build-" + j.Id);
 
         /// <summary>"Open in the VAB": the hangar ship exactly as it's stored, in the editor. From the Space Center it goes
         /// to its own building (VAB or SPH) and opens it there.</summary>
@@ -234,12 +234,12 @@ namespace PhilsReusabilitySuite
             // as it is now (refuelled, say) is what the editor scene loads.
             GamePersistence.SaveGame("persistent", HighLogic.SaveFolder, SaveMode.OVERWRITE);
             string facility = Suite.FacilityOf(h.Craft);
-            ConfigNode c = KspNodes.ToKsp(h.Craft, "");
-            c.SetValue("ship", h.DisplayName, true);
+            ConfigNode c = KspNodes.ToKsp(h.Noted(), "");
+            c.SetValue("ship", h.Name, true);
             string path = System.IO.Path.Combine(SuiteFiles.SaveDir, "hangar-" + h.Id + ".craft");
             c.Save(path);
-            arriving = new HashSet<string>(h.Placed);
-            Log.Info("Opening " + h.DisplayName + " from the hangar in the " + facility + " (" + h.Placed.Count + " parts)");
+            Expect(h.CraftId);
+            Log.Info("Opening " + h.DisplayName + " from the hangar in the " + facility + " (" + h.PartCount + " parts)");
             EditorDriver.StartAndLoadVessel(path, facility == "SPH" ? EditorFacility.SPH : EditorFacility.VAB);
         }
 
@@ -252,6 +252,13 @@ namespace PhilsReusabilitySuite
             if (Panel == null) Panel = gameObject.AddComponent<BuildPanel>();
             Panel.Open();
         }
+    }
+
+    /// <summary>Everything put on the editor's cursor (a merge, a subassembly, a Phil's Builds design) arrives through here.</summary>
+    [HarmonyLib.HarmonyPatch(typeof(EditorLogic), "SpawnConstruct")]
+    static class ArrivingParts
+    {
+        static void Prefix(ShipConstruct __0) { if (__0 != null) EditorAddon.Arrive(__0.parts); }
     }
 
     /// <summary>
@@ -309,6 +316,7 @@ namespace PhilsReusabilitySuite
         }
     }
 
+
     /// <summary>The Build panel: every piece on its own line, the totals, and Normal / Overtime / Outsource.</summary>
     public class BuildPanel : MonoBehaviour
     {
@@ -323,8 +331,11 @@ namespace PhilsReusabilitySuite
         public HangarShip ReadyShip;
         /// <summary>The editor's ship is exactly a hangar ship that isn't fuelled yet: it can launch as it is.</summary>
         public HangarShip AsIs;
-        /// <summary>The hangar ship whose name, number and flight log this build keeps (it's built on top of it).</summary>
-        public HangarShip Kept;
+        /// <summary>
+        /// The ship this build is: the hangar ship whose hardware is nearest its root (Phil, round 4: "once I build the
+        /// Peleus III #2, that ship should always be the Peleus III #2"), whatever it's saved as. Null: a new ship.
+        /// </summary>
+        public Ship MainShip;
         public Pace Chosen = Pace.Normal;
         public string Error;
         /// <summary>Old-Mk bin parts this build leaves out (answered "No": built new instead).</summary>
@@ -338,6 +349,10 @@ namespace PhilsReusabilitySuite
         Vector2 scroll;
 
         static Core.Settings S => Suite.Settings;
+
+        /// <summary>What the build is called: the ship's own name, or the design's for a new ship.</summary>
+        public string BuildName => MainShip != null ? MainShip.Name : ShipName;
+        public string KeepShipId => MainShip?.Id;
 
         /// <summary>Works out the quote for the ship in the editor and shows the panel.</summary>
         public void Open()
@@ -355,37 +370,27 @@ namespace PhilsReusabilitySuite
             Error = null;
             PRSScenario sc = PRSScenario.Instance;
             ShipConstruct ship = EditorLogic.fetch.ship;
-            EditorAddon.Check(ship);   // serials are right before pricing, whatever KSP restored
+            EditorAddon.Check(ship);
             Craft = KspNodes.FromKsp(ship.SaveShip());
             ShipName = KSP.Localization.Localizer.Format(ship.shipName);
             // A launcher picked up into an empty VAB keeps KSP's "Untitled Space Craft". A ship that is all one
             // design is built under that design's name instead, so it comes home as "Kopje 005 #1"; a payload
             // stacked on a launcher takes the name of the design at its top (its root part), "Seeker I".
-            string nameFrom = BuildsLink.SingleDesign(ship.parts.Select(p => PRSPart.Of(p)?.design))
-                              ?? PRSPart.Of(ship.parts.FirstOrDefault(p => p.parent == null))?.design;
-            if (ShipName == KSP.Localization.Localizer.Format("#autoLOC_900530") && !string.IsNullOrEmpty(nameFrom))
+            if (ShipName == KSP.Localization.Localizer.Format("#autoLOC_900530"))
             {
-                string designName = BuildsLink.NameOf(nameFrom);
-                if (!string.IsNullOrEmpty(designName)) { ShipName = designName; Craft.Set("ship", designName); }
+                string designName = BuildsLink.NameFor(ship.parts.Select(p => PRSPart.Of(p)?.design), PRSPart.Of(ship.parts.FirstOrDefault(p => p.parent == null))?.design);
+                if (!string.IsNullOrEmpty(designName)) ShipName = designName;
             }
             Facility = ship.shipFacility == EditorFacility.SPH ? "SPH" : "VAB";
-            var serials = ship.parts.Select(PRSPart.SerialOf).Where(s => s != null).ToList();
-            // A hangar ship opened in the editor is called "Gallant I #1". Built, it stays that ship (same name, number
-            // and flight log), so the build is called "Gallant I": built as "Gallant I #1" it came home as
-            // "Gallant I #1 #1" (Phil's play-test, 2026-11-08).
-            HangarShip named = sc?.Hangar.FirstOrDefault(h => h.DisplayName == ShipName && h.Placed.Any(serials.Contains));
-            if (named != null) { ShipName = named.Name; Craft.Set("ship", named.Name); }
-            ReadyShip = sc?.ReadyShipOf(serials);
-            AsIs = ReadyShip == null && serials.Count == ship.parts.Count ? sc?.HangarShipOf(serials) : null;
-            Editing = ReadyShip == null ? sc?.JobOf(serials) : null;
+            HangarShip exact = sc?.ExactShipOf(Craft);
+            ReadyShip = exact != null && exact.Ready ? exact : null;
+            AsIs = exact != null && !exact.Ready ? exact : null;
+            Editing = ReadyShip == null ? sc?.JobOf(Craft) : null;
             Quote = sc?.QuoteFor(Craft, ShipName, Editing, SkipOld);
-            // The hangar ship whose identity the build keeps: the one holding its root part, under the same name.
-            string rootSerial = PRSPart.SerialOf(ship.parts.FirstOrDefault(p => p.parent == null));
-            Kept = rootSerial == null ? null : sc?.Hangar.FirstOrDefault(h => h.Name == ShipName && h.Placed.Contains(rootSerial)
-                                                                          && (h.ReservedBy == null || h.ReservedBy == Editing?.Id));
+            MainShip = Quote != null ? sc.ShipOf(sc.MainShipOf(Quote)) : null;
+            Craft.Set("ship", BuildName);
             try { Landings = StageReturns.CheckEditorShip(ship); }
             catch (System.Exception ex) { Landings = new List<StageReturns.EditorPiece>(); Log.Warn("Landing check failed: " + ex.Message); }
-            FindHangarCopy(ship);
             try
             {
                 bool anyUnstamped = ship.parts.Any(p => PRSPart.Of(p) != null && string.IsNullOrEmpty(PRSPart.Of(p).design));
@@ -394,130 +399,11 @@ namespace PhilsReusabilitySuite
             catch (System.Exception) { Unfiled = false; }
         }
 
+        /// <summary>What the panel calls the build: the ship's own name ("Peleus III #2"), or the design's for a new ship.</summary>
+        public string Title => MainShip?.DisplayName ?? ShipName;
+
         /// <summary>The ship (or part of it) isn't from a design filed in Phil's Builds.</summary>
         public bool Unfiled;
-        /// <summary>
-        /// A hangar copy of a design that's in the editor as new parts, to build from instead ("Use it"): a ready,
-        /// complete copy first (it costs nothing), otherwise a flown one, even with parts missing. Phil, 2026-11-08:
-        /// loading the plain Gallant I said nothing about the flown Gallant I #1 in the hangar. Its own parts are
-        /// refurbished, and only what it's missing is built new.
-        /// </summary>
-        public HangarShip HangarCopy;
-        /// <summary>What the build costs with that copy in it.</summary>
-        public Quote CopyQuote;
-        /// <summary>The copy has every part of the design that's in the editor (else some are built new).</summary>
-        public bool CopyWhole;
-        int copyParts, designParts;
-        string copyDesign;
-
-        void FindHangarCopy(ShipConstruct ship)
-        {
-            HangarCopy = null; CopyQuote = null; copyDesign = null; CopyWhole = false;
-            PRSScenario sc = PRSScenario.Instance;
-            if (sc == null || ReadyShip != null || AsIs != null || Craft == null) return;
-            // Designs in the editor whose parts are all new (not already hangar hardware).
-            var groups = ship.parts.Select(PRSPart.Of).Where(m => m != null && !string.IsNullOrEmpty(m.design))
-                .GroupBy(m => m.design).ToList();
-            foreach (var g in groups)
-            {
-                if (g.Any(m => sc.OwnerOf(m.serial, Editing) != null)) continue;
-                var here = new Dictionary<int, string>();
-                foreach (PRSPart m in g) if (m.slot >= 0) here[m.slot] = m.part.partInfo?.name;
-                // Copies whose every part from the design has its slot here, holding the same part.
-                var fits = sc.Hangar.Where(h => h.ReservedBy == null && BuildsLink.DesignOf(h) == g.Key)
-                    .Select(h => new { h, slots = DesignSlots(h, g.Key) })
-                    .Where(c => c.slots.Count > 0 && c.slots.All(kv => here.TryGetValue(kv.Key, out string n) && n == kv.Value))
-                    .OrderByDescending(c => c.h.Ready && c.slots.Count == here.Count)
-                    .ThenByDescending(c => c.slots.Count)
-                    .ThenBy(c => c.h.Wear)
-                    .FirstOrDefault();
-                if (fits == null) continue;
-                HangarCopy = fits.h;
-                copyDesign = g.Key;
-                copyParts = fits.slots.Count;
-                designParts = here.Count;
-                CopyWhole = copyParts == designParts;
-                CopyQuote = sc.QuoteFor(WithCopy(Craft), ShipName, Editing, SkipOld);
-                return;
-            }
-        }
-
-        /// <summary>A hangar ship's parts placed from this design: slot to part name.</summary>
-        static Dictionary<int, string> DesignSlots(HangarShip h, string design)
-        {
-            var slots = new Dictionary<int, string>();
-            foreach (Node p in h.Craft.Children("PART"))
-            {
-                Node m = p.Children("MODULE").FirstOrDefault(x => x.Get("name") == Core.Craft.ModuleName);
-                if (m == null || m.Get("design") != design || SlotIn(p) < 0) continue;
-                string r = p.Get("part") ?? "";
-                slots[SlotIn(p)] = r.Contains("_") ? r.Substring(0, r.LastIndexOf('_')) : r;
-            }
-            return slots;
-        }
-
-        static int SlotIn(Node part)
-        {
-            Node m = part.Children("MODULE").FirstOrDefault(x => x.Get("name") == Core.Craft.ModuleName);
-            return int.TryParse(m?.Get("slot"), out int s) ? s : -1;
-        }
-
-        /// <summary>The copy's own part module for each slot of its design.</summary>
-        Dictionary<int, Node> CopyModules()
-        {
-            var bySlot = new Dictionary<int, Node>();
-            foreach (Node p in HangarCopy.Craft.Children("PART"))
-            {
-                Node m = p.Children("MODULE").FirstOrDefault(x => x.Get("name") == Core.Craft.ModuleName);
-                if (m != null && m.Get("design") == copyDesign) bySlot[SlotIn(p)] = m;
-            }
-            return bySlot;
-        }
-
-        /// <summary>The editor's craft as it would be with the copy's parts in their slots (for its price).</summary>
-        Node WithCopy(Node craft)
-        {
-            Dictionary<int, Node> bySlot = CopyModules();
-            Node c = craft.Clone();
-            foreach (Node p in c.Children("PART"))
-            {
-                Node m = p.Children("MODULE").FirstOrDefault(x => x.Get("name") == Core.Craft.ModuleName);
-                if (m == null || m.Get("design") != copyDesign || !bySlot.TryGetValue(SlotIn(p), out Node hm)) continue;
-                foreach (string key in new[] { "serial", "flights", "hull", "wear" }) m.Set(key, hm.Get(key) ?? (key == "hull" ? "" : "0"));
-            }
-            return c;
-        }
-
-        /// <summary>
-        /// "Use it": the editor's parts from that design become the hangar copy's own parts, slot by slot, so the build
-        /// takes that hardware (refurbished) instead of new parts. Slots the copy is missing stay new.
-        /// </summary>
-        public void UseHangarCopy()
-        {
-            if (HangarCopy == null || copyDesign == null) return;
-            Dictionary<int, Node> bySlot = CopyModules();
-            var partBySlot = new Dictionary<int, Node>();
-            foreach (Node p in HangarCopy.Craft.Children("PART"))
-            {
-                Node pm = p.Children("MODULE").FirstOrDefault(x => x.Get("name") == Core.Craft.ModuleName);
-                if (pm != null && pm.Get("design") == copyDesign) partBySlot[SlotIn(p)] = p;
-            }
-            foreach (Part part in EditorLogic.fetch.ship.parts)
-            {
-                PRSPart m = PRSPart.Of(part);
-                if (m == null || m.design != copyDesign || !bySlot.TryGetValue(m.slot, out Node hm)) continue;
-                m.serial = hm.Get("serial");
-                m.flights = int.TryParse(hm.Get("flights"), out int f) ? f : 0;
-                m.hull = hm.Get("hull") ?? "";
-                m.wear = (float)Core.Wear.In(hm);
-                EditorAddon.Claim(new[] { m.serial });
-                // It's that hardware now, so it has that hardware's own Phil's Iterative Parts program and Mk.
-                if (partBySlot.TryGetValue(m.slot, out Node stored)) Pip.LoadHardware(part, stored);
-            }
-            Log.Info("Using " + HangarCopy.DisplayName + " from the hangar in this build (" + copyParts + " of " + designParts + " parts of its design)");
-            Refresh();
-        }
-
         public List<StageReturns.EditorPiece> Landings = new List<StageReturns.EditorPiece>();
 
         void DrawLandings()
@@ -552,49 +438,34 @@ namespace PhilsReusabilitySuite
             string error;
             // Bin parts or hangar ships priced into this build may have been sold or put in another build since
             // the panel opened: price it again and let the player look before paying.
-            string stale = sc.StaleQuote(Quote, Editing, null);
+            string stale = sc.StaleQuote(Quote, Editing, KeepShipId);
             if (stale != null)
             {
                 Refresh();
                 Error = "Something changed since this was priced (" + stale + "). Check the new price and press Build again.";
                 return false;
             }
+            string title = Title;
+            string craftId;
             if (Editing != null)
             {
-                if (!sc.UpdateBuild(Editing, Craft, ShipName, Quote, out error)) { Error = error; return false; }
+                if (!sc.UpdateBuild(Editing, Craft, BuildName, Quote, KeepShipId, out error)) { Error = error; return false; }
+                craftId = Editing.CraftId;
                 if (Chosen == Pace.Overtime && !Editing.Overtime && sc.Jobs.Contains(Editing)) sc.SetOvertime(Editing, true, out error);
                 if (Chosen == Pace.Outsource && sc.Jobs.Contains(Editing)) sc.Outsource(Editing, out error);
-                Suite.Message(Editing.Name + ": build updated");
+                Suite.Message(title + ": build updated");
             }
             else
             {
-                BuildJob job = sc.StartBuild(Craft, ShipName, Facility, Quote, Chosen == Pace.Overtime, Chosen == Pace.Outsource, null, out error);
+                BuildJob job = sc.StartBuild(Craft, BuildName, Facility, Quote, Chosen == Pace.Overtime, Chosen == Pace.Outsource, KeepShipId, out error);
                 if (job == null) { Error = error; return false; }
-                if (Chosen != Pace.Outsource) Suite.Message(ShipName + " is being built: " + Pricing.Duration(job.SecondsLeft(S), S));
+                craftId = job.CraftId;
+                if (Chosen != Pace.Outsource) Suite.Message(title + " is being built: " + Pricing.Duration(job.SecondsLeft(S), S));
             }
-            AdoptBinSerials(Quote);
-            // The ship in the editor is now the build's hardware (and a hangar ship's, once it's finished).
-            EditorAddon.Claim(EditorLogic.fetch.ship.parts.Select(PRSPart.SerialOf));
+            // The ship in the editor is now the build's parts (and the hangar ship's, once it's finished).
+            if (EditorLogic.fetch.ship.parts.Count == Quote.PartCount) EditorAddon.NoteAs(EditorLogic.fetch.ship, craftId);
             Showing = false;
             return true;
-        }
-
-        /// <summary>
-        /// The build is made of the bin's own parts (their serials), so the ship left in the editor takes those
-        /// serials too. Otherwise it no longer matched its own build: changing it and pressing Build started a
-        /// second build at full price instead of changing the first.
-        /// </summary>
-        void AdoptBinSerials(Quote q)
-        {
-            if (q == null || q.BinSwaps.Count == 0 || EditorLogic.fetch == null || EditorLogic.fetch.ship == null) return;
-            foreach (Part p in EditorLogic.fetch.ship.parts)
-            {
-                PRSPart m = PRSPart.Of(p);
-                if (m == null || string.IsNullOrEmpty(m.serial) || !q.BinSwaps.TryGetValue(m.serial, out Owner b)) continue;
-                m.serial = b.BinSerial;
-                m.flights = System.Math.Max(0, b.Flights);
-                m.wear = (float)b.Wear;
-            }
         }
 
         double Extra(Pace p)
@@ -643,27 +514,13 @@ namespace PhilsReusabilitySuite
             if (ReadyShip != null) { DrawReady(); EndBody(); return; }
 
             GUILayout.Label(Editing != null ? "Update build" : AsIs != null ? "In the hangar as it is" : "Ready to build", Look.Eyebrow);
-            GUILayout.Label(Kept?.DisplayName ?? ShipName, Look.H2);
+            GUILayout.Label(Title, Look.H2);
             GUILayout.Space(6);
             if (AsIs != null)
             {
                 bool worn = Core.Wear.WornOut(AsIs.Wear);
                 GUILayout.Label(worn ? "<b>" + AsIs.DisplayName + "</b> is worn out (100% wear): it must be refurbished before it flies again."
                                      : "<b>" + AsIs.DisplayName + "</b> is exactly as it came home, at " + Core.Wear.Percent(AsIs.Wear) + " wear. Launch it as it is (it's refuelled first), or refurbish it back to 0% wear.", worn ? Look.Notice : Look.NoticeGood);
-                GUILayout.Space(6);
-            }
-            if (HangarCopy != null && Quote != null && CopyQuote != null)
-            {
-                string wear = HangarCopy.Wear >= 0.005 ? ", at " + Core.Wear.Percent(HangarCopy.Wear) + " wear" : "";
-                string offer = HangarCopy.Ready && CopyWhole
-                    ? "A ready <b>" + HangarCopy.DisplayName + "</b> is in the hangar, " + (wear == "" ? "built and never changed" : "complete" + wear) + ". Use it instead of building new parts?"
-                    : "<b>" + HangarCopy.DisplayName + "</b> is in the hangar" + (CopyWhole ? "" : ": " + copyParts + " of its " + designParts + " parts") + wear
-                      + ". Build from it for <b>" + Pricing.Funds(CopyQuote.Total) + "</b> instead of " + Pricing.Funds(Quote.Total) + "?";
-                GUILayout.BeginHorizontal(Look.NoticeGood);
-                GUILayout.Label(offer, Look.Meta, GUILayout.Width(430));
-                GUILayout.FlexibleSpace();
-                if (GUILayout.Button("Use it", Look.Go, GUILayout.Height(30), GUILayout.Width(90))) UseHangarCopy();
-                GUILayout.EndHorizontal();
                 GUILayout.Space(6);
             }
             if (Unfiled)
@@ -687,13 +544,13 @@ namespace PhilsReusabilitySuite
             scroll = GUILayout.BeginScrollView(scroll, GUILayout.MaxHeight(300), GUILayout.MinHeight(Mathf.Min(300, 48 * Quote.Lines.Count)));
             foreach (QuoteLine line in Quote.Lines) DrawLine(line);
             GUILayout.EndScrollView();
-            GUILayout.Label("Flown parts cost only their refurbish, which follows their wear. New parts cost their full price.", Look.Hint);
+            GUILayout.Label("Parts already built cost only their refurbish, which follows their ship's wear. Parts from the bin are already paid for. New parts cost their full price.", Look.Hint);
             DrawLandings();
 
             GUILayout.Space(8);
             GUILayout.BeginVertical(Look.Notice);
             Row("New parts", Quote.NewPrice, Look.RowVal);
-            Row("Refurbishing reused parts", Quote.RefurbishPrice, Look.RowVal);
+            Row("Refurbishing", Quote.RefurbishPrice, Look.RowVal);
             Row("Fuel", Quote.FuelPrice, Look.RowVal);
             if (Chosen != Pace.Normal) Row(Chosen == Pace.Overtime ? "Overtime" : "Outsourcing", Extra(Chosen), Look.RowValAmber, "+");
             if (Editing != null) Row("Already paid", -Editing.Paid, Look.RowValGood);
@@ -739,18 +596,23 @@ namespace PhilsReusabilitySuite
             string title, note;
             List<string> items = null;
             if (line.Kind == OwnerKind.New) { title = NewTitle(line); note = "built new"; }
+            else if (line.Kind == OwnerKind.Bin)
+            {
+                // Which parts the bin gives (Phil didn't know it had used them).
+                title = parts + " from the parts bin, already paid for";
+                note = null;
+                items = BinItems(line);
+            }
             else
             {
-                string wear = "wear " + Core.Wear.Percent(line.Wear);
+                title = parts + " from " + line.Label;
                 bool nothing = line.Price < 0.5 && line.Fuel < 0.5;
-                if (line.Kind == OwnerKind.Bin) title = parts + " from the parts bin";
-                else title = (line.MaxFlights > 0 ? parts.Replace(" part", " flown part") : parts) + " from " + line.Label;
                 bool refuel = line.Fuel >= 0.5;
-                note = nothing ? (line.Ready ? "fuelled and like new: nothing to do" : "nothing to do")
+                note = "already paid for · " + (nothing ? (line.Ready ? "fuelled and like new: nothing to do" : "nothing to do")
                      : line.Wear < 0.005 ? "like new" + (refuel ? " · refuelled" : "")
-                     : wear + " · refurbished to 0%" + (refuel ? " and refuelled" : "");
-                // Which parts the bin gives (Phil didn't know it had used them), and what a worn one costs to refurbish.
-                if (line.Kind == OwnerKind.Bin) { items = BinItems(line); note = null; }
+                     : "wear " + Core.Wear.Percent(line.Wear) + " · refurbished to 0%" + (refuel ? " and refuelled" : ""));
+                // Parts of that ship the build leaves out: refurbished into the parts bin with the rest (Phil, round 4).
+                if (line.LeftOut > 0) note += "\n" + Suite.Parts(line.LeftOut) + " left out " + (line.LeftOut == 1 ? "goes" : "go") + " to the parts bin" + (line.LeftOutPrice >= 0.5 ? ", refurbished for " + Pricing.Funds(line.LeftOutPrice) : "");
             }
             GUILayout.BeginHorizontal();
             GUILayout.BeginVertical();
@@ -777,13 +639,10 @@ namespace PhilsReusabilitySuite
             return (design != null ? design + " · " : "") + Suite.Parts(line.Parts).Replace(" part", " new part");
         }
 
-        /// <summary>The bin line's parts:"2 × Mystery Goo Unit · like new", "Mk1 Command Pod · wear 20% · refurbish 45".</summary>
+        /// <summary>The bin line's parts: "2 × Mystery Goo Unit", "Augur I Mk. 3".</summary>
         public static List<string> BinItems(QuoteLine line)
         {
-            return line.Items
-                .GroupBy(i => Pip.NameOf(i.Part) + (i.Wear >= 0.005 ? " · wear " + Core.Wear.Percent(i.Wear) : " · like new"))
-                .Select(g => (g.Count() > 1 ? g.Count() + " × " : "") + g.Key + (g.Sum(i => i.Price) >= 0.5 ? " · refurbish " + Pricing.Funds(g.Sum(i => i.Price)) : ""))
-                .ToList();
+            return line.Items.GroupBy(i => Pip.NameOf(i.Part)).Select(g => (g.Count() > 1 ? g.Count() + " × " : "") + g.Key).ToList();
         }
 
         static void Row(string key, double value, GUIStyle style, string sign = "")
@@ -833,7 +692,7 @@ namespace PhilsReusabilitySuite
                 if (GUILayout.Button("Launch", Look.Go, GUILayout.Height(38), GUILayout.MinWidth(140)))
                 {
                     Showing = false;
-                    EditorAddon.Instance.StockLaunch();
+                    EditorAddon.Instance.StockLaunch(ReadyShip);
                 }
             }
             else
@@ -866,7 +725,7 @@ namespace PhilsReusabilitySuite
             if (sc == null || AsIs == null) return;
             if (!sc.Refuel(AsIs, out string err)) { Error = err; return; }
             Showing = false;
-            EditorAddon.Instance.StockLaunch();
+            EditorAddon.Instance.StockLaunch(AsIs);
         }
     }
 }

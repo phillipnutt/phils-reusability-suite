@@ -6,100 +6,187 @@ using PhilsReusabilitySuite.Core;
 
 namespace PhilsReusabilitySuite
 {
-    /// <summary>A ship exactly as it left the pad: the craft KSP launched, with every part's serial in it.</summary>
-    public sealed class LaunchRecord
+    /// <summary>
+    /// A ship: its name and number, the design it was first built as, its own launches and its flight log. It lives
+    /// while it exists anywhere (in the hangar, inside another hangar ship as a flown first stage, in a build, or in
+    /// flight), and nothing about it is kept on its parts (Phil, round 4). However it's rebuilt, it stays this ship
+    /// (Phil: "that ship is still the Peleus III #2").
+    ///
+    /// </summary>
+    public sealed class Ship
     {
         public string Id;
-        public double UT;
-        public string Ship;
-        public Node Craft;
-        public readonly HashSet<string> Serials = new HashSet<string>();
-        /// <summary>The vessel this launch became (0 until it's known), so going back to it on the pad isn't a new launch.</summary>
-        public uint VesselId;
+        public string Name;
+        public int Number;
+        /// <summary>The Phil's Builds design it was first built as (the design in its name), set once and never changed:
+        /// Phil's Builds counts it there ("Peleus III · 1 in hangar: Peleus III #2"), whatever it's rebuilt into.</summary>
+        public string DesignId;
+        /// <summary>Its own launches (Phil: "the flight count is definitely the ship's own").</summary>
+        public int Flights;
+        /// <summary>Its flight log, newest first.</summary>
+        public readonly List<string> Log = new List<string>();
+
+        public string DisplayName => Name + " #" + Number;
+
+        public void AddLog(string entry)
+        {
+            Log.Insert(0, entry);
+            if (Log.Count > 30) Log.RemoveRange(30, Log.Count - 30);
+        }
 
         public void Save(ConfigNode n)
         {
             n.AddValue("id", Id);
+            n.AddValue("name", Name);
+            n.AddValue("number", Number);
+            if (!string.IsNullOrEmpty(DesignId)) n.AddValue("design", DesignId);
+            n.AddValue("flights", Flights);
+            foreach (string e in Log) n.AddValue("flight", e);
+        }
+
+        public static Ship Load(ConfigNode n)
+        {
+            if (n.GetValue("id") == null) return null;
+            var s = new Ship
+            {
+                Id = n.GetValue("id"),
+                Name = n.GetValue("name") ?? "Unnamed",
+                Number = int.TryParse(n.GetValue("number"), out int num) ? num : 1,
+                DesignId = n.GetValue("design"),
+                Flights = int.TryParse(n.GetValue("flights"), out int f) ? f : 0,
+            };
+            s.Log.AddRange(n.GetValues("flight"));
+            return s;
+        }
+    }
+
+    /// <summary>
+    /// A launch exactly as it left the pad: the craft KSP launched, KSP's own id for each of its parts, and the ships
+    /// that went up in it (the suite started the launch, so it knows). When something comes home, the suite looks up the
+    /// launch it came from and which of these ships it is (Phil: "see what launch that something came from and what
+    /// ships (and their IDs) were used in that launch, and then categorize them accordingly").
+    /// </summary>
+    public sealed class LaunchRecord
+    {
+        /// <summary>KSP's id for the launch, on every part of it.</summary>
+        public uint LaunchId;
+        public double UT;
+        /// <summary>What it launched as ("Kupe I #1").</summary>
+        public string Name;
+        public Node Craft;
+        /// <summary>The launched craft's wear as it left (one number per craft).</summary>
+        public double Wear;
+        /// <summary>KSP's id for each part of the craft, in the craft's order.</summary>
+        public readonly List<uint> Parts = new List<uint>();
+        /// <summary>The ships that went up in it, each with the part it rides on (its root part).</summary>
+        public readonly List<KeyValuePair<string, int>> Ships = new List<KeyValuePair<string, int>>();
+        /// <summary>Which ship each of its parts is (parts of no listed ship aren't here).</summary>
+        public readonly Dictionary<int, string> Members = new Dictionary<int, string>();
+
+        public int IndexOf(uint flightId) => Parts.IndexOf(flightId);
+
+        public void Save(ConfigNode n)
+        {
+            n.AddValue("launch", LaunchId.ToString(CultureInfo.InvariantCulture));
             n.AddValue("ut", UT.ToString("R", CultureInfo.InvariantCulture));
-            n.AddValue("ship", Ship);
-            if (VesselId != 0) n.AddValue("vessel", VesselId.ToString(CultureInfo.InvariantCulture));
+            n.AddValue("name", Name ?? "");
+            n.AddValue("wear", Wear.ToString("R", CultureInfo.InvariantCulture));
+            n.AddValue("parts", string.Join(",", Parts.Select(p => p.ToString(CultureInfo.InvariantCulture)).ToArray()));
+            foreach (KeyValuePair<string, int> s in Ships) n.AddValue("ship", s.Key + "," + s.Value.ToString(CultureInfo.InvariantCulture));
+            foreach (KeyValuePair<int, string> m in Members) n.AddValue("member", m.Key.ToString(CultureInfo.InvariantCulture) + "," + m.Value);
             n.AddNode(KspNodes.ToKsp(Craft, "CRAFT"));
         }
 
         public static LaunchRecord Load(ConfigNode n)
         {
             ConfigNode c = n.GetNode("CRAFT");
-            if (c == null) return null;
-            var r = new LaunchRecord
+            if (c == null || !uint.TryParse(n.GetValue("launch") ?? "", NumberStyles.Integer, CultureInfo.InvariantCulture, out uint id)) return null;
+            var r = new LaunchRecord { LaunchId = id, UT = Num(n.GetValue("ut")), Name = n.GetValue("name") ?? "", Wear = Num(n.GetValue("wear")), Craft = KspNodes.FromKsp(c) };
+            foreach (string p in (n.GetValue("parts") ?? "").Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries))
+                r.Parts.Add(uint.TryParse(p, NumberStyles.Integer, CultureInfo.InvariantCulture, out uint f) ? f : 0);
+            foreach (string s in n.GetValues("ship"))
             {
-                Id = n.GetValue("id") ?? Guid.NewGuid().ToString("N"),
-                UT = Num(n.GetValue("ut")),
-                Ship = n.GetValue("ship") ?? "",
-                Craft = KspNodes.FromKsp(c),
-            };
-            if (uint.TryParse(n.GetValue("vessel") ?? "", NumberStyles.Integer, CultureInfo.InvariantCulture, out uint vid)) r.VesselId = vid;
-            r.IndexSerials();
+                int comma = s.LastIndexOf(',');
+                if (comma > 0 && int.TryParse(s.Substring(comma + 1), out int root)) r.Ships.Add(new KeyValuePair<string, int>(s.Substring(0, comma), root));
+            }
+            foreach (string m in n.GetValues("member"))
+            {
+                int comma = m.IndexOf(',');
+                if (comma > 0 && int.TryParse(m.Substring(0, comma), out int i)) r.Members[i] = m.Substring(comma + 1);
+            }
             return r;
         }
 
-        public void IndexSerials()
-        {
-            Serials.Clear();
-            foreach (Node p in Craft.Children("PART"))
-            {
-                string s = Core.Craft.SerialOf(p);
-                if (!string.IsNullOrEmpty(s)) Serials.Add(s);
-            }
-        }
-
-        internal static double Num(string s)
-        {
-            return double.TryParse(s, NumberStyles.Float, CultureInfo.InvariantCulture, out double d) ? d : 0;
-        }
+        internal static double Num(string s) => double.TryParse(s, NumberStyles.Float, CultureInfo.InvariantCulture, out double d) ? d : 0;
     }
 
-    /// <summary>A recovered ship waiting in the hangar, exactly as it came back.</summary>
+    /// <summary>A ship waiting in the hangar, exactly as it came back (or as it was built).</summary>
     public sealed class HangarShip
     {
-        public string Id;
-        public string Name;
-        public int Number;
+        /// <summary>The ship it is. A hangar ship can carry other ships inside it (a flown first stage under a new
+        /// payload keeps its own name): those are its Pieces.</summary>
+        public Ship Ship;
+        public string Id => Ship.Id;
+        public string Name => Ship.Name;
+        public int Number => Ship.Number;
+        public string DisplayName => Ship.DisplayName;
+        public int Flights => Ship.Flights;
+
+        /// <summary>This copy of its craft. A new id whenever its parts change (built, flown, home again), so a VAB
+        /// note from an older copy points at nothing.</summary>
+        public string CraftId = NewId();
         public double UT;
-        public string LaunchId;
-        public string RootSerial;
-        public int Flights;
         /// <summary>Fuelled and paid for (newly built, refurbished, or refuelled): it launches at no cost.</summary>
         public bool Ready;
         /// <summary>How hard its flights have been, 0 to 1 (Core.Wear): one number for the whole craft.</summary>
         public double Wear;
         /// <summary>How much of the fuel it launched with came back, 0 to 1 (fuel only, not electric charge).</summary>
         public double Fuel = 1;
-        /// <summary>Resources each part still held when it came home, by serial (empty once refuelled).</summary>
-        public readonly Dictionary<string, Dictionary<string, double>> CameBack = new Dictionary<string, Dictionary<string, double>>();
+        /// <summary>Resources each part still held when it came home, by its place in the craft (empty once refuelled).</summary>
+        public readonly Dictionary<int, Dictionary<string, double>> CameBack = new Dictionary<int, Dictionary<string, double>>();
         /// <summary>The build that has taken this ship, if any (it's then shown greyed out).</summary>
         public string ReservedBy;
         /// <summary>The loadable craft, with tanks and parts as they left the pad last time.</summary>
         public Node Craft;
-        public readonly List<string> Placed = new List<string>();
-        public readonly List<string> Missing = new List<string>();
+        /// <summary>Parts it lost on the way.</summary>
+        public int Missing;
+        /// <summary>Its parts that are another ship's (by their place in the craft): a flown first stage under it.</summary>
+        public readonly Dictionary<int, string> Pieces = new Dictionary<int, string>();
+        /// <summary>
+        /// Its own blueprint (Phil, round 4: "couldn't it have a blueprint of the 'Peleus III #2' and restore uses that?"): the
+        /// whole ship as it was last built, kept here, never as a craft file. A build writes it; coming home, it's the ship
+        /// as it launched, less what it dropped on purpose (stages, payloads), so Restore puts back only what it lost.
+        /// </summary>
+        public Node Blueprint;
+        /// <summary>Each of its parts' place in its blueprint (-1: not in it).</summary>
+        public readonly List<int> Slots = new List<int>();
 
-        public string DisplayName => Name + " #" + Number;
+        public static string NewId() => Guid.NewGuid().ToString("N");
 
-        /// <summary>The identity its parts carry: "Name|Number".</summary>
-        public string Hull => Name + "|" + Number;
-
-        /// <summary>Sets the craft's wear, on the ship and on every part (which carry it into the editor and into
-        /// flight), and clears the parts' record of their last flight.</summary>
-        public void SetWear(double wear)
+        int partCount = -1;
+        Node counted;
+        public int PartCount
         {
-            Wear = Core.Pricing.Clamp01(wear);
-            foreach (Node p in Craft.Children("PART"))
+            get
             {
-                Node m = p.Children("MODULE").FirstOrDefault(x => x.Get("name") == Core.Craft.ModuleName);
-                if (m == null) continue;
-                m.Set("wear", Wear.ToString("R", CultureInfo.InvariantCulture));
-                m.Set("peakSpeed", "0"); m.Set("peakHeat", "0"); m.Set("peakG", "0");
+                if (!ReferenceEquals(counted, Craft)) { counted = Craft; partCount = Craft.Children("PART").Count(); }
+                return partCount;
             }
+        }
+
+        /// <summary>Which ship one of its parts is: a piece's own, or this ship's.</summary>
+        public string MemberOf(int index) => Pieces.TryGetValue(index, out string s) ? s : Ship.Id;
+
+        /// <summary>The craft with every part noted as this ship's hardware (for the VAB, a launch or a quote).</summary>
+        public Node Noted() => Hardware.Noted(Craft, CraftId);
+
+        /// <summary>As it was just built: its craft is its blueprint, part for part.</summary>
+        public void Built(Node craft)
+        {
+            Craft = craft;
+            Blueprint = craft.Clone();
+            Slots.Clear();
+            Slots.AddRange(Enumerable.Range(0, PartCount));
         }
 
         /// <summary>
@@ -110,167 +197,108 @@ namespace PhilsReusabilitySuite
         {
             double launched = 0, back = 0;
             if (!Ready && PartResourceLibrary.Instance != null)
+            {
+                int i = -1;
                 foreach (Node p in Craft.Children("PART"))
                 {
-                    string s = Core.Craft.SerialOf(p);
-                    CameBack.TryGetValue(s ?? "", out Dictionary<string, double> left);
+                    i++;
+                    CameBack.TryGetValue(i, out Dictionary<string, double> left);
                     foreach (Node r in p.Children("RESOURCE"))
                     {
                         string name = r.Get("name");
                         PartResourceDefinition def = name != null ? PartResourceLibrary.Instance.GetDefinition(name) : null;
                         if (def == null || def.density <= 0) continue;
-                        launched += Num(r.Get("amount"));
+                        launched += LaunchRecord.Num(r.Get("amount"));
                         if (left != null && left.TryGetValue(name, out double l)) back += l;
                     }
                 }
-            Fuel = launched > 0 ? Math.Min(1, back / launched) : 1;
-        }
-
-        static double Num(string s) => LaunchRecord.Num(s);
-
-        /// <summary>Marks the craft's parts as belonging to this ship (only parts with no ship yet, unless told).</summary>
-        public void StampHull(bool overwrite)
-        {
-            foreach (Node p in Craft.Children("PART"))
-            {
-                Node m = p.Children("MODULE").FirstOrDefault(x => x.Get("name") == Core.Craft.ModuleName);
-                if (m == null) continue;
-                if (overwrite || string.IsNullOrEmpty(m.Get("hull"))) m.Set("hull", Hull);
             }
-        }
-
-        public static bool ParseHull(string hull, out string name, out int number)
-        {
-            name = null; number = 0;
-            if (string.IsNullOrEmpty(hull)) return false;
-            int bar = hull.LastIndexOf('|');
-            if (bar <= 0 || !int.TryParse(hull.Substring(bar + 1), out number)) return false;
-            name = hull.Substring(0, bar);
-            return true;
+            Fuel = launched > 0 ? Math.Min(1, back / launched) : 1;
         }
 
         public void Save(ConfigNode n)
         {
-            n.AddValue("id", Id);
-            n.AddValue("name", Name);
-            n.AddValue("number", Number);
+            n.AddValue("ship", Ship.Id);
+            n.AddValue("craftId", CraftId);
             n.AddValue("ut", UT.ToString("R", CultureInfo.InvariantCulture));
-            n.AddValue("launch", LaunchId ?? "");
-            n.AddValue("root", RootSerial ?? "");
-            n.AddValue("flights", Flights);
             n.AddValue("wear", Wear.ToString("R", CultureInfo.InvariantCulture));
             n.AddValue("ready", Ready);
+            n.AddValue("missing", Missing);
             if (!string.IsNullOrEmpty(ReservedBy)) n.AddValue("reservedBy", ReservedBy);
-            foreach (string s in Missing) n.AddValue("missing", s);
-            foreach (KeyValuePair<string, Dictionary<string, double>> kv in CameBack)
+            foreach (KeyValuePair<int, string> p in Pieces) n.AddValue("piece", p.Key.ToString(CultureInfo.InvariantCulture) + "," + p.Value);
+            n.AddValue("slots", string.Join(",", Slots.Select(s => s.ToString(CultureInfo.InvariantCulture)).ToArray()));
+            if (Blueprint != null) n.AddNode(KspNodes.ToKsp(Blueprint, "BLUEPRINT"));
+            foreach (KeyValuePair<int, Dictionary<string, double>> kv in CameBack)
             {
                 ConfigNode left = n.AddNode("LEFT");
-                left.AddValue("serial", kv.Key);
+                left.AddValue("part", kv.Key);
                 foreach (KeyValuePair<string, double> r in kv.Value) left.AddValue(r.Key, r.Value.ToString("R", CultureInfo.InvariantCulture));
             }
             n.AddNode(KspNodes.ToKsp(Craft, "CRAFT"));
         }
 
-        public static HangarShip Load(ConfigNode n)
+        public static HangarShip Load(ConfigNode n, Dictionary<string, Ship> ships)
         {
             ConfigNode c = n.GetNode("CRAFT");
-            if (c == null) return null;
+            if (c == null || n.GetValue("ship") == null || !ships.TryGetValue(n.GetValue("ship"), out Ship ship)) return null;
             var h = new HangarShip
             {
-                Id = n.GetValue("id") ?? Guid.NewGuid().ToString("N"),
-                Name = n.GetValue("name") ?? "Unnamed",
-                Number = int.TryParse(n.GetValue("number"), out int num) ? num : 1,
+                Ship = ship,
+                CraftId = n.GetValue("craftId") ?? NewId(),
                 UT = LaunchRecord.Num(n.GetValue("ut")),
-                LaunchId = n.GetValue("launch"),
-                RootSerial = n.GetValue("root"),
-                Flights = int.TryParse(n.GetValue("flights"), out int f) ? f : 0,
                 Wear = Core.Pricing.Clamp01(LaunchRecord.Num(n.GetValue("wear"))),
                 Ready = n.GetValue("ready") == "True",
+                Missing = int.TryParse(n.GetValue("missing"), out int miss) ? miss : 0,
                 ReservedBy = n.GetValue("reservedBy"),
                 Craft = KspNodes.FromKsp(c),
             };
-            h.Missing.AddRange(n.GetValues("missing"));
+            foreach (string p in n.GetValues("piece"))
+            {
+                int comma = p.IndexOf(',');
+                if (comma > 0 && int.TryParse(p.Substring(0, comma), out int i)) h.Pieces[i] = p.Substring(comma + 1);
+            }
+            ConfigNode bp = n.GetNode("BLUEPRINT");
+            if (bp != null) h.Blueprint = KspNodes.FromKsp(bp);
+            foreach (string s in (n.GetValue("slots") ?? "").Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries))
+                h.Slots.Add(int.TryParse(s, out int slot) ? slot : -1);
             foreach (ConfigNode left in n.GetNodes("LEFT"))
             {
-                string serial = left.GetValue("serial");
-                if (serial == null) continue;
+                if (!int.TryParse(left.GetValue("part"), out int i)) continue;
                 var amounts = new Dictionary<string, double>();
                 foreach (ConfigNode.Value v in left.values)
-                    if (v.name != "serial") amounts[v.name] = LaunchRecord.Num(v.value);
-                h.CameBack[serial] = amounts;
-            }
-            foreach (Node p in h.Craft.Children("PART"))
-            {
-                string s = Core.Craft.SerialOf(p);
-                if (!string.IsNullOrEmpty(s)) h.Placed.Add(s);
+                    if (v.name != "part") amounts[v.name] = LaunchRecord.Num(v.value);
+                h.CameBack[i] = amounts;
             }
             h.UpdateFuel();
             return h;
         }
     }
 
-    /// <summary>A loose recovered part.</summary>
-    public sealed class BinPart
+    /// <summary>
+    /// One kind of part in the parts bin, and how many (Phil, round 4: "hey we have this thing"). A part forgets its
+    /// ship, its flights and its fuel as it goes in, and is refurbished then, so it's exactly like a new part that's
+    /// already paid for. The kind is the part, its Phil's Iterative Parts program and Mk (Phil: "a mark 2 and mark 3
+    /// are different parts"), and its price (which covers variants and rescaling).
+    /// </summary>
+    public sealed class BinKind
     {
-        public string Serial;
-        public string Part;
-        public int Flights;
-        /// <summary>The wear of the craft it came off (kept in its part).</summary>
-        public double Wear => Core.Wear.In(PartNode?.Children("MODULE").FirstOrDefault(m => m.Get("name") == Core.Craft.ModuleName));
-        /// <summary>The build using this part, if any.</summary>
-        public string ReservedBy;
-        /// <summary>The part as it was in its craft (for reuse in a new build), if known.</summary>
-        public Node PartNode;
-        /// <summary>
-        /// What it still holds (a pod's monopropellant), so a build only tops it up. Null when not known (parts binned
-        /// before this was kept): then it's filled from empty. Play-test #9: Gallant I #6 paid for a whole load again.
-        /// </summary>
-        public Dictionary<string, double> Left;
+        public string Key;
+        public int Count;
+        /// <summary>One of them, as a part node (empty of resources, no note).</summary>
+        public Node Sample;
 
         public void Save(ConfigNode n)
         {
-            n.AddValue("serial", Serial ?? "");
-            n.AddValue("part", Part ?? "");
-            n.AddValue("flights", Flights);
-            if (!string.IsNullOrEmpty(ReservedBy)) n.AddValue("reservedBy", ReservedBy);
-            if (PartNode != null) n.AddNode(KspNodes.ToKsp(PartNode, "PART"));
-            if (Left != null)
-            {
-                ConfigNode left = n.AddNode("LEFT");
-                foreach (KeyValuePair<string, double> r in Left) left.AddValue(r.Key, r.Value.ToString("R", CultureInfo.InvariantCulture));
-            }
+            n.AddValue("key", Key);
+            n.AddValue("count", Count);
+            n.AddNode(KspNodes.ToKsp(Sample, "PART"));
         }
 
-        public static BinPart Load(ConfigNode n)
+        public static BinKind Load(ConfigNode n)
         {
             ConfigNode p = n.GetNode("PART");
-            var b = new BinPart
-            {
-                Serial = n.GetValue("serial"),
-                Part = n.GetValue("part"),
-                Flights = int.TryParse(n.GetValue("flights"), out int f) ? f : 0,
-                ReservedBy = n.GetValue("reservedBy"),
-                PartNode = p != null ? KspNodes.FromKsp(p) : null,
-            };
-            ConfigNode l = n.GetNode("LEFT");
-            if (l != null)
-            {
-                b.Left = new Dictionary<string, double>();
-                foreach (ConfigNode.Value v in l.values) b.Left[v.name] = LaunchRecord.Num(v.value);
-            }
-            return b;
-        }
-
-        /// <summary>What a part holds by its craft node's resources (a ready ship's part is as loaded).</summary>
-        public static Dictionary<string, double> Held(Node part)
-        {
-            var d = new Dictionary<string, double>();
-            foreach (Node r in part.Children("RESOURCE"))
-            {
-                string name = r.Get("name");
-                if (name != null) d[name] = (d.TryGetValue(name, out double had) ? had : 0) + LaunchRecord.Num(r.Get("amount"));
-            }
-            return d;
+            if (p == null || n.GetValue("key") == null) return null;
+            return new BinKind { Key = n.GetValue("key"), Count = int.TryParse(n.GetValue("count"), out int c) ? c : 0, Sample = KspNodes.FromKsp(p) };
         }
     }
 
@@ -278,11 +306,15 @@ namespace PhilsReusabilitySuite
     public sealed class BuildJob
     {
         public string Id;
+        /// <summary>What it's built as (the design's name).</summary>
         public string Name;
         /// <summary>"VAB" or "SPH".</summary>
         public string Facility;
-        /// <summary>The ship as it will roll out, with every part's serial.</summary>
+        /// <summary>The ship as it will roll out.</summary>
         public Node Craft;
+        /// <summary>This version of its craft (a VAB note "craftId:index" points at its parts while it's queued, and at
+        /// the hangar ship it becomes once it's done).</summary>
+        public string CraftId = HangarShip.NewId();
         public double NewPrice, RefurbishPrice, FuelPrice;
         /// <summary>What was charged for the build itself (new parts, refurbishing and fuel): refunded on cancel.</summary>
         public double Paid;
@@ -290,28 +322,26 @@ namespace PhilsReusabilitySuite
         public double Progress;
         public bool Overtime;
         public double CreatedUT;
-        /// <summary>A refurbish or restore of one hangar ship: when done, that same ship is ready again, at 0% wear.</summary>
-        public string FromShipId;
+        /// <summary>The ship it keeps (a refit, refurbish or restore): when done, that same ship is ready again. Null: a new ship.</summary>
+        public string ShipId;
+        /// <summary>Its parts that are hangar hardware: craft part to "hangarShipId:index".</summary>
+        public readonly Dictionary<int, string> Owners = new Dictionary<int, string>();
+        /// <summary>Parts it took from the parts bin, by kind (given back if it's cancelled).</summary>
+        public readonly Dictionary<string, int> BinTaken = new Dictionary<string, int>();
 
         public double BuildPrice => NewPrice + RefurbishPrice;
         public double Seconds(Core.Settings s) => Pricing.BuildSeconds(BuildPrice, s);
         public double Speed(Core.Settings s) => Overtime ? s.OvertimeSpeed : 1;
         public double SecondsLeft(Core.Settings s) => (1 - Progress) * Seconds(s) / Speed(s);
 
-        public IEnumerable<string> Serials()
-        {
-            foreach (Node p in Craft.Children("PART"))
-            {
-                string s = Core.Craft.SerialOf(p);
-                if (!string.IsNullOrEmpty(s)) yield return s;
-            }
-        }
+        public Node Noted() => Hardware.Noted(Craft, CraftId);
 
         public void Save(ConfigNode n)
         {
             n.AddValue("id", Id);
             n.AddValue("name", Name);
             n.AddValue("facility", Facility);
+            n.AddValue("craftId", CraftId);
             n.AddValue("newPrice", NewPrice.ToString("R", CultureInfo.InvariantCulture));
             n.AddValue("refurbishPrice", RefurbishPrice.ToString("R", CultureInfo.InvariantCulture));
             n.AddValue("fuelPrice", FuelPrice.ToString("R", CultureInfo.InvariantCulture));
@@ -319,7 +349,9 @@ namespace PhilsReusabilitySuite
             n.AddValue("progress", Progress.ToString("R", CultureInfo.InvariantCulture));
             n.AddValue("overtime", Overtime);
             n.AddValue("created", CreatedUT.ToString("R", CultureInfo.InvariantCulture));
-            if (!string.IsNullOrEmpty(FromShipId)) n.AddValue("fromShip", FromShipId);
+            if (!string.IsNullOrEmpty(ShipId)) n.AddValue("ship", ShipId);
+            foreach (KeyValuePair<int, string> o in Owners) n.AddValue("owner", o.Key.ToString(CultureInfo.InvariantCulture) + "," + o.Value);
+            foreach (KeyValuePair<string, int> b in BinTaken) n.AddValue("bin", b.Value.ToString(CultureInfo.InvariantCulture) + "," + b.Key);
             n.AddNode(KspNodes.ToKsp(Craft, "CRAFT"));
         }
 
@@ -327,21 +359,33 @@ namespace PhilsReusabilitySuite
         {
             ConfigNode c = n.GetNode("CRAFT");
             if (c == null) return null;
-            return new BuildJob
+            var j = new BuildJob
             {
-                Id = n.GetValue("id") ?? Guid.NewGuid().ToString("N"),
+                Id = n.GetValue("id") ?? HangarShip.NewId(),
                 Name = n.GetValue("name") ?? "Unnamed",
                 Facility = n.GetValue("facility") == "SPH" ? "SPH" : "VAB",
+                CraftId = n.GetValue("craftId") ?? HangarShip.NewId(),
                 NewPrice = LaunchRecord.Num(n.GetValue("newPrice")),
-                RefurbishPrice = LaunchRecord.Num(n.GetValue("refurbishPrice") ?? n.GetValue("refitPrice")),
+                RefurbishPrice = LaunchRecord.Num(n.GetValue("refurbishPrice")),
                 FuelPrice = LaunchRecord.Num(n.GetValue("fuelPrice")),
                 Paid = LaunchRecord.Num(n.GetValue("paid")),
                 Progress = LaunchRecord.Num(n.GetValue("progress")),
                 Overtime = n.GetValue("overtime") == "True",
                 CreatedUT = LaunchRecord.Num(n.GetValue("created")),
-                FromShipId = n.GetValue("fromShip"),
+                ShipId = n.GetValue("ship"),
                 Craft = KspNodes.FromKsp(c),
             };
+            foreach (string o in n.GetValues("owner"))
+            {
+                int comma = o.IndexOf(',');
+                if (comma > 0 && int.TryParse(o.Substring(0, comma), out int i)) j.Owners[i] = o.Substring(comma + 1);
+            }
+            foreach (string b in n.GetValues("bin"))
+            {
+                int comma = b.IndexOf(',');
+                if (comma > 0 && int.TryParse(b.Substring(0, comma), out int count)) j.BinTaken[b.Substring(comma + 1)] = count;
+            }
+            return j;
         }
     }
 }

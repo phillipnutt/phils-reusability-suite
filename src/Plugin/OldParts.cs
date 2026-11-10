@@ -50,7 +50,7 @@ namespace PhilsReusabilitySuite
                 {
                     PRSScenario sc = PRSScenario.Instance;
                     string err = "The suite's save data isn't loaded.";
-                    if (sc != null && sc.UpdatePip(sc.BinPartsOf(q.OldBin), out err)) { error = null; requote(); }
+                    if (sc != null && sc.UpdatePip(sc.BinKindsOf(q.OldBin), out err)) { error = null; requote(); }
                     else error = err;
                     GUIUtility.ExitGUI();
                 }

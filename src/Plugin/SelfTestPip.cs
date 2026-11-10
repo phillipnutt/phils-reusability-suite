@@ -125,8 +125,6 @@ namespace PhilsReusabilitySuite
             return v is int i ? i : -1;
         }
 
-        static string SerialIn(Node part) => Core.Craft.SerialOf(part);
-
         /// <summary>Two of the program's batteries, one on top of the other, as a craft file (PIP fills in the module).</summary>
         static ConfigNode CellCraft(string partName, string programId, string shipName, AvailablePart ap)
         {
@@ -173,8 +171,8 @@ namespace PhilsReusabilitySuite
             return c;
         }
 
-        /// <summary>A copy of a craft as a hangar ship's: its parts with serials (flown once, placed from the design).</summary>
-        static Node AsHardware(ConfigNode craft, string designId, params string[] serials)
+        /// <summary>A copy of a craft as a hangar ship's: its parts placed from the design.</summary>
+        static Node AsHardware(ConfigNode craft, string designId)
         {
             Node n = KspNodes.FromKsp(craft);
             int i = 0;
@@ -183,12 +181,8 @@ namespace PhilsReusabilitySuite
                 Node m = p.AddNode("MODULE");
                 m.Add("name", Core.Craft.ModuleName);
                 m.Add("isEnabled", "True");
-                m.Add("serial", serials[i]);
-                m.Add("flights", "1");
-                m.Add("hull", "");
                 m.Add("design", designId);
                 m.Add("slot", i.ToString(CultureInfo.InvariantCulture));
-                m.Add("wear", "0");
                 i++;
             }
             return n;
@@ -252,9 +246,9 @@ namespace PhilsReusabilitySuite
 
             // 4. A flown copy of it in the hangar, built at Mk 1. Then the program reaches Mk 3.
             PRSScenario sc = PRSScenario.Instance;
-            Node flown = AsHardware(file, d.Id, "pip-hw-a", "pip-hw-b");
-            var h = new HangarShip { Id = Guid.NewGuid().ToString("N"), Name = DesignName, Number = 1, Craft = flown, Flights = 1, Ready = true, UT = Planetarium.GetUniversalTime() };
-            h.Placed.AddRange(new[] { "pip-hw-a", "pip-hw-b" });
+            Node flown = AsHardware(file, d.Id);
+            var h = new HangarShip { Ship = sc.NewShip(DesignName), Craft = flown, Ready = true, UT = Planetarium.GetUniversalTime() };
+            h.Ship.Flights = 1;
             sc.Hangar.Add(h);
             string hId = h.Id;
             // 7 experience is Mk 3 (2, 7, 14, 25 for Mk 2 to 5); PIP counts one per flight.
@@ -285,15 +279,15 @@ namespace PhilsReusabilitySuite
             sc = PRSScenario.Instance;
             h = sc.Hangar.FirstOrDefault(x => x.Id == hId);
             if (h == null) { Check(false, "the flown copy is still in the hangar"); yield break; }
-            Node mix = h.Craft.Clone();
-            Node second = mix.Children("PART").Last();
-            second.Children("MODULE").First(m => m.Get("name") == Core.Craft.ModuleName).Set("serial", PRSPart.NewSerial());
-            string newSerial = SerialIn(second);
-            EditorAddon.LoadKeepingSerials(mix, h.DisplayName, new[] { "pip-hw-a" }, "pip-mix");
+            // The first battery is its hardware (noted by the suite), the second a new part (no note).
+            Node mix = h.Noted();
+            Hardware.Set(mix.Children("PART").Last(), null);
+            string hwNote = Hardware.Make(h.CraftId, 0);
+            EditorAddon.LoadNoted(mix, h.DisplayName, h.CraftId, "pip-mix");
             yield return WaitFor(() => EditorLogic.fetch.ship != null && EditorLogic.fetch.ship.parts.Count == 2, 30, "the mixed ship loaded in the VAB");
             yield return new WaitForSeconds(2f);
-            Part hwPart = EditorLogic.fetch.ship.parts.FirstOrDefault(p => PRSPart.SerialOf(p) == "pip-hw-a");
-            Part newPart = EditorLogic.fetch.ship.parts.FirstOrDefault(p => PRSPart.SerialOf(p) == newSerial);
+            Part hwPart = EditorLogic.fetch.ship.parts.FirstOrDefault(p => PRSPart.NoteOf(p) == hwNote);
+            Part newPart = EditorLogic.fetch.ship.parts.FirstOrDefault(p => PRSPart.NoteOf(p) == null);
             Check(hwPart != null && LiveMk(hwPart) == 1, "in the VAB the hangar hardware stays Mk 1 (" + (hwPart != null ? LiveMk(hwPart) : -1) + ")");
             Check(newPart != null && LiveMk(newPart) == 3, "and the new part beside it comes out Mk 3 (" + (newPart != null ? LiveMk(newPart) : -1) + ")");
             yield return new WaitForSeconds(1f);
@@ -302,40 +296,33 @@ namespace PhilsReusabilitySuite
             // Built as it is, the build keeps both.
             EditorAddon.Instance.OpenBuildPanel();
             BuildPanel panel = EditorAddon.Instance.Panel;
-            Check(panel.Kept?.Id == hId, "the Build panel keeps the flown ship's identity (" + panel.Kept?.DisplayName + ")");
+            Check(panel.KeepShipId == hId, "the Build panel keeps the flown ship (it rides on its battery): " + panel.Title);
             Check(panel.Confirm(), "building it " + panel.Error);
             BuildJob job = sc.Jobs.LastOrDefault();
-            Node jobHw = job?.Craft.Children("PART").FirstOrDefault(p => SerialIn(p) == "pip-hw-a"), jobNew = job?.Craft.Children("PART").FirstOrDefault(p => SerialIn(p) == newSerial);
+            List<Node> jobParts = job?.Craft.Children("PART").ToList() ?? new List<Node>();
+            Node jobHw = jobParts.Where((p, i) => job.Owners.ContainsKey(i)).FirstOrDefault(), jobNew = jobParts.Where((p, i) => !job.Owners.ContainsKey(i)).FirstOrDefault();
             Check(jobHw != null && MkIn(jobHw) == "1" && jobNew != null && MkIn(jobNew) == "3", "the build has the hardware at Mk 1 and the new part at Mk 3 (" + MkIn(jobHw ?? new Node()) + ", " + MkIn(jobNew ?? new Node()) + ")");
             if (job != null) sc.Outsource(job, out err);
             h = sc.Hangar.FirstOrDefault(x => x.Id == hId);
-            Check(h != null && h.Ready && h.Placed.Contains("pip-hw-a") && h.Placed.Contains(newSerial), "finished, it's still " + h?.DisplayName + ", with the new battery");
-            BinPart oldB = sc.Bin.FirstOrDefault(b => b.Serial == "pip-hw-b");
-            Check(oldB != null && MkIn(oldB.PartNode) == "1" && oldB.Part == partName, "the battery it left out is in the parts bin, still Mk 1");
-
-            // 7. "Use it"'s reload: a live new part given a hangar copy's stored data keeps that Mk.
-            Node storedA = h?.Craft.Children("PART").FirstOrDefault(p => SerialIn(p) == "pip-hw-a");
-            if (newPart != null && storedA != null)
-            {
-                Pip.LoadHardware(newPart, storedA);
-                yield return new WaitForSeconds(0.5f);
-                Check(LiveMk(newPart) == 1, "a live Mk 3 part loaded with a Mk 1 part's data is Mk 1 (" + LiveMk(newPart) + ")");
-            }
+            Check(h != null && h.Ready && h.PartCount == 2 && h.Craft.Children("PART").Count(p => MkIn(p) == "3") == 1, "finished, it's still " + h?.DisplayName + ", with the new battery");
+            BinKind oldB = sc.Bin.FirstOrDefault(k => k.Count > 0 && MkIn(k.Sample) == "1");
+            Check(oldB != null && oldB.Count == 1 && Hardware.PartName(oldB.Sample) == partName && Pip.Title(oldB.Sample) == "Testcell I Mk. 1", "the battery it left out is in the parts bin, still Mk 1");
 
             // 8. Back at the Space Center: the old-Mk bin battery fits the launcher, so a build offers it, doesn't use it.
             yield return ToSpaceCenter();
             sc = PRSScenario.Instance;
             item = BuildsLink.Library().FirstOrDefault(i => i.Design.Id == d.Id);
             Owner offer = item?.Quote.OldBin.FirstOrDefault();
-            Check(offer != null && offer.BinSerial == "pip-hw-b" && !item.Quote.BinSerials.Contains("pip-hw-b") && OldPartsQuestion.List(item.Quote.OldBin) == "Testcell I Mk. 1 → Mk. 3",
+            oldB = sc.Bin.FirstOrDefault(k => k.Count > 0 && MkIn(k.Sample) == "1");
+            Check(offer != null && oldB != null && offer.BinKey == oldB.Key && !item.Quote.BinTaken.ContainsKey(oldB.Key) && OldPartsQuestion.List(item.Quote.OldBin) == "Testcell I Mk. 1 → Mk. 3",
                   "the library build offers the Mk 1 bin battery, not using it: " + (item != null ? OldPartsQuestion.List(item.Quote.OldBin) : ""));
             Check(item != null && BuildsLink.BuildFromLibrary(item, false, true, out err) == null, "and won't build until that's answered (" + err + ")");
-            oldB = sc.Bin.FirstOrDefault(b => b.Serial == "pip-hw-b");
-            double fee = item?.Quote.UpdatePrice ?? 0, f0 = Funds, expect = oldB != null ? KspCosts.Instance.Cost(oldB.PartNode).Dry * 2 * Suite.Settings.PipUpdatePerMk : -1;
+            double fee = item?.Quote.UpdatePrice ?? 0, f0 = Funds, expect = oldB != null ? KspCosts.Instance.Cost(Pip.Preview(oldB.Sample)).Dry * 2 * Suite.Settings.PipUpdatePerMk : -1;
             Check(fee > 0 && Near(fee, expect, 0.5), "updating it costs 10% of its price for each of 2 Marks (" + Pricing.Funds(fee) + ")");
-            Check(oldB != null && sc.UpdatePip(new[] { oldB }, out err) && Near(f0 - Funds, fee, 0.5) && MkIn(oldB.PartNode) == "3", "Update and use: paid, and the bin battery is Mk 3 " + err);
+            Check(oldB != null && sc.UpdatePip(sc.BinKindsOf(item.Quote.OldBin), out err) && Near(f0 - Funds, fee, 0.5) && sc.Bin.Any(k => k.Count == 1 && Pip.Title(k.Sample) == "Testcell I Mk. 3") && !sc.Bin.Any(k => k.Count > 0 && MkIn(k.Sample) == "1"),
+                  "Update and use: paid, and the bin battery is Mk 3 " + err);
             item.Requote();
-            Check(item.Quote.OldBin.Count == 0 && item.Quote.BinSerials.Contains("pip-hw-b"), "now the build uses it");
+            Check(item.Quote.OldBin.Count == 0 && item.Quote.BinParts == 1, "now the build uses it");
 
             // 9. Update PIP parts on the hangar ship: its flown Mk 1 battery becomes Mk 3, for the fee.
             h = sc.Hangar.FirstOrDefault(x => x.Id == hId);

@@ -8,17 +8,20 @@ namespace PhilsReusabilitySuite.Core
     public sealed class CraftPart
     {
         public Node Node;
+        /// <summary>Its place in the craft (the order KSP writes them, root first).</summary>
         public int Index;
         /// <summary>The craft's id for the part, "name_123456".</summary>
         public string Ref;
         public string Id;
-        public string Serial;
         public CraftPart Parent;
         public readonly List<CraftPart> Children = new List<CraftPart>();
         /// <summary>For struts and fuel lines: the craft id of the part at the other end.</summary>
         public string TargetId;
         public bool IsCompound => Node.Get("partName") == "CompoundPart";
         public string PartName => Ref.Contains("_") ? Ref.Substring(0, Ref.LastIndexOf('_')) : Ref;
+
+        /// <summary>How far below the root it hangs (the root is 0).</summary>
+        public int Depth { get { int d = 0; for (CraftPart p = Parent; p != null; p = p.Parent) d++; return d; } }
     }
 
     /// <summary>A craft (a .craft file or KSP's launched-ship config) read into a part tree.</summary>
@@ -30,7 +33,6 @@ namespace PhilsReusabilitySuite.Core
         public readonly List<CraftPart> Parts = new List<CraftPart>();
         public readonly Dictionary<string, CraftPart> ByRef = new Dictionary<string, CraftPart>();
         public readonly Dictionary<string, CraftPart> ById = new Dictionary<string, CraftPart>();
-        public readonly Dictionary<string, CraftPart> BySerial = new Dictionary<string, CraftPart>();
         public readonly List<string> Problems = new List<string>();
 
         public static Craft Read(Node root)
@@ -40,17 +42,11 @@ namespace PhilsReusabilitySuite.Core
             {
                 var p = new CraftPart { Node = n, Index = c.Parts.Count, Ref = n.Get("part") ?? "" };
                 p.Id = p.Ref.Contains("_") ? p.Ref.Substring(p.Ref.LastIndexOf('_') + 1) : p.Ref;
-                p.Serial = SerialOf(n);
                 p.TargetId = n.Child("PARTDATA")?.Get("tgt");
                 if (p.TargetId == "0" || p.TargetId == "") p.TargetId = null;   // a strut left unconnected
                 if (c.ByRef.ContainsKey(p.Ref)) c.Problems.Add("duplicate part id " + p.Ref);
                 else c.ByRef[p.Ref] = p;
                 c.ById[p.Id] = p;
-                if (!string.IsNullOrEmpty(p.Serial))
-                {
-                    if (c.BySerial.ContainsKey(p.Serial)) c.Problems.Add("duplicate serial " + p.Serial);
-                    else c.BySerial[p.Serial] = p;
-                }
                 c.Parts.Add(p);
             }
             foreach (CraftPart p in c.Parts)
@@ -64,11 +60,20 @@ namespace PhilsReusabilitySuite.Core
             return c;
         }
 
-        public static string SerialOf(Node part)
+        /// <summary>The root part: the one with no parent (KSP writes it first).</summary>
+        public CraftPart RootPart => Parts.FirstOrDefault(p => p.Parent == null) ?? Parts.FirstOrDefault();
+
+        /// <summary>Of these parts, the one highest in the tree (nearest the root; the first written on a tie), or -1.</summary>
+        public int Highest(IEnumerable<int> indices)
         {
-            foreach (Node m in part.Children("MODULE"))
-                if (m.Get("name") == ModuleName) return m.Get("serial");
-            return null;
+            int best = -1, bestDepth = int.MaxValue;
+            foreach (int i in indices)
+            {
+                if (i < 0 || i >= Parts.Count) continue;
+                int d = Parts[i].Depth;
+                if (d < bestDepth || (d == bestDepth && i < best)) { best = i; bestDepth = d; }
+            }
+            return best;
         }
 
         /// <summary>
@@ -93,38 +98,40 @@ namespace PhilsReusabilitySuite.Core
         public static bool IsNullRef(string r) => r.StartsWith("Null", StringComparison.Ordinal);
     }
 
-    /// <summary>What came home as one piece, turned back into a craft the VAB can load.</summary>
+    /// <summary>What came home as one piece, turned back into a craft the VAB can load. Parts are named by their
+    /// place in the launch's craft.</summary>
     public sealed class PieceResult
     {
-        /// <summary>The loadable craft: the launch record's parts that came home, as they left the pad.</summary>
+        /// <summary>The loadable craft: the launch's parts that came home, as they left the pad.</summary>
         public Node Craft;
-        public string RootSerial;
-        /// <summary>Serials placed in the craft.</summary>
-        public readonly List<string> Placed = new List<string>();
-        /// <summary>Serials that came home but can't be placed (docked, grabbed or added in flight): parts bin.</summary>
-        public readonly List<string> Unplaced = new List<string>();
-        /// <summary>Serials that broke off this piece and didn't come home.</summary>
-        public readonly List<string> Missing = new List<string>();
+        /// <summary>The launch part that is the piece's root.</summary>
+        public int Root = -1;
+        /// <summary>Launch parts placed in the craft, in the craft's own order (so the craft's part k is Placed[k]).</summary>
+        public readonly List<int> Placed = new List<int>();
+        /// <summary>Launch parts that came home but can't be placed (docked, grabbed or added in flight): parts bin.</summary>
+        public readonly List<int> Unplaced = new List<int>();
+        /// <summary>Launch parts that broke off this piece and didn't come home.</summary>
+        public readonly List<int> Missing = new List<int>();
         /// <summary>Struts and fuel lines whose other end didn't come home: parts bin.</summary>
-        public readonly List<string> Dropped = new List<string>();
+        public readonly List<int> Dropped = new List<int>();
     }
 
     public static class Pieces
     {
         /// <summary>
         /// Builds the craft for a piece that came home. <paramref name="launch"/> is the ship as it left the
-        /// pad; <paramref name="cameHome"/> the serials of the parts that came home; <paramref name="lostOnLanding"/>
+        /// pad; <paramref name="cameHome"/> its parts that came home (by their place in it); <paramref name="lostOnLanding"/>
         /// parts the suite's own landing check broke off (they count as lost even if they're separators).
         /// </summary>
-        public static PieceResult Build(Node launch, ICollection<string> cameHome, ICollection<string> lostOnLanding = null)
+        public static PieceResult Build(Node launch, ICollection<int> cameHome, ICollection<int> lostOnLanding = null)
         {
             var result = new PieceResult();
             Craft craft = Craft.Read(launch);
             var present = new HashSet<CraftPart>();
-            foreach (string s in cameHome)
+            foreach (int i in cameHome)
             {
-                if (s != null && craft.BySerial.TryGetValue(s, out CraftPart p)) present.Add(p);
-                else result.Unplaced.Add(s);
+                if (i >= 0 && i < craft.Parts.Count) present.Add(craft.Parts[i]);
+                else result.Unplaced.Add(i);
             }
             if (present.Count == 0) return result;
 
@@ -142,7 +149,7 @@ namespace PhilsReusabilitySuite.Core
             CraftPart root = main.Key;
             var keep = new HashSet<CraftPart>(main.Value);
             foreach (KeyValuePair<CraftPart, List<CraftPart>> kv in groups)
-                if (kv.Key != root) result.Unplaced.AddRange(kv.Value.Select(p => p.Serial));
+                if (kv.Key != root) result.Unplaced.AddRange(kv.Value.Select(p => p.Index));
 
             // A strut or fuel line whose other end didn't come home goes to the bin, not into the craft.
             var keepIds = new HashSet<string>(keep.Select(p => p.Id));
@@ -150,11 +157,11 @@ namespace PhilsReusabilitySuite.Core
                 if (p.IsCompound && p != root && p.Children.Count == 0 && p.TargetId != null && !keepIds.Contains(p.TargetId))
                 {
                     keep.Remove(p);
-                    result.Dropped.Add(p.Serial);
+                    result.Dropped.Add(p.Index);
                 }
 
             // Parts this piece lost (not separated), and anything attached to them.
-            var landing = new HashSet<string>(lostOnLanding ?? new string[0]);
+            var landing = new HashSet<int>(lostOnLanding ?? new int[0]);
             FindMissing(root, keep, present, landing, result.Missing);
 
             var refs = new HashSet<string>(keep.Select(p => p.Ref));
@@ -165,10 +172,10 @@ namespace PhilsReusabilitySuite.Core
             foreach (CraftPart p in PreOrder(root, keep))
             {
                 outNode.Nodes.Add(Rewrite(p, p == root, refs));
-                result.Placed.Add(p.Serial);
+                result.Placed.Add(p.Index);
             }
             result.Craft = outNode;
-            result.RootSerial = root.Serial;
+            result.Root = root.Index;
             return result;
         }
 
@@ -179,13 +186,13 @@ namespace PhilsReusabilitySuite.Core
         /// it. One look when the piece comes home, instead of following KSP's joint-break, decouple and
         /// destruction events through the flight.
         /// </summary>
-        static void FindMissing(CraftPart p, HashSet<CraftPart> keep, HashSet<CraftPart> present, HashSet<string> lostOnLanding, List<string> missing)
+        static void FindMissing(CraftPart p, HashSet<CraftPart> keep, HashSet<CraftPart> present, HashSet<int> lostOnLanding, List<int> missing)
         {
             foreach (CraftPart c in p.Children)
             {
                 if (keep.Contains(c)) { FindMissing(c, keep, present, lostOnLanding, missing); continue; }
                 if (present.Contains(c)) continue;   // came home, but goes to the bin (a strut whose other end is gone)
-                bool landing = c.Serial != null && lostOnLanding.Contains(c.Serial);
+                bool landing = lostOnLanding.Contains(c.Index);
                 if (landing || !(IsSeparator(p) || IsSeparator(c))) AddSubtree(c, keep, missing);
             }
         }
@@ -201,10 +208,10 @@ namespace PhilsReusabilitySuite.Core
             return false;
         }
 
-        static void AddSubtree(CraftPart p, HashSet<CraftPart> keep, List<string> into)
+        static void AddSubtree(CraftPart p, HashSet<CraftPart> keep, List<int> into)
         {
             if (keep.Contains(p)) return;
-            if (p.Serial != null) into.Add(p.Serial);
+            into.Add(p.Index);
             foreach (CraftPart c in p.Children) AddSubtree(c, keep, into);
         }
 

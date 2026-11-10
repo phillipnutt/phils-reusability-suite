@@ -180,6 +180,8 @@ namespace PhilsReusabilitySuite
         Action<RecoverChoice> onChoose;
         RecoverChoice pick = RecoverChoice.Hangar;
         double value, factor, km;
+        /// <summary>What its parts cost to refurbish as they go into the parts bin, when it can't come home as a ship.</summary>
+        double binPrice;
         bool canFly;
         Rect rect = new Rect(0, 0, 520, 100);
 
@@ -199,6 +201,8 @@ namespace PhilsReusabilitySuite
             open.factor = RecoveryValue.Factor(open.pv);
             open.km = RecoveryValue.DistanceKm(open.pv);
             open.canFly = RecoveryValue.CanFly(open.pv.protoPartSnapshots.Select(p => p.partName));
+            try { open.binPrice = PRSScenario.Instance != null ? PRSScenario.Instance.BinPriceIfRecovered(open.pv) : 0; }
+            catch (Exception) { open.binPrice = 0; }
             open.rect.x = (Screen.width - open.rect.width) / 2;
             open.rect.y = Screen.height / 4;
         }
@@ -216,7 +220,7 @@ namespace PhilsReusabilitySuite
             if (c.HasValue) done(c.Value);
         }
 
-        double Transport => value * (1 - factor);
+        double Transport => value * (1 - factor) + binPrice;
         string TransportText => Transport < 0.5 ? "free" : "−" + Pricing.Funds(Transport);
         double Scrap => value * factor * S.ScrapValue;
 
@@ -244,7 +248,9 @@ namespace PhilsReusabilitySuite
             GUILayout.Label(where + (factor < 1 ? " · stock would give back " + Math.Round(factor * 100) + "%" : ""), Look.Meta);
             GUILayout.Space(10);
             string home = canFly ? "To the hangar" : "To the parts bin";
-            string homeSub = canFly ? "Keep the hardware. It can fly again as it is, or be refurbished first." : "No engine or probe core, so its parts go to the parts bin.";
+            string homeSub = binPrice < 0.5 && canFly ? "Keep the hardware. It can fly again as it is, or be refurbished first."
+                           : (canFly ? "It can't come home as a ship, so its parts go to the parts bin" : "No engine or probe core, so its parts go to the parts bin") + (binPrice >= 0.5 ? ", refurbished as they go in (" + Pricing.Funds(binPrice) + " of the cost)." : ".");
+            if (binPrice >= 0.5) home = "To the parts bin";
             Option(RecoverChoice.Hangar, home, homeSub, Suite.Career ? TransportText : "");
             if (Suite.Career) Option(RecoverChoice.Sell, "Sell for scrap", "Half of what it's worth where it landed: the farther from KSC, the less.", "+" + Pricing.Funds(Scrap));
             GUILayout.Space(6);
@@ -319,7 +325,10 @@ namespace PhilsReusabilitySuite
 
         static bool Prefix()
         {
-            if (PRSScenario.Instance == null || Krash.SimActive || EditorAddon.Instance == null || EditorAddon.EditorShipIsReady()) return true;
+            if (PRSScenario.Instance == null || Krash.SimActive || EditorAddon.Instance == null) return true;
+            // A ready hangar ship may go: the suite notes which ship is launching, as the Build panel's Launch does.
+            HangarShip ready = EditorAddon.ReadyShipInEditor();
+            if (ready != null) { PRSScenario.Instance.Launching(ready); return true; }
             EditorAddon.Instance.OpenBuildPanel();
             return false;
         }

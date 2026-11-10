@@ -28,8 +28,5 @@ namespace PhilsReusabilitySuite.Core
         /// <summary>"23%".</summary>
         public static string Percent(double wear) => Math.Round(Pricing.Clamp01(wear) * 100).ToString("0", CultureInfo.InvariantCulture) + "%";
 
-        /// <summary>A part's wear as saved in its PRSPart module (0 when it has none).</summary>
-        public static double In(Node mod) =>
-            double.TryParse(mod?.Get("wear"), NumberStyles.Float, CultureInfo.InvariantCulture, out double w) ? Pricing.Clamp01(w) : 0;
     }
 }

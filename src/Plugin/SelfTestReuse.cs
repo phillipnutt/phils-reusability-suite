@@ -119,13 +119,12 @@ namespace PhilsReusabilitySuite
             return false;
         }
 
-        List<string> podSerials = new List<string>();
 
         /// <summary>
         /// On the pad: up to 20 km over Kerbin and falling, drop the boosters and the pod, fly the core off to orbit,
-        /// and wait for KSP to delete the falling pieces (the pod comes home on its chute).
+        /// and wait for KSP to delete the falling pieces (the pod comes home on its chute, as the ship it launched as).
         /// </summary>
-        IEnumerator FlyAndDrop(string flight)
+        IEnumerator FlyAndDrop(string flight, string shipId)
         {
             Vessel v = FlightGlobals.ActiveVessel;
             CelestialBody home = v.mainBody;
@@ -134,7 +133,7 @@ namespace PhilsReusabilitySuite
             Check(decoupler != null, flight + ": found the decoupler under the crew pod");
             if (decoupler == null) yield break;
             var podPiece = v.parts.Where(p => !Subtree(decoupler).Contains(p) && !IsBooster(p)).ToList();
-            podSerials = podPiece.Select(PRSPart.SerialOf).Where(s => s != null).ToList();
+            var podIds = podPiece.Select(p => p.flightID).ToList();
             foreach (Part p in v.parts) if (p.Rigidbody != null) p.Rigidbody.isKinematic = false;
             foreach (LaunchClamp lc in v.FindPartModulesImplementing<LaunchClamp>()) lc.Release();
             yield return new WaitForSeconds(1f);
@@ -143,20 +142,66 @@ namespace PhilsReusabilitySuite
             yield return new WaitForSeconds(5f);
             v = FlightGlobals.ActiveVessel;
             Check(!v.LandedOrSplashed && v.altitude > 10000, flight + ": flying high over Kerbin (" + Math.Round(v.altitude) + " m)");
-            var boosterSerials = v.parts.Where(IsBooster).Select(PRSPart.SerialOf).ToList();
+            var boosterIds = v.parts.Where(IsBooster).Select(p => p.flightID).ToList();
             foreach (ModuleAnchoredDecoupler d in v.FindPartModulesImplementing<ModuleAnchoredDecoupler>().ToList()) if (!d.isDecoupled) d.Decouple();
             ModuleDecouple sd = decoupler.FindModuleImplementing<ModuleDecouple>();
             if (sd != null && !sd.isDecoupled) sd.Decouple();
             yield return new WaitForSeconds(1.5f);
-            Vessel core = FlightGlobals.Vessels.Where(x => x != null && x.loaded && x != FlightGlobals.ActiveVessel && !x.parts.Any(p => podSerials.Contains(PRSPart.SerialOf(p))) && !x.parts.Any(p => boosterSerials.Contains(PRSPart.SerialOf(p))))
+            Vessel core = FlightGlobals.Vessels.Where(x => x != null && x.loaded && x != FlightGlobals.ActiveVessel && !x.parts.Any(p => podIds.Contains(p.flightID)) && !x.parts.Any(p => boosterIds.Contains(p.flightID)))
                                        .OrderByDescending(x => x.parts.Count).FirstOrDefault();
             Check(core != null, flight + ": the core stage separated from the pod");
             if (core == null) yield break;
             FlightGlobals.ForceSetActiveVessel(core);
             yield return new WaitForSeconds(3f);
             FlightGlobals.fetch.SetShipOrbit(FlightGlobals.Bodies.IndexOf(home), 0, home.Radius + 150000, 0, 0, 0, 0, Planetarium.GetUniversalTime());
-            yield return WaitFor(() => PRSScenario.Instance != null && PRSScenario.Instance.Hangar.Any(h => !h.Ready && h.Placed.Any(podSerials.Contains)), 90, flight + ": the pod came home");
+            yield return WaitFor(() => PRSScenario.Instance != null && PRSScenario.Instance.HangarOf(shipId) != null, 90, flight + ": the pod came home");
             yield return new WaitForSeconds(2f);
+        }
+
+        IEnumerator Launch(HangarShip h, string what)
+        {
+            PRSScenario sc = PRSScenario.Instance;
+            Check(sc.LaunchReady(h, out string err), "launching " + what + " " + err);
+            yield return WaitFor(() => HighLogic.LoadedSceneIsFlight && FlightGlobals.ActiveVessel != null && FlightGlobals.ActiveVessel.loaded && !FlightGlobals.ActiveVessel.packed, 120, what + " reached the pad");
+            yield return new WaitForSeconds(3f);
+        }
+
+        /// <summary>The launch record of the ship on the pad.</summary>
+        static LaunchRecord OnThePad()
+        {
+            Vessel v = FlightGlobals.ActiveVessel;
+            return v == null ? null : PRSScenario.Instance?.RecordOf(v.parts[0].launchID, v.parts[0].flightID);
+        }
+
+        static int BinCount(PRSScenario sc) => sc.Bin.Sum(k => k.Count);
+
+        /// <summary>
+        /// A design file with a hangar ship's parts in their own slots (by the design and slot Phil's Builds stamped on them),
+        /// noted as its hardware, and every other part new: what the player builds in the VAB around a flown pod.
+        /// </summary>
+        static Node AroundShip(Node file, string designId, HangarShip h, out int used)
+        {
+            Node craft = Hardware.Stamped(file, designId);
+            List<Node> stored = h.Craft.Children("PART").ToList();
+            var bySlot = new Dictionary<int, int>();
+            for (int k = 0; k < stored.Count; k++)
+            {
+                Node m = Hardware.Module(stored[k]);
+                if (m?.Get("design") == designId && int.TryParse(m.Get("slot"), out int s) && !bySlot.ContainsKey(s)) bySlot[s] = k;
+            }
+            used = 0;
+            int i = 0;
+            foreach (Node part in craft.Children("PART"))
+            {
+                if (bySlot.TryGetValue(i, out int at) && Hardware.PartName(stored[at]) == Hardware.PartName(part))
+                {
+                    Hardware.Set(part, Hardware.Make(h.CraftId, at));
+                    Hardware.CarryHardware(stored[at], part);
+                    used++;
+                }
+                i++;
+            }
+            return craft;
         }
 
         IEnumerator Body()
@@ -184,11 +229,12 @@ namespace PhilsReusabilitySuite
             typeof(BuildsApi).GetMethod("RaisePlaced", BindingFlags.Static | BindingFlags.NonPublic).Invoke(null, new object[] { d, PlaceHow.Load, EditorLogic.fetch.ship.parts, null });
             yield return new WaitForSeconds(0.5f);
             int designParts = EditorLogic.fetch.ship.parts.Count;
+            Check(!EditorLogic.fetch.ship.parts.Any(EditorAddon.IsHardware), "a design loaded from its file is all new parts");
             EditorAddon.Instance.OpenBuildPanel();
             BuildPanel panel = EditorAddon.Instance.Panel;
             Quote q1 = panel.Quote;
             Note("first build: " + designParts + " parts, new " + Pricing.Funds(q1.NewPrice) + ", fuel " + Pricing.Funds(q1.FuelPrice));
-            Check(q1.NewPrice > 0 && q1.RefurbishPrice == 0, "the first build is all new parts");
+            Check(q1.NewPrice > 0 && q1.RefurbishPrice == 0 && panel.MainShip == null, "the first build is all new parts, a new ship");
             PRSScenario sc = PRSScenario.Instance;
             Check(panel.Confirm(), "building the first one " + panel.Error);
             string jobId = sc.Jobs.LastOrDefault()?.Id;
@@ -198,75 +244,83 @@ namespace PhilsReusabilitySuite
             string err = "";
             Check(job != null && sc.Outsource(job, out err), "outsourcing it " + err);
             HangarShip first = sc.Hangar.FirstOrDefault(h => h.Ready && BuildsLink.DesignOf(h) == d.Id);
-            Check(first != null, "it's ready in the hangar (" + first?.DisplayName + ")");
+            Check(first != null && first.DisplayName == DesignName + " #1" && first.Flights == 0, "it's ready in the hangar as " + DesignName + " #1, never flown (" + first?.DisplayName + ")");
             if (first == null) yield break;
+            string shipId = first.Id, shipName = first.DisplayName;
 
-            // 3. Flight 1: everything drops away; the pod comes home on its chute.
-            Check(sc.LaunchReady(first, out err), "launching " + first.DisplayName + " " + err);
-            yield return WaitFor(() => HighLogic.LoadedSceneIsFlight && FlightGlobals.ActiveVessel != null && FlightGlobals.ActiveVessel.loaded && !FlightGlobals.ActiveVessel.packed, 120, "it reached the pad");
-            yield return new WaitForSeconds(3f);
-            yield return FlyAndDrop("flight 1");
+            // 3. Flight 1: everything drops away; the pod holds the root part, so it comes home as the ship it launched as.
+            yield return Launch(first, shipName);
+            LaunchRecord rec1 = OnThePad();
+            Check(rec1 != null && rec1.Ships.Count == 1 && rec1.Ships[0].Key == shipId && rec1.Ships[0].Value == Core.Craft.Read(rec1.Craft).RootPart.Index && rec1.Members.Count == designParts,
+                  "its launch record lists the ship that went up, riding on the root part, with all its parts");
+            Check(PRSScenario.Instance.ShipOf(shipId)?.Flights == 1 && PRSScenario.Instance.HangarOf(shipId) == null, "launching counted its first flight, and it left the hangar");
+            yield return FlyAndDrop("flight 1", shipId);
             sc = PRSScenario.Instance;
-            HangarShip flown = sc.Hangar.FirstOrDefault(h => !h.Ready && h.Placed.Any(podSerials.Contains));
-            Check(flown != null && flown.Flights == 1 && BuildsLink.DesignOf(flown) == d.Id, "the pod is in the hangar as a flown copy of the launcher (" + flown?.DisplayName + ", " + flown?.Placed.Count + " parts)");
+            HangarShip flown = sc.HangarOf(shipId);
+            Check(flown != null && !flown.Ready && flown.Flights == 1 && BuildsLink.DesignOf(flown) == d.Id && flown.DisplayName == shipName,
+                  "the pod is in the hangar as " + shipName + " again, a flown copy of the launcher (" + flown?.DisplayName + ", " + flown?.PartCount + " parts, " + flown?.Flights + " flights)");
             if (flown == null) yield break;
-            string flownId = flown.Id, flownName = flown.DisplayName;
-            var flownSerials = flown.Placed.ToList();
-            int clampsInBin = sc.Bin.Count(b => (b.Part ?? "").StartsWith("launchClamp"));
-            Note("after flight 1: hangar " + sc.Hangar.Count + ", parts bin " + sc.Bin.Count + " (" + clampsInBin + " launch clamps)");
+            int flownParts = flown.PartCount;
+            int clampsInBin = sc.Bin.Where(k => k.Key.StartsWith("launchClamp")).Sum(k => k.Count);
+            Note("after flight 1: hangar " + sc.Hangar.Count + ", parts bin " + BinCount(sc) + " (" + clampsInBin + " launch clamps)");
             yield return ToSpaceCenter();
             sc = PRSScenario.Instance;
-            flown = sc.Hangar.FirstOrDefault(h => h.Id == flownId);
-            CopyRow row = BuildsLink.Instance.CopiesOf(d).FirstOrDefault(r => r.Id == flownId);
+            CopyRow row = BuildsLink.Instance.CopiesOf(d).FirstOrDefault(r => r.Id == shipId);
             Check(row != null && row.Text.Contains("1 flight"), "Phil's Builds lists it under the launcher (" + row?.Label + " " + row?.Text + ")");
 
-            // Clicking the VAB now brings back the ship just launched, from KSP's cache. Its parts still flying (the core
-            // stage in orbit) must get new serials; only the pod, which is hangar hardware again, keeps its own.
-            var flying = new HashSet<string>(HighLogic.CurrentGame.flightState.protoVessels.SelectMany(pv => pv.protoPartSnapshots)
-                .Select(ps => ps.modules.FirstOrDefault(m => m.moduleName == Core.Craft.ModuleName)?.moduleValues?.GetValue("serial")).Where(s => !string.IsNullOrEmpty(s)));
+            // Clicking the VAB now brings back, from KSP's cache, the ship that was there when it was built. That hardware
+            // has launched since (the pod came home as a new copy of its parts), so in the VAB it's all new parts.
             var vabBuilding = FindObjectOfType<VehicleAssemblyBuilding>();
             Check(vabBuilding != null, "found the VAB at the Space Center");
             if (vabBuilding == null) yield break;
             typeof(VehicleAssemblyBuilding).GetMethod("OnClicked", BindingFlags.Instance | BindingFlags.NonPublic).Invoke(vabBuilding, null);
-            yield return WaitFor(() => HighLogic.LoadedScene == GameScenes.EDITOR && EditorLogic.fetch != null && EditorAddon.Instance != null && EditorLogic.fetch.ship != null && EditorLogic.fetch.ship.parts.Count > 0, 90, "clicking the VAB brought back the launched ship");
+            yield return WaitFor(() => HighLogic.LoadedScene == GameScenes.EDITOR && EditorLogic.fetch != null && EditorAddon.Instance != null && EditorLogic.fetch.ship != null && EditorLogic.fetch.ship.parts.Count > 0, 90, "clicking the VAB brought back the ship from before");
             yield return new WaitForSeconds(3f);
-            var backInVab = EditorLogic.fetch.ship.parts.Select(PRSPart.SerialOf).Where(s => s != null).ToList();
-            Note("back in the VAB: " + backInVab.Count + " parts; " + flying.Count + " serials still flying");
-            Check(flying.Count > 0 && !backInVab.Any(flying.Contains), "no part in the VAB shares a serial with a part still flying (" + backInVab.Count(flying.Contains) + " shared)");
-            Check(flownSerials.All(backInVab.Contains), "the pod, back in the hangar, keeps its own serials");
+            ShipConstruct cached = EditorLogic.fetch.ship;
+            Note("back in the VAB: " + cached.parts.Count + " parts, " + cached.parts.Count(EditorAddon.IsHardware) + " counted as hardware");
+            Check(!cached.parts.Any(EditorAddon.IsHardware), "none of its parts counts as hardware: the ship they were has flown since");
+            EditorAddon.Instance.OpenBuildPanel();
+            Check(EditorAddon.Instance.Panel.Quote.HangarShips.Count == 0 && EditorAddon.Instance.Panel.ReadyShip == null, "and the Build panel prices it as a new ship, not " + shipName);
+            EditorAddon.Instance.Panel.Showing = false;
             yield return ToSpaceCenter();
             sc = PRSScenario.Instance;
-            flown = sc.Hangar.FirstOrDefault(h => h.Id == flownId);
+            flown = sc.HangarOf(shipId);
 
-            // 4. Picked up as the whole design: the flown pod plus everything else new.
-            CompletionResult c = BuildsLink.Complete(d, flown);
-            Check(c != null && c.Used.Count == flownSerials.Count && c.NewSlots.Count == designParts - flownSerials.Count, "completed to the design: " + c?.Used.Count + " flown parts and " + c?.NewSlots.Count + " new");
-            if (c == null) yield break;
+            // 4. The flown pod opened in the VAB with a launcher built around it again (the player's work, done here from the
+            // design file): the pod's own parts as its hardware, everything else new or from the bin.
             yield return ToEditor();
-            EditorAddon.LoadKeepingSerials(c.Craft, d.Name, c.Used, "reuse-test");
+            sc = PRSScenario.Instance;
+            flown = sc.HangarOf(shipId);
+            Node around = AroundShip(KspNodes.FromKsp(ConfigNode.Load(d.Path)), d.Id, flown, out int used);
+            Check(used == flownParts, "the launcher around the pod: " + used + " of its parts are the pod's own, " + (designParts - used) + " new");
+            EditorAddon.LoadNoted(around, flown.Name, flown.CraftId, "reuse-test");
             yield return new WaitForSeconds(3f);
             ShipConstruct ship = EditorLogic.fetch.ship;
             Check(ship.parts.Count == designParts, "the whole launcher is in the VAB (" + ship.parts.Count + " parts)");
-            Check(ship.parts.Count(p => flownSerials.Contains(PRSPart.SerialOf(p)) && PRSPart.Of(p).flights == 1) == flownSerials.Count, "the flown pod's parts kept their serials and their flight");
+            Check(ship.parts.Count(EditorAddon.IsHardware) == flownParts, "the flown pod's " + flownParts + " parts are its hardware; the rest are new parts");
             EditorAddon.Instance.OpenBuildPanel();
             panel = EditorAddon.Instance.Panel;
             Quote q2 = panel.Quote;
-            var reusedEditorSerials = new HashSet<string>(c.Used.Concat(q2.BinSwaps.Keys));
-            double dryReused = panel.Craft.Children("PART").Where(p => reusedEditorSerials.Contains(Core.Craft.SerialOf(p))).Sum(p => KspCosts.Instance.Cost(p).Dry);
-            Note("second build: new " + Pricing.Funds(q2.NewPrice) + ", refurbish " + Pricing.Funds(q2.RefurbishPrice) + ", fuel " + Pricing.Funds(q2.FuelPrice) + "; reused parts' price " + Pricing.Funds(dryReused) + " (" + q2.BinSwaps.Count + " from the bin)");
-            Check(q2.HangarShips.Contains(flownId), "the Build panel prices the flown pod as the hangar's own " + flownName);
-            Check(Near(q2.NewPrice + dryReused, q1.NewPrice, 2), "new parts cost the design less the reused parts (" + Pricing.Funds(q2.NewPrice) + " + " + Pricing.Funds(dryReused) + " = " + Pricing.Funds(q1.NewPrice) + ")");
-            // Each reused part costs its price × its craft's wear × half: the pod's wear from its flight, a bin part's its own.
-            double wantRefurbish = panel.Craft.Children("PART").Where(p => reusedEditorSerials.Contains(Core.Craft.SerialOf(p))).Sum(p =>
-                KspCosts.Instance.Cost(p).Dry * Pricing.RefurbishShare(q2.BinSwaps.TryGetValue(Core.Craft.SerialOf(p), out Owner bo) ? bo.Wear : Core.Wear.In(p.Children("MODULE").FirstOrDefault(m => m.Get("name") == Core.Craft.ModuleName)), S));
-            double podWear = PRSScenario.Instance.Hangar.First(h => h.Id == flownId).Wear;
+            List<Node> craft2 = panel.Craft.Children("PART").ToList();
+            double dryHangar = q2.Owners.Keys.Sum(i => KspCosts.Instance.Cost(craft2[i]).Dry);
+            QuoteLine binLine = q2.Lines.FirstOrDefault(l => l.Kind == OwnerKind.Bin);
+            double dryBin = binLine != null ? binLine.Items.Sum(i => KspCosts.Instance.Cost(i.Part).Dry) : 0;
+            Note("second build: new " + Pricing.Funds(q2.NewPrice) + ", refurbish " + Pricing.Funds(q2.RefurbishPrice) + ", fuel " + Pricing.Funds(q2.FuelPrice) + "; the pod's parts " + Pricing.Funds(dryHangar) + ", " + q2.BinParts + " bin parts " + Pricing.Funds(dryBin));
+            Check(q2.HangarShips.Contains(shipId) && q2.Owners.Count == flownParts, "the Build panel prices the flown pod as the hangar's own " + shipName);
+            Check(Near(q2.NewPrice + dryHangar + dryBin, q1.NewPrice, 2), "new parts cost the design less the parts it already has (" + Pricing.Funds(q2.NewPrice) + " + " + Pricing.Funds(dryHangar) + " + " + Pricing.Funds(dryBin) + " = " + Pricing.Funds(q1.NewPrice) + ")");
+            double podWear = flown.Wear;
             Note("the flown pod came home at " + Core.Wear.Percent(podWear) + " wear");
-            Check(podWear > 0 && Near(q2.RefurbishPrice, wantRefurbish, 2), "the reused parts cost their refurbish by wear (" + Pricing.Funds(q2.RefurbishPrice) + " of " + Pricing.Funds(wantRefurbish) + ")");
-            Check(panel.HangarCopy == null && !panel.Unfiled, "no 'Use it' offer and no 'Not filed' warning");
+            Check(podWear > 0 && Near(q2.RefurbishPrice, dryHangar * Pricing.RefurbishShare(podWear, S), 2), "the pod's parts cost their refurbish by its wear; bin parts are already paid for (" + Pricing.Funds(q2.RefurbishPrice) + ")");
+            Check(binLine == null || binLine.Price < 0.5, "bin parts cost nothing");
+            Check(panel.MainShip?.Id == shipId && panel.KeepShipId == shipId && panel.Title == shipName, "the build starts from the pod, so it's " + shipName + " again (" + panel.Title + ")");
+            Check(!panel.Unfiled, "no 'Not filed' warning");
             sc = PRSScenario.Instance;
+            int binBeforeBuild = BinCount(sc);
             Check(panel.Confirm(), "building the second one " + panel.Error);
             BuildJob job2 = sc.Jobs.LastOrDefault();
-            Check(job2 != null && sc.Hangar.First(h => h.Id == flownId).ReservedBy == job2.Id, "the flown pod is reserved by the build");
+            Check(job2 != null && sc.HangarOf(shipId).ReservedBy == job2.Id && job2.ShipId == shipId, "the build keeps " + shipName + " and has taken it");
+            Check(BinCount(sc) == binBeforeBuild - q2.BinParts, "it took " + q2.BinParts + " parts from the bin (" + binBeforeBuild + " → " + BinCount(sc) + ")");
+            Check(ship.parts.All(EditorAddon.IsHardware), "the ship left in the VAB is the build's parts now");
             string job2Id = job2?.Id;
 
             // 5. Built and flown again: the same pod comes home as the same ship, with two flights.
@@ -274,30 +328,106 @@ namespace PhilsReusabilitySuite
             sc = PRSScenario.Instance;
             job2 = sc.Jobs.FirstOrDefault(j => j.Id == job2Id);
             Check(job2 != null && sc.Outsource(job2, out err), "outsourcing the second one " + err);
-            HangarShip second = sc.Hangar.FirstOrDefault(h => h.Ready && h.Placed.Any(flownSerials.Contains));
-            Check(second != null && second.Placed.Count == designParts, "the second one is ready, with the flown pod in it (" + second?.DisplayName + ")");
-            // The pod is the launcher's top (its root part), so the rebuilt launcher is still that ship.
-            Check(second != null && second.Id == flownId && second.DisplayName == flownName && sc.Hangar.Count(h => h.Placed.Any(flownSerials.Contains)) == 1, "built on the flown pod, it's still " + flownName + ", not a new ship (" + second?.DisplayName + ")");
+            HangarShip second = sc.HangarOf(shipId);
+            Check(second != null && second.Ready && second.PartCount == designParts && second.DisplayName == shipName && second.Flights == 1 && sc.Hangar.Count(h => BuildsLink.DesignOf(h) == d.Id) == 1,
+                  "built on the flown pod, it's still " + shipName + ", ready, with its one flight (" + second?.DisplayName + ")");
             if (second == null) yield break;
             int clampsOnPad = ShipConstruction.FindVesselsLandedAt(HighLogic.CurrentGame.flightState, "LaunchPad").Count;
-            int binBefore = sc.Bin.Count;
-            bool launched = sc.LaunchReady(second, out err);
-            Check(launched, "launching " + second.DisplayName + " " + err);
-            if (!launched) yield break;
-            if (clampsOnPad > 0) Check(sc.Bin.Count > binBefore, "the first launch's clamps, still on the pad, were cleared into the parts bin (" + (sc.Bin.Count - binBefore) + " parts)");
-            yield return WaitFor(() => HighLogic.LoadedSceneIsFlight && FlightGlobals.ActiveVessel != null && FlightGlobals.ActiveVessel.loaded && !FlightGlobals.ActiveVessel.packed, 120, "it reached the pad");
-            yield return new WaitForSeconds(3f);
-            Vessel v2 = FlightGlobals.ActiveVessel;
-            Check(v2.parts.Where(p => flownSerials.Contains(PRSPart.SerialOf(p))).All(p => PRSPart.Of(p).flights == 2), "on the pad, the reused pod is on its second flight");
-            Check(v2.parts.Where(p => !flownSerials.Contains(PRSPart.SerialOf(p))).All(p => PRSPart.Of(p).flights <= 2) && v2.parts.Count(p => PRSPart.Of(p).flights == 1) > 0, "and the new parts on their first");
-            yield return FlyAndDrop("flight 2");
+            int binBefore = BinCount(sc);
+            yield return Launch(second, shipName);
             sc = PRSScenario.Instance;
-            HangarShip back = sc.Hangar.FirstOrDefault(h => !h.Ready && h.Placed.Any(flownSerials.Contains));
-            Check(back != null && back.Flights == 2, "the pod came home again, now with 2 flights (" + back?.DisplayName + ")");
-            Check(back != null && back.DisplayName == flownName, "as the same ship it was (" + back?.DisplayName + ", first came home as " + flownName + ")");
+            if (clampsOnPad > 0) Check(BinCount(sc) > binBefore, "the first launch's clamps, still on the pad, were cleared into the parts bin (" + (BinCount(sc) - binBefore) + " parts)");
+            Check(sc.ShipOf(shipId)?.Flights == 2, "on the pad, " + shipName + " is on its second flight");
+            yield return FlyAndDrop("flight 2", shipId);
+            sc = PRSScenario.Instance;
+            HangarShip back = sc.HangarOf(shipId);
+            Check(back != null && back.Flights == 2 && back.DisplayName == shipName, "the pod came home again as " + shipName + ", now with 2 flights (" + back?.DisplayName + ")");
             List<string> log = back != null ? sc.LogOf(back) : new List<string>();
             foreach (string l in log) Note("flight log: " + l);
-            Check(log.Count >= 2, "its flight log has both flights (" + log.Count + ")");
+            Check(log.Count == 2 && log.All(l => l.Contains(" · " + shipName + " · ")), "its flight log has both flights, both as " + shipName);
+            if (back == null) yield break;
+
+            // 6. Phil's play-test (Peleus III #2): the ship opened in the VAB, a launcher built around it again, and saved as
+            // another design. It's still that ship (Ship of Theseus): its name, number, flights and log through build,
+            // launch and recovery, and no new number used up.
+            const string NewDesign = "Lifter 010 II";
+            yield return ToEditor();
+            sc = PRSScenario.Instance;
+            HangarShip pod = sc.HangarOf(shipId);
+            EditorAddon.LoadHangarShip(pod);
+            yield return new WaitForSeconds(3f);
+            Check(EditorLogic.fetch.ship.parts.All(EditorAddon.IsHardware), shipName + " opened in the VAB: every part is its hardware");
+            Node rebuilt = AroundShip(KspNodes.FromKsp(ConfigNode.Load(d.Path)), d.Id, pod, out int podParts);
+            EditorAddon.LoadNoted(rebuilt, pod.Name, pod.CraftId, "reuse-refit");
+            yield return new WaitForSeconds(3f);
+            Check(EditorLogic.fetch.ship.parts.Count(EditorAddon.IsHardware) == podParts && EditorLogic.fetch.ship.parts.Count == designParts,
+                  "a launcher built around it again: " + podParts + " of its parts are its own, the rest new");
+            EditorLogic.fetch.ship.shipName = NewDesign;
+            EditorAddon.Instance.OpenBuildPanel();
+            panel = EditorAddon.Instance.Panel;
+            Check(panel.MainShip?.Id == shipId && panel.KeepShipId == shipId && panel.Title == shipName,
+                  "saved as " + NewDesign + ", it's still " + shipName + " (Phil: \"that ship is still the Peleus III #2\"), shown as " + panel.Title);
+            panel.Chosen = BuildPanel.Pace.Outsource;
+            Check(panel.Confirm(), "refitting it " + panel.Error);
+            HangarShip refit = sc.HangarOf(shipId);
+            Check(refit != null && refit.Ready && refit.DisplayName == shipName && refit.Flights == 2 && refit.Ship.DesignId == d.Id,
+                  "the refit is still " + shipName + ", with its 2 flights, and still a " + DesignName + " (" + refit?.DisplayName + ")");
+            Check(!sc.Ships.Values.Any(x => x.Name == NewDesign) && BuildsLink.Instance.CopiesOf(d).Any(r => r.Id == shipId),
+                  "no " + NewDesign + " number was used, and Phil's Builds still lists it under " + DesignName);
+            yield return ToSpaceCenter();
+            sc = PRSScenario.Instance;
+            yield return Launch(sc.HangarOf(shipId), shipName + " built as " + NewDesign);
+            Check(FlightGlobals.ActiveVessel.vesselName == shipName, "it flies as " + shipName + " (" + FlightGlobals.ActiveVessel.vesselName + ")");
+            yield return FlyAndDrop("flight 3", shipId);
+            sc = PRSScenario.Instance;
+            back = sc.HangarOf(shipId);
+            Check(back != null && back.DisplayName == shipName && back.Flights == 3, "it came home as " + shipName + ", 3 flights (" + back?.DisplayName + ")");
+            log = back != null ? sc.LogOf(back) : new List<string>();
+            Check(log.Count == 3 && log.All(l => l.Contains(" · " + shipName + " · ")), "its flight log is one ship under one name: " + string.Join(" | ", log.ToArray()));
+            if (back == null) yield break;
+
+            // 7. Phil's play-test (the Kupe): a ship taken apart is gone. Its parts go into the bin knowing nothing about it,
+            // a new build that uses them is a new ship, and that ship comes home as itself, never as the one taken apart.
+            yield return ToSpaceCenter();
+            sc = PRSScenario.Instance;
+            back = sc.HangarOf(shipId);
+            int inBin = BinCount(sc);
+            double apart = sc.TakeApartPrice(back);
+            double fundsBefore = Funds;
+            Check(sc.TakeApart(back, out err), "taking " + shipName + " apart " + err);
+            Check(BinCount(sc) == inBin + flownParts && sc.HangarOf(shipId) == null, "its " + flownParts + " parts went to the parts bin");
+            Check(apart > 0 && Near(fundsBefore - Funds, apart, 1), "refurbishing them for the bin was paid then (" + Pricing.Funds(apart) + ")");
+            Check(sc.Bin.All(k => Hardware.Module(k.Sample)?.Get(Hardware.Field) == null && k.Sample.Children("RESOURCE").All(r => r.Get("amount") == "0")),
+                  "bin parts carry no ship and no fuel");
+            yield return ToSpaceCenter();   // the Space Center tidies away ships that no longer exist
+            sc = PRSScenario.Instance;
+            Check(sc.ShipOf(shipId) == null, shipName + " no longer exists anywhere");
+            // (A new career hasn't researched or bought the Kerbal X's parts, nor upgraded the VAB and launch pad for it; a
+            // Space Center build checks all that, so do it all.)
+            foreach (ScenarioUpgradeableFacilities.ProtoUpgradeable pu in ScenarioUpgradeableFacilities.protoUpgradeables.Values)
+                foreach (Upgradeables.UpgradeableFacility uf in pu.facilityRefs) uf.SetLevel(uf.MaxLevel);
+            foreach (ProtoRDNode rd in AssetBase.RnDTechTree.GetTreeNodes())
+            {
+                ProtoTechNode t = rd.tech;
+                t.state = RDTech.State.Available;
+                t.partsPurchased = PartLoader.LoadedPartsList.Where(ap => ap.TechRequired == t.techID).ToList();
+                ResearchAndDevelopment.Instance.SetTechState(t.techID, t);
+            }
+            BuildsLink.LibraryBuild item = BuildsLink.Library().FirstOrDefault(i => i.Design.Id == d.Id);
+            Check(item != null && item.Quote.BinParts >= flownParts, "a new " + DesignName + " from Phil's Builds uses the bin's parts (" + item?.Quote.BinParts + ")");
+            BuildJob job3 = item != null ? BuildsLink.BuildFromLibrary(item, false, true, out err) : null;
+            Check(job3 != null, "building it " + err);
+            HangarShip fresh = sc.Hangar.FirstOrDefault(h => h.Ready && BuildsLink.DesignOf(h) == d.Id);
+            Check(fresh != null && fresh.Id != shipId && fresh.DisplayName == DesignName + " #2" && fresh.Flights == 0 && sc.LogOf(fresh).Count == 0,
+                  "it's a new ship, " + DesignName + " #2, never flown, with an empty log (" + fresh?.DisplayName + ")");
+            if (fresh == null) yield break;
+            string freshId = fresh.Id;
+            yield return Launch(fresh, fresh.DisplayName);
+            yield return FlyAndDrop("flight 4", freshId);
+            sc = PRSScenario.Instance;
+            HangarShip home = sc.HangarOf(freshId);
+            Check(home != null && home.DisplayName == DesignName + " #2" && home.Flights == 1 && !sc.Hangar.Any(h => h.DisplayName == shipName),
+                  "it came home as " + DesignName + " #2 on its first flight, not as " + shipName + " (" + home?.DisplayName + ")");
         }
     }
 }

@@ -2,6 +2,42 @@
 
 ## Unreleased
 
+From Phil's sixth play-test (round 4): ship identity rebuilt. A ship's name, number, flights and log are the suite's
+own record now, not copies kept on every part, and nothing guesses who a ship is from its parts any more.
+- **A ship is always itself.** A hangar ship opened in the VAB and changed, even saved as another design, is still
+  that ship through build, launch, flight and recovery: same name, number, flights and log, and no new number used up.
+  (Peleus III #2 launched as "Peleus IV #1", came home as Peleus III #2, and used up Peleus IV #1.) To make a new ship
+  from old hardware, take the old one apart first.
+- **Only the ship's own name is shown** everywhere: cards, the Build panel, the queue, logs and messages.
+- **Coming home goes by the launch.** Each launch records the ships that went up in it. A piece that comes home is
+  the ship whose root part it carries; one that carries none is a new piece, named after its design. A flown first
+  stage under a new payload still comes home as itself.
+- **A ship taken apart is gone.** Its parts go to the parts bin knowing nothing about it, so it can never come back
+  (the Kupe came home as the Peleus III #2 taken apart before).
+- **A ship's flight count is its own launches** (the Kupe showed "5 flights" before it had flown).
+- **Each ship has its own blueprint**, the whole ship as it was last built, kept hidden in the save. **Restore** puts
+  back what it lost from it ("Restore", no design name), and Phil's Builds' Load or Pick up on a hangar ship brings in
+  that whole ship.
+- **A ship belongs to the design it was first built as, for good:** Phil's Builds counts Peleus III #2 as a Peleus
+  III after a refit too.
+- **Built ships are picked, never guessed:** loading a design is always a new build. The Build panel's "Use it" offer
+  is gone; open the ship from the hangar or from Phil's Builds' hangar list instead.
+- **"On X"** names only what a ship sits on: another ship riding under it, or a launcher built with it ("Kupe I #1 · on
+  Boulder 001", not "on Peleus III #2 and Boulder 001").
+- **The parts bin is a count of each kind of part** ("Siren I Mk 2 × 1"). Parts are refurbished as they go in and paid
+  for then (Take apart shows the price; stage recovery adds it to the transport), and they're emptied of fuel. In a
+  build they're already paid for, so they cost nothing but the fuel to fill them ("3 parts from the parts bin, already
+  paid for"). This replaces bin parts keeping their fuel and their wear.
+- **Price lines** say where owned parts come from ("13 parts from Peleus III #2, already paid for"), never "flown
+  parts". A hangar ship's parts a build leaves out go to the parts bin, refurbished with the rest, and the line says so.
+  Anything added to a hangar part in the VAB (cargo, a bigger size) costs its full price.
+- **The VAB knows which parts are a real, built ship's:** only the suite's own loads mark them, checked against the
+  hangar. Anything loaded, merged or picked up from a file is new parts, and so is a copy of a part already there.
+- **Cargo comes home as it is:** parts used or taken out of a container in flight are gone (they came back free).
+- **A launch from the VAB's launch-site list** of a ready hangar ship now counts as that ship's launch.
+- **Older saves start fresh** (empty hangar, bin and queue; queued builds refunded; ships still in flight go to the parts
+  bin when they're recovered). The save file isn't changed until the game saves.
+
 From Phil's first play-test, and work on the night after.
 
 New:
