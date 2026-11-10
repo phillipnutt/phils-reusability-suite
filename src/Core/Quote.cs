@@ -97,9 +97,6 @@ namespace PhilsReusabilitySuite.Core
         public readonly List<Owner> OldBin = new List<Owner>();
         public double UpdatePrice => OldBin.Sum(o => o.UpdatePrice);
         public int NewParts => Lines.Where(l => l.Kind == OwnerKind.New).Sum(l => l.Parts);
-        /// <summary>The hangar hardware nearest the craft's root (its root part, unless that's new): the ship the build is
-        /// (Phil, round 4: a build that starts from a hangar ship is always that ship). New when it has no hangar hardware.</summary>
-        public Owner Main = Owner.NewPart;
     }
 
     public static class Quotes
@@ -203,10 +200,7 @@ namespace PhilsReusabilitySuite.Core
                     }
                 }
 
-            int main = Craft.Read(craft).Highest(q.Owners.Keys);
-            if (main >= 0 && Hardware.Parse(q.Owners[main], out string shipId, out int at) && ships.TryGetValue(shipId, out Owner o))
-                q.Main = new Owner { Kind = OwnerKind.Hangar, ShipId = shipId, Index = at, Label = o.Label, Wear = o.Wear, Ready = o.Ready };
-            // Reused pieces first (the flown booster), then the bin, then the new parts.
+            // Owned parts first, then the bin, then the new parts.
             q.Lines.AddRange(lines.Values.OrderBy(l => l.Kind == OwnerKind.Hangar ? 0 : l.Kind == OwnerKind.Bin ? 1 : 2));
             q.Seconds = Pricing.BuildSeconds(q.BuildPrice, s);
             return q;

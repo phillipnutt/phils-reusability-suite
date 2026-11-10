@@ -9,21 +9,28 @@ own record now, not copies kept on every part, and nothing guesses who a ship is
   (Peleus III #2 launched as "Peleus IV #1", came home as Peleus III #2, and used up Peleus IV #1.) To make a new ship
   from old hardware, take the old one apart first.
 - **Only the ship's own name is shown** everywhere: cards, the Build panel, the queue, logs and messages.
-- **Coming home goes by the launch.** Each launch records the ships that went up in it. A piece that comes home is
-  the ship whose root part it carries; one that carries none is a new piece, named after its design. A flown first
-  stage under a new payload still comes home as itself.
+- **Coming home goes by the launch.** Each launch records the ship that went up in it and which parts are its own. The
+  piece with the ship's pod or probe core comes home as that ship; anything else is parts for the bin.
+- **Launchers are parts** (Phil: "whatever is saved as the payload - 'Peleus III #2' for example is the ship"). Parts
+  placed from a Phil's Builds launcher or upper-stage design are the launcher a ship is built on, not the ship: no
+  booster gets a hangar entry, a name or a log. Recovered launcher parts (a booster with its own probe core too) go to
+  the parts bin, and the next launcher you build takes them from there. A ship saved together with its booster owns
+  it, and Restore builds it again. A launcher on its own can't be built, and the Space Center's library lists craft
+  only. Picking a particular flown booster from the hangar or Phil's Builds' Launchers tab is gone.
+- **Two hangar ships in one build:** the one you opened is the ship; the other's parts are owned parts of it, and it
+  stops being a ship.
 - **A ship taken apart is gone.** Its parts go to the parts bin knowing nothing about it, so it can never come back
   (the Kupe came home as the Peleus III #2 taken apart before).
 - **A ship's flight count is its own launches** (the Kupe showed "5 flights" before it had flown).
-- **Each ship has its own blueprint**, the whole ship as it was last built, kept hidden in the save. **Restore** puts
-  back what it lost from it ("Restore", no design name), and Phil's Builds' Load or Pick up on a hangar ship brings in
-  that whole ship.
+- **Each ship has its own blueprint**, the ship as it was last built (without the launcher under it), kept hidden in
+  the save. **Restore** puts back whatever of it didn't come home, from the parts bin first ("Restore", no design
+  name), and Phil's Builds' Load or Pick up on a hangar ship that lost parts brings in that whole ship.
 - **A ship belongs to the design it was first built as, for good:** Phil's Builds counts Peleus III #2 as a Peleus
   III after a refit too.
 - **Built ships are picked, never guessed:** loading a design is always a new build. The Build panel's "Use it" offer
   is gone; open the ship from the hangar or from Phil's Builds' hangar list instead.
-- **"On X"** names only what a ship sits on: another ship riding under it, or a launcher built with it ("Kupe I #1 · on
-  Boulder 001", not "on Peleus III #2 and Boulder 001").
+- **"On X"** names the launcher a ship is built on ("Kupe I #1 · on Boulder 001", not "on Peleus III #2 and Boulder
+  001").
 - **The parts bin is a count of each kind of part** ("Siren I Mk 2 × 1"). Parts are refurbished as they go in and paid
   for then (Take apart shows the price; stage recovery adds it to the transport), and they're emptied of fuel. In a
   build they're already paid for, so they cost nothing but the fuel to fill them ("3 parts from the parts bin, already

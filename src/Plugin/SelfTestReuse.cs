@@ -14,10 +14,11 @@ namespace PhilsReusabilitySuite
     /// <summary>
     /// The whole reuse loop in one unattended run, started by the test harness through the hidden
     /// PRSSelfTestReuse event. In a throwaway career save (zz_PRSSelfTestReuse) the stock Kerbal X is filed in
-    /// Phil's Builds as a launcher. It is built and flown; high over Kerbin everything drops away and its crew pod
-    /// comes home on its chute to the hangar. That flown piece is picked up as the whole design (the flown pod
-    /// plus everything else new, with matching parts from the bin), priced at their refurbish (by wear) for the flown parts, built,
-    /// and flown again: the same pod comes home a second time as the same ship, with two flights in its log.
+    /// Phil's Builds as a craft (saved with its booster) and as a launcher. It is built and flown; high over Kerbin
+    /// everything drops away and its crew pod comes home on its chute to the hangar as the ship, missing what it dropped.
+    /// The flown pod is rebuilt into the whole design (its own parts refurbished by wear, the rest new or from the bin) and
+    /// flown again: the same pod comes home a second time as the same ship, with two flights in its log. Rebuilt on the
+    /// launcher instead, the ship's blueprint is the pod piece alone, and it comes home missing nothing.
     /// </summary>
     class SelfTestReuse : MonoBehaviour
     {
@@ -95,15 +96,25 @@ namespace PhilsReusabilitySuite
 
         static string KerbalX => Path.Combine(KSPUtil.ApplicationRootPath, "Ships", "VAB", "Kerbal X.craft");
 
+        const string LauncherName = "Boulder 001 I";
+
+        /// <summary>The Kerbal X filed as a craft (a capsule saved with its booster), and as a launcher to put under a ship.</summary>
         static void WriteLibrary(string saveDir)
         {
-            string subs = Path.Combine(saveDir, "Subassemblies");
+            string craftDir = Path.Combine(saveDir, "Ships", "VAB", "Capsules"), subs = Path.Combine(saveDir, "Subassemblies");
+            Directory.CreateDirectory(craftDir);
             Directory.CreateDirectory(subs);
-            string text = new Regex(@"^ship = .*$", RegexOptions.Multiline).Replace(File.ReadAllText(KerbalX), "ship = " + DesignName, 1);
-            File.WriteAllText(Path.Combine(subs, DesignName + ".craft"), text);
+            var name = new Regex(@"^ship = .*$", RegexOptions.Multiline);
+            string text = File.ReadAllText(KerbalX);
+            File.WriteAllText(Path.Combine(craftDir, DesignName + ".craft"), name.Replace(text, "ship = " + DesignName, 1));
+            File.WriteAllText(Path.Combine(subs, LauncherName + ".craft"), name.Replace(text, "ship = " + LauncherName, 1));
             File.WriteAllText(Path.Combine(saveDir, "PhilsBuilds.cfg"),
-                "PHILS_BUILDS\n{\n\tSUBASSEMBLY\n\t{\n\t\tfile = " + DesignName + "\n\t\tkind = Launcher\n\t\tfamily = Lifter\n\t\tstyle = Roman\n\t\tmark = 1\n\t\trating = 10\n\t\twidth = 2.5\n\t}\n}\n");
+                "PHILS_BUILDS\n{\n\tSUBASSEMBLY\n\t{\n\t\tfile = " + LauncherName + "\n\t\tkind = Launcher\n\t\tfamily = Boulder\n\t\tstyle = Roman\n\t\tmark = 1\n\t\trating = 10\n\t\twidth = 2.5\n\t}\n}\n");
         }
+
+        /// <summary>The decoupler under the crew pod (everything below it is the stages).</summary>
+        static Part DecouplerUnder(List<Part> parts, Part pod) =>
+            parts.FirstOrDefault(p => p.FindModuleImplementing<ModuleDecouple>() != null && Subtree(p).Count < parts.Count && p.parent != null && (p.parent == pod || p.parent.parent == pod));
 
         static List<Part> Subtree(Part p)
         {
@@ -129,7 +140,7 @@ namespace PhilsReusabilitySuite
             Vessel v = FlightGlobals.ActiveVessel;
             CelestialBody home = v.mainBody;
             Part pod = v.rootPart;
-            Part decoupler = v.parts.FirstOrDefault(p => p.FindModuleImplementing<ModuleDecouple>() != null && Subtree(p).Count < v.parts.Count && p.parent != null && (p.parent == pod || p.parent.parent == pod));
+            Part decoupler = DecouplerUnder(v.parts, pod);
             Check(decoupler != null, flight + ": found the decoupler under the crew pod");
             if (decoupler == null) yield break;
             var podPiece = v.parts.Where(p => !Subtree(decoupler).Contains(p) && !IsBooster(p)).ToList();
@@ -206,7 +217,7 @@ namespace PhilsReusabilitySuite
 
         IEnumerator Body()
         {
-            // 1. A career game with the Kerbal X filed as a launcher.
+            // 1. A career game with the Kerbal X filed as a craft, and as a launcher.
             GameParameters gp = GameParameters.GetDefaultParameters(Game.Modes.CAREER, GameParameters.Preset.Normal);
             Game g = GamePersistence.CreateNewGame(SaveName, Game.Modes.CAREER, gp, "Squad/Flags/default", GameScenes.SPACECENTER, EditorFacility.VAB);
             HighLogic.CurrentGame = g;
@@ -219,8 +230,9 @@ namespace PhilsReusabilitySuite
             Funding.Instance.SetFunds(10000000, TransactionReasons.Cheating);
             Library.Scan();
             Design d = BuildsApi.Designs().FirstOrDefault(x => x.Name == DesignName);
-            Check(d != null && d.Kind == DesignKind.Launcher, "the Kerbal X is filed as the launcher " + d?.Name);
-            if (d == null) yield break;
+            Design dl = BuildsApi.Designs().FirstOrDefault(x => x.Name == LauncherName);
+            Check(d != null && d.Kind == DesignKind.Craft && dl != null && dl.Kind == DesignKind.Launcher, "the Kerbal X is filed as the craft " + d?.Name + " and the launcher " + dl?.Name);
+            if (d == null || dl == null) yield break;
 
             // 2. Build it in the VAB, all new.
             yield return ToEditor();
@@ -248,11 +260,12 @@ namespace PhilsReusabilitySuite
             if (first == null) yield break;
             string shipId = first.Id, shipName = first.DisplayName;
 
-            // 3. Flight 1: everything drops away; the pod holds the root part, so it comes home as the ship it launched as.
+            // 3. Flight 1: everything drops away; the piece with the pod comes home as the ship it launched as. Saved with
+            // its booster, the booster is the ship's own (Phil: "restore would rebuild the booster").
             yield return Launch(first, shipName);
             LaunchRecord rec1 = OnThePad();
-            Check(rec1 != null && rec1.Ships.Count == 1 && rec1.Ships[0].Key == shipId && rec1.Ships[0].Value == Core.Craft.Read(rec1.Craft).RootPart.Index && rec1.Members.Count == designParts,
-                  "its launch record lists the ship that went up, riding on the root part, with all its parts");
+            Check(rec1 != null && rec1.ShipId == shipId && rec1.Slots.Count == designParts && rec1.Slots.All(s => s >= 0),
+                  "its launch record lists the ship that went up, every part of it the ship's own");
             Check(PRSScenario.Instance.ShipOf(shipId)?.Flights == 1 && PRSScenario.Instance.HangarOf(shipId) == null, "launching counted its first flight, and it left the hangar");
             yield return FlyAndDrop("flight 1", shipId);
             sc = PRSScenario.Instance;
@@ -261,12 +274,16 @@ namespace PhilsReusabilitySuite
                   "the pod is in the hangar as " + shipName + " again, a flown copy of the launcher (" + flown?.DisplayName + ", " + flown?.PartCount + " parts, " + flown?.Flights + " flights)");
             if (flown == null) yield break;
             int flownParts = flown.PartCount;
+            BuildsLink.Restore whole = BuildsLink.RestoreOf(flown);
+            Check(flown.Missing == designParts - flownParts && whole != null && whole.NewParts == flown.Missing && whole.Craft.Children("PART").Count() == designParts,
+                  "it's missing the " + flown.Missing + " parts it dropped, and Restore rebuilds them, booster and all (" + whole?.NewParts + ")");
+            Check(sc.Hangar.Count(h => BuildsLink.DesignOf(h) == d.Id) == 1, "nothing it dropped is in the hangar");
             int clampsInBin = sc.Bin.Where(k => k.Key.StartsWith("launchClamp")).Sum(k => k.Count);
             Note("after flight 1: hangar " + sc.Hangar.Count + ", parts bin " + BinCount(sc) + " (" + clampsInBin + " launch clamps)");
             yield return ToSpaceCenter();
             sc = PRSScenario.Instance;
             CopyRow row = BuildsLink.Instance.CopiesOf(d).FirstOrDefault(r => r.Id == shipId);
-            Check(row != null && row.Text.Contains("1 flight"), "Phil's Builds lists it under the launcher (" + row?.Label + " " + row?.Text + ")");
+            Check(row != null && row.Text.Contains("1 flight"), "Phil's Builds lists it under its design (" + row?.Label + " " + row?.Text + ")");
 
             // Clicking the VAB now brings back, from KSP's cache, the ship that was there when it was built. That hardware
             // has launched since (the pod came home as a new copy of its parts), so in the VAB it's all new parts.
@@ -347,9 +364,11 @@ namespace PhilsReusabilitySuite
             Check(log.Count == 2 && log.All(l => l.Contains(" · " + shipName + " · ")), "its flight log has both flights, both as " + shipName);
             if (back == null) yield break;
 
-            // 6. Phil's play-test (Peleus III #2): the ship opened in the VAB, a launcher built around it again, and saved as
+            // 6. Phil's play-test (Peleus III #2): the ship opened in the VAB, a launcher built under it again, and saved as
             // another design. It's still that ship (Ship of Theseus): its name, number, flights and log through build,
-            // launch and recovery, and no new number used up.
+            // launch and recovery, and no new number used up. This time the stages under the pod are a launcher placed from
+            // Phil's Builds (Phil: "if I have it saved as just the ship, and slap a Boulder 001 underneath it"): they aren't
+            // the ship, so its blueprint is the pod piece alone, and they come home as nothing.
             const string NewDesign = "Lifter 010 II";
             yield return ToEditor();
             sc = PRSScenario.Instance;
@@ -362,6 +381,12 @@ namespace PhilsReusabilitySuite
             yield return new WaitForSeconds(3f);
             Check(EditorLogic.fetch.ship.parts.Count(EditorAddon.IsHardware) == podParts && EditorLogic.fetch.ship.parts.Count == designParts,
                   "a launcher built around it again: " + podParts + " of its parts are its own, the rest new");
+            List<Part> vabParts = EditorLogic.fetch.ship.parts;
+            Part under = DecouplerUnder(vabParts, vabParts[0]);
+            List<Part> launcherParts = under != null ? Subtree(under) : new List<Part>();
+            foreach (Part p in launcherParts) PRSPart.Of(p).design = dl.Id;
+            int shipParts = designParts - launcherParts.Count;
+            Check(under != null && launcherParts.All(p => !EditorAddon.IsHardware(p)) && shipParts == podParts, "the stages under the pod are " + LauncherName + ": " + launcherParts.Count + " launcher parts, all new");
             EditorLogic.fetch.ship.shipName = NewDesign;
             EditorAddon.Instance.OpenBuildPanel();
             panel = EditorAddon.Instance.Panel;
@@ -372,6 +397,8 @@ namespace PhilsReusabilitySuite
             HangarShip refit = sc.HangarOf(shipId);
             Check(refit != null && refit.Ready && refit.DisplayName == shipName && refit.Flights == 2 && refit.Ship.DesignId == d.Id,
                   "the refit is still " + shipName + ", with its 2 flights, and still a " + DesignName + " (" + refit?.DisplayName + ")");
+            Check(refit != null && refit.PartCount == designParts && refit.Ship.BlueprintParts == shipParts && refit.Slots.Count(s => s < 0) == launcherParts.Count && BuildsLink.Under(refit) == LauncherName,
+                  "it's " + shipName + " on " + LauncherName + ": its blueprint is the " + shipParts + " parts of the ship, not the launcher (" + refit?.Ship.BlueprintParts + ", on " + BuildsLink.Under(refit) + ")");
             Check(!sc.Ships.Values.Any(x => x.Name == NewDesign) && BuildsLink.Instance.CopiesOf(d).Any(r => r.Id == shipId),
                   "no " + NewDesign + " number was used, and Phil's Builds still lists it under " + DesignName);
             yield return ToSpaceCenter();
@@ -382,6 +409,8 @@ namespace PhilsReusabilitySuite
             sc = PRSScenario.Instance;
             back = sc.HangarOf(shipId);
             Check(back != null && back.DisplayName == shipName && back.Flights == 3, "it came home as " + shipName + ", 3 flights (" + back?.DisplayName + ")");
+            Check(back != null && back.Missing == 0 && BuildsLink.RestoreOf(back) == null && sc.Hangar.Count(h => BuildsLink.DesignOf(h) == d.Id) == 1,
+                  "the whole ship came home, missing nothing: the launcher it dropped isn't its own, and isn't a ship either (" + back?.Missing + " missing)");
             log = back != null ? sc.LogOf(back) : new List<string>();
             Check(log.Count == 3 && log.All(l => l.Contains(" · " + shipName + " · ")), "its flight log is one ship under one name: " + string.Join(" | ", log.ToArray()));
             if (back == null) yield break;

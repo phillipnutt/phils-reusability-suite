@@ -173,7 +173,6 @@ static class CoreTests
         Check(q.Lines[0].Kind == OwnerKind.Hangar && q.Lines[2].Kind == OwnerKind.Bin && q.Lines[3].Kind == OwnerKind.New, "hangar ships first, then the bin, then new parts");
         Check(q.HangarShips.SetEquals(new[] { "oak", "comsat" }) && q.BinTaken.Count == 1 && q.BinTaken["battery|1000"] == 1, "the build knows which hangar ships it uses and what it takes from the bin");
         Check(q.Owners.Count == 2 && q.Owners[1] == "oak:0" && q.Owners[2] == "comsat:0", "the build knows which of its parts are which ship's hardware");
-        Check(q.Main.Kind == OwnerKind.Hangar && q.Main.ShipId == "oak", "the build is the hangar ship whose hardware is nearest its root (Oak 005 #4 here: the root part is new)");
         Check(q.Lines.First(l => l.Kind == OwnerKind.Bin).Price == 0, "bin parts are already paid for");
     }
 
@@ -272,15 +271,14 @@ static class CoreTests
         hangar.Parts["peleus"] = new List<Node> { QuotePart("pod", 600, 10), QuotePart("tank", 300, 100), QuotePart("engine", 900, 0) };
         hangar.Wear["peleus"] = 0.3;
 
-        // Peleus III #2 in the VAB with a barometer added: its own parts and one new part; the build rides on its pod.
+        // Peleus III #2 in the VAB with a barometer added: its own parts and one new part.
         var refit = new Node();
         refit.Nodes.Add(QuotePart("pod", 600, 10, "peleus:0"));
         refit.Nodes.Add(QuotePart("tank", 300, 100, "peleus:1", null, null));
         refit.Nodes.Add(QuotePart("engine", 900, 0, "peleus:2"));
         refit.Nodes.Add(QuotePart("barometer", 50, 0));
         Quote q = Quotes.Make(refit, "Peleus IV", hangar.OwnerOf, new FakeCosts(), s, null, hangar.PartsOf);
-        Check(q.Main.Kind == OwnerKind.Hangar && q.Main.ShipId == "peleus" && q.Main.Index == 0, "the build is Peleus III #2 (its pod is the root part), whatever it's saved as");
-        Check(q.HangarShips.Count == 1 && q.Owners.Count == 3 && Near(q.NewPrice, 50, 0.01), "three of its parts are its hardware, the barometer is new");
+        Check(q.HangarShips.SetEquals(new[] { "peleus" }) && q.Owners.Count == 3 && Near(q.NewPrice, 50, 0.01), "three of its parts are Peleus III #2's hardware, the barometer is new");
         Check(Near(q.RefurbishPrice, 1800 * 0.3 * 0.5, 0.01), "its parts are refurbished by its wear (no flight counts in it)");
 
         // A note that points at another part, a stale index, or the same part twice: none of them is hardware.
@@ -309,24 +307,20 @@ static class CoreTests
         Check(qb.BinTaken["battery"] == 2 && qb.BinParts == 2 && Near(qb.NewPrice, 80, 0.01) && qb.RefurbishPrice == 0, "two batteries from the bin cost nothing, the third is new");
         Check(Near(qb.FuelPrice, 3 * 20 * 0.8, 0.01), "bin parts are emptied as they go in, so every battery is filled (" + qb.FuelPrice + ")");
 
-        // Which ship a piece is: the launch ship whose root part it carries, the highest in the tree if several.
+        // A piece of a launch as a craft of its own: what came home, or a ship without the launcher under it.
         var launch = new Node();
         launch.Nodes.Add(Linked("pod", 0, 1));        // 0: the Kupe's pod, root of the launch
         launch.Nodes.Add(Linked("dec", 1, 2));        // 1: decoupler under it
-        launch.Nodes.Add(Linked("stage", 2, 3));      // 2: a flown first stage's top (another ship's root)
+        launch.Nodes.Add(Linked("stage", 2, 3));      // 2: the launcher's top
         launch.Nodes.Add(Linked("engine", 3, -1));    // 3
-        Craft lc = Craft.Read(launch);
-        Check(lc.Highest(new[] { 3, 2 }) == 2 && lc.Highest(new[] { 2, 0 }) == 0 && lc.Highest(new int[0]) == -1, "the highest of some parts is the one nearest the root");
         PieceResult stage = Pieces.Build(launch, new[] { 2, 3 });
-        Check(stage.Root == 2 && stage.Placed.SequenceEqual(new[] { 2, 3 }) && stage.Missing.Count == 0, "the first stage comes home on its own, rooted at its top, missing nothing (it left at the decoupler)");
+        Check(stage.Root == 2 && stage.Placed.SequenceEqual(new[] { 2, 3 }), "the first stage on its own is a craft rooted at its top");
         PieceResult whole = Pieces.Build(launch, new[] { 0, 1, 2, 3 });
         Check(whole.Root == 0 && whole.Placed.SequenceEqual(new[] { 0, 1, 2, 3 }), "the whole launch comes home in its own order");
+        PieceResult ship = Pieces.Build(launch, new[] { 0, 1 });
+        Check(ship.Placed.SequenceEqual(new[] { 0, 1 }) && Pieces.Validate(ship.Craft).Count == 0 && ship.Craft.Children("PART").Count() == 2, "the Kupe without the launcher under it is a valid craft of its own: its blueprint");
         PieceResult top = Pieces.Build(launch, new[] { 0, 1, 9 });
-        Check(top.Unplaced.SequenceEqual(new[] { 9 }) && top.Missing.Count == 0, "a part the launch never had can't be placed; the stage under the decoupler left on purpose");
-        PieceResult lostEngine = Pieces.Build(launch, new[] { 2 });
-        Check(lostEngine.Missing.SequenceEqual(new[] { 3 }), "an engine that broke off the stage (no separator between) is missing");
-        PieceResult broke = Pieces.Build(launch, new[] { 0 }, new[] { 1 });
-        Check(broke.Missing.Contains(1) && broke.Missing.Contains(2) && broke.Missing.Contains(3), "a decoupler the landing broke off is lost, with what hung from it");
+        Check(top.Unplaced.SequenceEqual(new[] { 9 }), "a part the launch never had can't be placed");
     }
 
     static Node Linked(string name, int id, int child)
@@ -372,8 +366,8 @@ static class CoreTests
         if (orig.Count > 0) return 0;
 
         // Everything came home.
-        CraftPart realRoot = c.RootPart;
-        PieceResult all = Pieces.Build(craft, c.Parts.Select(p => p.Index).ToList(), null);
+        CraftPart realRoot = c.Parts.First(p => p.Parent == null);
+        PieceResult all = Pieces.Build(craft, c.Parts.Select(p => p.Index).ToList());
         Check(all.Placed.Count == c.Parts.Count, name + ": whole craft placed (" + all.Placed.Count + " of " + c.Parts.Count + ")");
         Check(all.Root == realRoot.Index, name + ": whole craft keeps its root");
         Check(all.Craft.Children("PART").First().Get("part") == realRoot.Ref && all.Placed[0] == realRoot.Index, name + ": root is written first");
@@ -396,30 +390,22 @@ static class CoreTests
             string label = name + ": piece under " + top.Ref;
 
             // The piece came home whole (it was decoupled from the rest).
-            PieceResult r = Pieces.Build(craft, sub.Select(p => p.Index).ToList(), new int[0]);
+            PieceResult r = Pieces.Build(craft, sub.Select(p => p.Index).ToList());
             Check(r.Root == top.Index, label + ": new root is the piece's top part");
             Check(r.Placed.Count == sub.Count - dropped, label + ": placed " + r.Placed.Count + ", expected " + (sub.Count - dropped));
             Check(r.Dropped.Count == dropped, label + ": dropped struts/fuel lines " + r.Dropped.Count + ", expected " + dropped);
-            Check(r.Unplaced.Count == 0 && r.Missing.Count == 0, label + ": nothing unplaced or missing");
+            Check(r.Unplaced.Count == 0, label + ": nothing unplaced");
             List<string> probs = Pieces.Validate(r.Craft);
             Check(probs.Count == 0, label + ": rebuilt craft valid (" + string.Join("; ", probs.Take(3)) + ")");
             Node reparsed = Node.Parse(r.Craft.WriteContents());
             Check(Pieces.Validate(reparsed).Count == 0, label + ": valid after write and parse");
 
-            // A leaf didn't come home: it was lost, unless it parted at a separator (a decoupler, docking port, claw
-            // or launch clamp), which is how parts leave on purpose. One the landing broke off is lost either way.
+            // A leaf didn't come home (dropped, broken off or lost): the piece is still a valid craft without it.
             CraftPart leaf = sub.Where(p => p != top && p.Children.Count == 0 && !p.IsCompound).OrderBy(_ => rng.Next()).FirstOrDefault();
             if (leaf != null)
             {
-                var home = sub.Where(p => p != leaf).Select(p => p.Index).ToList();
-                PieceResult b = Pieces.Build(craft, home);
-                if (Pieces.IsSeparator(leaf) || Pieces.IsSeparator(leaf.Parent))
-                    Check(b.Missing.Count == 0, label + ": " + leaf.Ref + " parted at a separator, so it isn't missing");
-                else
-                    Check(b.Missing.Count == 1 && b.Missing[0] == leaf.Index, label + ": lost " + leaf.Ref + " is missing");
-                Check(Pieces.Validate(b.Craft).Count == 0, label + ": valid without the lost part");
-                PieceResult d = Pieces.Build(craft, home, new[] { leaf.Index });
-                Check(d.Missing.Count == 1 && d.Missing[0] == leaf.Index, label + ": a part the landing broke off is missing");
+                PieceResult b = Pieces.Build(craft, sub.Where(p => p != leaf).Select(p => p.Index).ToList());
+                Check(!b.Placed.Contains(leaf.Index) && Pieces.Validate(b.Craft).Count == 0, label + ": valid without " + leaf.Ref);
             }
 
             // Strangers came home attached (docked or grabbed in flight): they can't be placed.
@@ -427,7 +413,7 @@ static class CoreTests
             {
                 var outside = c.Parts.Where(p => !sub.Contains(p) && p.Parent != null && !sub.Contains(p.Parent) && p.Children.Count == 0).OrderBy(_ => rng.Next()).Take(2).ToList();
                 var home = sub.Select(p => p.Index).Concat(outside.Select(p => p.Index)).Concat(new[] { c.Parts.Count + 7 }).ToList();
-                PieceResult x = Pieces.Build(craft, home, new int[0]);
+                PieceResult x = Pieces.Build(craft, home);
                 Check(x.Root == top.Index, label + ": strangers don't change the root");
                 Check(x.Unplaced.Count == outside.Count + 1, label + ": strangers unplaced " + x.Unplaced.Count + ", expected " + (outside.Count + 1));
             }

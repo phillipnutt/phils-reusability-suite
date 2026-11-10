@@ -253,7 +253,7 @@ namespace PhilsReusabilitySuite
                 GUILayout.FlexibleSpace();
                 if (GUILayout.Button("Back to the queue", Look.Ghost, GUILayout.Height(28), GUILayout.ExpandWidth(false))) { picking = false; library = null; GUIUtility.ExitGUI(); }
                 GUILayout.EndHorizontal();
-                GUILayout.Label("Each is built new, from its design file. Matching parts in the parts bin are used automatically, at their refurbish price.", Look.Hint);
+                GUILayout.Label("Each is built new, from its design file. Matching parts in the parts bin are used automatically: they're already paid for.", Look.Hint);
                 GUILayout.Space(4);
                 GUILayout.BeginHorizontal();
                 PaceButton(BuildPanel.Pace.Normal, "Normal");
@@ -263,14 +263,8 @@ namespace PhilsReusabilitySuite
                 GUILayout.EndHorizontal();
                 GUILayout.Space(6);
             });
-            if (library.Count == 0) Indent(() => GUILayout.Label("Nothing is filed yet. File craft and launchers with Phil's Builds' Save panel in the VAB or SPH.", Look.Hint));
-            string group = null;
-            foreach (BuildsLink.LibraryBuild item in library.ToList())
-            {
-                string g = item.Design.Kind == PhilsBuilds.DesignKind.Launcher ? "LAUNCHERS" : item.Design.Kind == PhilsBuilds.DesignKind.UpperStage ? "UPPER STAGES" : "CRAFT";
-                if (g != group) { group = g; Indent(() => GUILayout.Label(g, Look.Section)); }
-                Indent(() => LibraryCard(item));
-            }
+            if (library.Count == 0) Indent(() => GUILayout.Label("Nothing is filed yet. File craft with Phil's Builds' Save panel in the VAB or SPH.", Look.Hint));
+            foreach (BuildsLink.LibraryBuild item in library.ToList()) Indent(() => LibraryCard(item));
         }
 
         void PaceButton(BuildPanel.Pace p, string label)
@@ -499,7 +493,7 @@ namespace PhilsReusabilitySuite
         {
             bool sel = h.Id == selectedId;
             GUILayout.BeginHorizontal(sel ? Look.CardSel : Look.Card);
-            if (BuildsLink.HasPictures) { Look.Picture(BuildsLink.Picture(BuildsLink.TopDesign(h.Craft)), 52, 46, h.Missing > 0); GUILayout.Space(10); }
+            if (BuildsLink.HasPictures) { Look.Picture(BuildsLink.Picture(h.Ship.DesignId ?? BuildsLink.TopDesign(h.Craft)), 52, 46, h.Missing > 0); GUILayout.Space(10); }
             GUILayout.BeginVertical();
             GUILayout.Label(h.DisplayName, Look.Name);
             string under = BuildsLink.Under(h);
@@ -530,7 +524,7 @@ namespace PhilsReusabilitySuite
             string under = BuildsLink.Under(h);
             if (under != null) GUILayout.Label("on " + under, Look.Meta);
             GUILayout.Label(Suite.Parts(h.PartCount) + " · " + (h.Flights == 0 ? "never flown" : h.Flights + (h.Flights == 1 ? " flight" : " flights")) + (h.Missing > 0 ? " · missing " + h.Missing : ""), Look.Meta);
-            string top = BuildsLink.HasPictures ? BuildsLink.TopDesign(h.Craft) : null, below = BuildsLink.HasPictures ? BuildsLink.UnderDesign(h.Craft) : null;
+            string top = BuildsLink.HasPictures ? h.Ship.DesignId ?? BuildsLink.TopDesign(h.Craft) : null, below = BuildsLink.HasPictures ? BuildsLink.LauncherDesign(h.Craft) : null;
             Texture2D topPic = BuildsLink.Picture(top), belowPic = BuildsLink.Picture(below);
             if (topPic != null || belowPic != null)
             {

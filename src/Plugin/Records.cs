@@ -7,11 +7,10 @@ using PhilsReusabilitySuite.Core;
 namespace PhilsReusabilitySuite
 {
     /// <summary>
-    /// A ship: its name and number, the design it was first built as, its own launches and its flight log. It lives
-    /// while it exists anywhere (in the hangar, inside another hangar ship as a flown first stage, in a build, or in
-    /// flight), and nothing about it is kept on its parts (Phil, round 4). However it's rebuilt, it stays this ship
-    /// (Phil: "that ship is still the Peleus III #2").
-    ///
+    /// A ship: its name and number, the design it was first built as, its own blueprint, its own launches and its flight
+    /// log. It lives while it exists anywhere (in the hangar, in a build, or in flight), and nothing about it is kept on
+    /// its parts (Phil, round 4). However it's rebuilt, it stays this ship (Phil: "that ship is still the Peleus III #2").
+    /// Launchers aren't ships (Phil: "whatever is saved as the payload - 'Peleus III #2' for example is the ship").
     /// </summary>
     public sealed class Ship
     {
@@ -25,6 +24,13 @@ namespace PhilsReusabilitySuite
         public int Flights;
         /// <summary>Its flight log, newest first.</summary>
         public readonly List<string> Log = new List<string>();
+        /// <summary>
+        /// Its own blueprint (Phil, round 4: "couldn't it have a blueprint of the 'Peleus III #2' and restore uses that?"):
+        /// the ship as it was last built, without the launcher under it. Kept here, never as a craft file. Restore puts
+        /// back whatever of it didn't come home.
+        /// </summary>
+        public Node Blueprint;
+        public int BlueprintParts => Blueprint?.Children("PART").Count() ?? 0;
 
         public string DisplayName => Name + " #" + Number;
 
@@ -42,6 +48,7 @@ namespace PhilsReusabilitySuite
             if (!string.IsNullOrEmpty(DesignId)) n.AddValue("design", DesignId);
             n.AddValue("flights", Flights);
             foreach (string e in Log) n.AddValue("flight", e);
+            if (Blueprint != null) n.AddNode(KspNodes.ToKsp(Blueprint, "BLUEPRINT"));
         }
 
         public static Ship Load(ConfigNode n)
@@ -56,15 +63,17 @@ namespace PhilsReusabilitySuite
                 Flights = int.TryParse(n.GetValue("flights"), out int f) ? f : 0,
             };
             s.Log.AddRange(n.GetValues("flight"));
+            ConfigNode bp = n.GetNode("BLUEPRINT");
+            if (bp != null) s.Blueprint = KspNodes.FromKsp(bp);
             return s;
         }
     }
 
     /// <summary>
-    /// A launch exactly as it left the pad: the craft KSP launched, KSP's own id for each of its parts, and the ships
-    /// that went up in it (the suite started the launch, so it knows). When something comes home, the suite looks up the
-    /// launch it came from and which of these ships it is (Phil: "see what launch that something came from and what
-    /// ships (and their IDs) were used in that launch, and then categorize them accordingly").
+    /// A launch exactly as it left the pad: the craft KSP launched, KSP's own id for each of its parts, the ship that went
+    /// up in it (the suite started the launch, so it knows) and which parts are that ship's. When something comes home,
+    /// the suite looks up the launch it came from (Phil: "see what launch that something came from and what ships (and
+    /// their IDs) were used in that launch, and then categorize them accordingly").
     /// </summary>
     public sealed class LaunchRecord
     {
@@ -78,10 +87,15 @@ namespace PhilsReusabilitySuite
         public double Wear;
         /// <summary>KSP's id for each part of the craft, in the craft's order.</summary>
         public readonly List<uint> Parts = new List<uint>();
-        /// <summary>The ships that went up in it, each with the part it rides on (its root part).</summary>
-        public readonly List<KeyValuePair<string, int>> Ships = new List<KeyValuePair<string, int>>();
-        /// <summary>Which ship each of its parts is (parts of no listed ship aren't here).</summary>
-        public readonly Dictionary<int, string> Members = new Dictionary<int, string>();
+        /// <summary>The ship that went up in it, or null (launched without being built: it's all parts).</summary>
+        public string ShipId;
+        /// <summary>The ship has come home from this launch: anything else of it that comes home later is parts.</summary>
+        public bool ShipHome;
+        /// <summary>Each part's place in the ship's blueprint, in the craft's order (-1: launcher parts, not the ship).</summary>
+        public readonly List<int> Slots = new List<int>();
+
+        /// <summary>A part's place in the ship's blueprint, by its place in the launch (-1: not the ship's).</summary>
+        public int SlotOf(int index) => index >= 0 && index < Slots.Count ? Slots[index] : -1;
 
         public int IndexOf(uint flightId) => Parts.IndexOf(flightId);
 
@@ -92,8 +106,9 @@ namespace PhilsReusabilitySuite
             n.AddValue("name", Name ?? "");
             n.AddValue("wear", Wear.ToString("R", CultureInfo.InvariantCulture));
             n.AddValue("parts", string.Join(",", Parts.Select(p => p.ToString(CultureInfo.InvariantCulture)).ToArray()));
-            foreach (KeyValuePair<string, int> s in Ships) n.AddValue("ship", s.Key + "," + s.Value.ToString(CultureInfo.InvariantCulture));
-            foreach (KeyValuePair<int, string> m in Members) n.AddValue("member", m.Key.ToString(CultureInfo.InvariantCulture) + "," + m.Value);
+            if (ShipId != null) n.AddValue("ship", ShipId);
+            if (ShipHome) n.AddValue("home", true);
+            n.AddValue("slots", string.Join(",", Slots.Select(s => s.ToString(CultureInfo.InvariantCulture)).ToArray()));
             n.AddNode(KspNodes.ToKsp(Craft, "CRAFT"));
         }
 
@@ -101,30 +116,23 @@ namespace PhilsReusabilitySuite
         {
             ConfigNode c = n.GetNode("CRAFT");
             if (c == null || !uint.TryParse(n.GetValue("launch") ?? "", NumberStyles.Integer, CultureInfo.InvariantCulture, out uint id)) return null;
-            var r = new LaunchRecord { LaunchId = id, UT = Num(n.GetValue("ut")), Name = n.GetValue("name") ?? "", Wear = Num(n.GetValue("wear")), Craft = KspNodes.FromKsp(c) };
+            var r = new LaunchRecord { LaunchId = id, UT = Num(n.GetValue("ut")), Name = n.GetValue("name") ?? "", Wear = Num(n.GetValue("wear")), Craft = KspNodes.FromKsp(c), ShipId = n.GetValue("ship"), ShipHome = n.GetValue("home") == "True" };
             foreach (string p in (n.GetValue("parts") ?? "").Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries))
                 r.Parts.Add(uint.TryParse(p, NumberStyles.Integer, CultureInfo.InvariantCulture, out uint f) ? f : 0);
-            foreach (string s in n.GetValues("ship"))
-            {
-                int comma = s.LastIndexOf(',');
-                if (comma > 0 && int.TryParse(s.Substring(comma + 1), out int root)) r.Ships.Add(new KeyValuePair<string, int>(s.Substring(0, comma), root));
-            }
-            foreach (string m in n.GetValues("member"))
-            {
-                int comma = m.IndexOf(',');
-                if (comma > 0 && int.TryParse(m.Substring(0, comma), out int i)) r.Members[i] = m.Substring(comma + 1);
-            }
+            r.Slots.AddRange(Ints(n.GetValue("slots")));
             return r;
         }
 
         internal static double Num(string s) => double.TryParse(s, NumberStyles.Float, CultureInfo.InvariantCulture, out double d) ? d : 0;
+
+        internal static IEnumerable<int> Ints(string csv) =>
+            (csv ?? "").Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries).Select(x => int.TryParse(x, out int i) ? i : -1);
     }
 
     /// <summary>A ship waiting in the hangar, exactly as it came back (or as it was built).</summary>
     public sealed class HangarShip
     {
-        /// <summary>The ship it is. A hangar ship can carry other ships inside it (a flown first stage under a new
-        /// payload keeps its own name): those are its Pieces.</summary>
+        /// <summary>The ship it is.</summary>
         public Ship Ship;
         public string Id => Ship.Id;
         public string Name => Ship.Name;
@@ -148,17 +156,9 @@ namespace PhilsReusabilitySuite
         public string ReservedBy;
         /// <summary>The loadable craft, with tanks and parts as they left the pad last time.</summary>
         public Node Craft;
-        /// <summary>Parts it lost on the way.</summary>
+        /// <summary>Parts of its blueprint that didn't come home (Restore puts them back).</summary>
         public int Missing;
-        /// <summary>Its parts that are another ship's (by their place in the craft): a flown first stage under it.</summary>
-        public readonly Dictionary<int, string> Pieces = new Dictionary<int, string>();
-        /// <summary>
-        /// Its own blueprint (Phil, round 4: "couldn't it have a blueprint of the 'Peleus III #2' and restore uses that?"): the
-        /// whole ship as it was last built, kept here, never as a craft file. A build writes it; coming home, it's the ship
-        /// as it launched, less what it dropped on purpose (stages, payloads), so Restore puts back only what it lost.
-        /// </summary>
-        public Node Blueprint;
-        /// <summary>Each of its parts' place in its blueprint (-1: not in it).</summary>
+        /// <summary>Each of its parts' place in its ship's blueprint (-1: not in it, such as the launcher it's built on).</summary>
         public readonly List<int> Slots = new List<int>();
 
         public static string NewId() => Guid.NewGuid().ToString("N");
@@ -174,19 +174,21 @@ namespace PhilsReusabilitySuite
             }
         }
 
-        /// <summary>Which ship one of its parts is: a piece's own, or this ship's.</summary>
-        public string MemberOf(int index) => Pieces.TryGetValue(index, out string s) ? s : Ship.Id;
 
         /// <summary>The craft with every part noted as this ship's hardware (for the VAB, a launch or a quote).</summary>
         public Node Noted() => Hardware.Noted(Craft, CraftId);
 
-        /// <summary>As it was just built: its craft is its blueprint, part for part.</summary>
-        public void Built(Node craft)
+        /// <summary>
+        /// As it was just built: this craft, and its ship's blueprint is the craft without these parts (the launcher it's
+        /// built on: Phil, "if I have it saved as just the ship, and slap a Boulder 001 underneath it").
+        /// </summary>
+        public void Built(Node craft, ICollection<int> notShip)
         {
             Craft = craft;
-            Blueprint = craft.Clone();
             Slots.Clear();
-            Slots.AddRange(Enumerable.Range(0, PartCount));
+            PieceResult bp = Pieces.Build(craft, Enumerable.Range(0, PartCount).Where(i => !notShip.Contains(i)).ToList());
+            Ship.Blueprint = Hardware.Plain(bp.Craft ?? craft.Clone());
+            for (int i = 0; i < PartCount; i++) Slots.Add(bp.Craft != null ? bp.Placed.IndexOf(i) : i);
         }
 
         /// <summary>
@@ -225,9 +227,7 @@ namespace PhilsReusabilitySuite
             n.AddValue("ready", Ready);
             n.AddValue("missing", Missing);
             if (!string.IsNullOrEmpty(ReservedBy)) n.AddValue("reservedBy", ReservedBy);
-            foreach (KeyValuePair<int, string> p in Pieces) n.AddValue("piece", p.Key.ToString(CultureInfo.InvariantCulture) + "," + p.Value);
             n.AddValue("slots", string.Join(",", Slots.Select(s => s.ToString(CultureInfo.InvariantCulture)).ToArray()));
-            if (Blueprint != null) n.AddNode(KspNodes.ToKsp(Blueprint, "BLUEPRINT"));
             foreach (KeyValuePair<int, Dictionary<string, double>> kv in CameBack)
             {
                 ConfigNode left = n.AddNode("LEFT");
@@ -252,15 +252,7 @@ namespace PhilsReusabilitySuite
                 ReservedBy = n.GetValue("reservedBy"),
                 Craft = KspNodes.FromKsp(c),
             };
-            foreach (string p in n.GetValues("piece"))
-            {
-                int comma = p.IndexOf(',');
-                if (comma > 0 && int.TryParse(p.Substring(0, comma), out int i)) h.Pieces[i] = p.Substring(comma + 1);
-            }
-            ConfigNode bp = n.GetNode("BLUEPRINT");
-            if (bp != null) h.Blueprint = KspNodes.FromKsp(bp);
-            foreach (string s in (n.GetValue("slots") ?? "").Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries))
-                h.Slots.Add(int.TryParse(s, out int slot) ? slot : -1);
+            h.Slots.AddRange(LaunchRecord.Ints(n.GetValue("slots")));
             foreach (ConfigNode left in n.GetNodes("LEFT"))
             {
                 if (!int.TryParse(left.GetValue("part"), out int i)) continue;

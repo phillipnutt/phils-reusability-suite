@@ -19,9 +19,6 @@ namespace PhilsReusabilitySuite.Core
         public string TargetId;
         public bool IsCompound => Node.Get("partName") == "CompoundPart";
         public string PartName => Ref.Contains("_") ? Ref.Substring(0, Ref.LastIndexOf('_')) : Ref;
-
-        /// <summary>How far below the root it hangs (the root is 0).</summary>
-        public int Depth { get { int d = 0; for (CraftPart p = Parent; p != null; p = p.Parent) d++; return d; } }
     }
 
     /// <summary>A craft (a .craft file or KSP's launched-ship config) read into a part tree.</summary>
@@ -60,21 +57,6 @@ namespace PhilsReusabilitySuite.Core
             return c;
         }
 
-        /// <summary>The root part: the one with no parent (KSP writes it first).</summary>
-        public CraftPart RootPart => Parts.FirstOrDefault(p => p.Parent == null) ?? Parts.FirstOrDefault();
-
-        /// <summary>Of these parts, the one highest in the tree (nearest the root; the first written on a tie), or -1.</summary>
-        public int Highest(IEnumerable<int> indices)
-        {
-            int best = -1, bestDepth = int.MaxValue;
-            foreach (int i in indices)
-            {
-                if (i < 0 || i >= Parts.Count) continue;
-                int d = Parts[i].Depth;
-                if (d < bestDepth || (d == bestDepth && i < best)) { best = i; bestDepth = d; }
-            }
-            return best;
-        }
 
         /// <summary>
         /// The part id named in an attN or srfN value ("bottom,tank_123_0|1|0" gives "tank_123"; "top,Null_0_..."
@@ -98,8 +80,8 @@ namespace PhilsReusabilitySuite.Core
         public static bool IsNullRef(string r) => r.StartsWith("Null", StringComparison.Ordinal);
     }
 
-    /// <summary>What came home as one piece, turned back into a craft the VAB can load. Parts are named by their
-    /// place in the launch's craft.</summary>
+    /// <summary>Some of a craft's parts (what came home as one piece, or a ship without its launcher), turned back into a
+    /// craft the VAB can load. Parts are named by their place in the craft they came from.</summary>
     public sealed class PieceResult
     {
         /// <summary>The loadable craft: the launch's parts that came home, as they left the pad.</summary>
@@ -110,8 +92,6 @@ namespace PhilsReusabilitySuite.Core
         public readonly List<int> Placed = new List<int>();
         /// <summary>Launch parts that came home but can't be placed (docked, grabbed or added in flight): parts bin.</summary>
         public readonly List<int> Unplaced = new List<int>();
-        /// <summary>Launch parts that broke off this piece and didn't come home.</summary>
-        public readonly List<int> Missing = new List<int>();
         /// <summary>Struts and fuel lines whose other end didn't come home: parts bin.</summary>
         public readonly List<int> Dropped = new List<int>();
     }
@@ -119,11 +99,11 @@ namespace PhilsReusabilitySuite.Core
     public static class Pieces
     {
         /// <summary>
-        /// Builds the craft for a piece that came home. <paramref name="launch"/> is the ship as it left the
-        /// pad; <paramref name="cameHome"/> its parts that came home (by their place in it); <paramref name="lostOnLanding"/>
-        /// parts the suite's own landing check broke off (they count as lost even if they're separators).
+        /// Builds the craft for some of a craft's parts. <paramref name="launch"/> is the ship as it left the pad (or as it
+        /// was built); <paramref name="cameHome"/> the parts to keep, by their place in it. The biggest piece they make
+        /// is the craft; the rest can't be placed.
         /// </summary>
-        public static PieceResult Build(Node launch, ICollection<int> cameHome, ICollection<int> lostOnLanding = null)
+        public static PieceResult Build(Node launch, ICollection<int> cameHome)
         {
             var result = new PieceResult();
             Craft craft = Craft.Read(launch);
@@ -160,9 +140,6 @@ namespace PhilsReusabilitySuite.Core
                     result.Dropped.Add(p.Index);
                 }
 
-            // Parts this piece lost (not separated), and anything attached to them.
-            var landing = new HashSet<int>(lostOnLanding ?? new int[0]);
-            FindMissing(root, keep, present, landing, result.Missing);
 
             var refs = new HashSet<string>(keep.Select(p => p.Ref));
             var outNode = new Node(launch.Name);
@@ -179,41 +156,6 @@ namespace PhilsReusabilitySuite.Core
             return result;
         }
 
-        /// <summary>
-        /// What a piece lost, read from the ship as it launched: a part that didn't come home, hanging from one
-        /// that did, was lost, unless the two parted at a separator (a decoupler, docking port, claw or launch
-        /// clamp), which is how stages and payloads leave on purpose. Anything hanging from a lost part went with
-        /// it. One look when the piece comes home, instead of following KSP's joint-break, decouple and
-        /// destruction events through the flight.
-        /// </summary>
-        static void FindMissing(CraftPart p, HashSet<CraftPart> keep, HashSet<CraftPart> present, HashSet<int> lostOnLanding, List<int> missing)
-        {
-            foreach (CraftPart c in p.Children)
-            {
-                if (keep.Contains(c)) { FindMissing(c, keep, present, lostOnLanding, missing); continue; }
-                if (present.Contains(c)) continue;   // came home, but goes to the bin (a strut whose other end is gone)
-                bool landing = lostOnLanding.Contains(c.Index);
-                if (landing || !(IsSeparator(p) || IsSeparator(c))) AddSubtree(c, keep, missing);
-            }
-        }
-
-        /// <summary>A part made to let go of what's attached to it: decouplers, docking ports, claws, launch clamps.</summary>
-        public static bool IsSeparator(CraftPart p)
-        {
-            foreach (Node m in p.Node.Children("MODULE"))
-            {
-                string n = m.Get("name") ?? "";
-                if (n.Contains("Decouple") || n == "ModuleDockingNode" || n == "ModuleGrappleNode" || n == "LaunchClamp") return true;
-            }
-            return false;
-        }
-
-        static void AddSubtree(CraftPart p, HashSet<CraftPart> keep, List<int> into)
-        {
-            if (keep.Contains(p)) return;
-            into.Add(p.Index);
-            foreach (CraftPart c in p.Children) AddSubtree(c, keep, into);
-        }
 
         static IEnumerable<CraftPart> PreOrder(CraftPart p, HashSet<CraftPart> keep)
         {

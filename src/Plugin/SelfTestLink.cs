@@ -103,16 +103,21 @@ namespace PhilsReusabilitySuite
 
         static string StockFlea => Path.Combine(KSPUtil.ApplicationRootPath, "Ships", "VAB", "Jumping Flea.craft");
 
-        /// <summary>Files the stock Jumping Flea as a launcher, the way Phil's Builds files one.</summary>
+        const string LauncherName = "Booster 001 I";
+
+        /// <summary>Files the stock Jumping Flea as a craft (a capsule), and a copy of it as a launcher, the way Phil's Builds
+        /// files them.</summary>
         static void WriteLibrary(string saveDir)
         {
-            string subs = Path.Combine(saveDir, "Subassemblies");
+            string craftDir = Path.Combine(saveDir, "Ships", "VAB", "Capsules"), subs = Path.Combine(saveDir, "Subassemblies");
+            Directory.CreateDirectory(craftDir);
             Directory.CreateDirectory(subs);
             string text = File.ReadAllText(StockFlea);
-            text = new Regex(@"^ship = .*$", RegexOptions.Multiline).Replace(text, "ship = " + DesignName, 1);
-            File.WriteAllText(Path.Combine(subs, DesignName + ".craft"), text);
+            var name = new Regex(@"^ship = .*$", RegexOptions.Multiline);
+            File.WriteAllText(Path.Combine(craftDir, DesignName + ".craft"), name.Replace(text, "ship = " + DesignName, 1));
+            File.WriteAllText(Path.Combine(subs, LauncherName + ".craft"), name.Replace(text, "ship = " + LauncherName, 1));
             File.WriteAllText(Path.Combine(saveDir, "PhilsBuilds.cfg"),
-                "PHILS_BUILDS\n{\n\tSUBASSEMBLY\n\t{\n\t\tfile = " + DesignName + "\n\t\tkind = Launcher\n\t\tfamily = Hopper\n\t\tstyle = Roman\n\t\tmark = 1\n\t\trating = 0.01\n\t\twidth = 1.25\n\t}\n}\n");
+                "PHILS_BUILDS\n{\n\tSUBASSEMBLY\n\t{\n\t\tfile = " + LauncherName + "\n\t\tkind = Launcher\n\t\tfamily = Booster\n\t\tstyle = Roman\n\t\tmark = 1\n\t\trating = 0.01\n\t\twidth = 1.25\n\t}\n}\n");
         }
 
         /// <summary>What Phil's Builds does after it puts a design's parts in the editor.</summary>
@@ -176,7 +181,7 @@ namespace PhilsReusabilitySuite
             Check(before.Any(n => n.StartsWith("RCSBlock_")) && after.Any(n => n.StartsWith("RCSBlock.v2_")) && !after.Any(n => n.StartsWith("RCSBlock_")),
                 "an old design file's renamed parts read as today's parts (" + before.Count(n => n.StartsWith("RCSBlock_")) + " RCSBlock to " + after.Count(n => n.StartsWith("RCSBlock.v2_")) + " RCSBlock.v2)");
 
-            // 1. A career game with a launcher filed in its Phil's Builds library.
+            // 1. A career game with a craft and a launcher filed in its Phil's Builds library.
             GameParameters gp = GameParameters.GetDefaultParameters(Game.Modes.CAREER, GameParameters.Preset.Normal);
             Game g = GamePersistence.CreateNewGame(SaveName, Game.Modes.CAREER, gp, "Squad/Flags/default", GameScenes.SPACECENTER, EditorFacility.VAB);
             HighLogic.CurrentGame = g;
@@ -189,13 +194,16 @@ namespace PhilsReusabilitySuite
             Funding.Instance.SetFunds(1000000, TransactionReasons.Cheating);
             Library.Scan();
             Design d = BuildsApi.Designs().FirstOrDefault(x => x.Name == DesignName);
-            Check(d != null && d.Kind == DesignKind.Launcher && !string.IsNullOrEmpty(d.Id), "Phil's Builds lists the filed launcher (" + d?.Name + ", " + d?.Kind + ")");
-            if (d == null) yield break;
+            Design dl = BuildsApi.Designs().FirstOrDefault(x => x.Name == LauncherName);
+            Check(d != null && d.Kind == DesignKind.Craft && !string.IsNullOrEmpty(d.Id), "Phil's Builds lists the filed craft (" + d?.Name + ", " + d?.Kind + ")");
+            Check(dl != null && dl.Kind == DesignKind.Launcher && BuildsLink.IsLauncher(dl.Id) && !BuildsLink.IsLauncher(d?.Id), "and the filed launcher (" + dl?.Name + ", " + dl?.Kind + ")");
+            if (d == null || dl == null) yield break;
             object provider = typeof(BuildsApi).GetProperty("Copies", BindingFlags.Static | BindingFlags.NonPublic)?.GetValue(null, null);
             Check(Link != null && ReferenceEquals(provider, Link), "the suite is Phil's Builds' hangar-copies provider");
             IList<CopyRow> rows = Link.CopiesOf(d);
-            Check(rows.Count == 1 && rows[0].IsNew && rows[0].Price.Length > 0, "with nothing built, the launcher has just its New row (" + rows.FirstOrDefault()?.Price + ")");
-            Check(Link.Note(d) == "", "and no hangar note");
+            Check(rows.Count == 0 && Link.Note(d) == "", "with nothing built, the craft has no hangar copies and no note");
+            IList<CopyRow> launcherRows = Link.CopiesOf(dl);
+            Check(launcherRows.Count == 1 && launcherRows[0].IsNew && launcherRows[0].Price.Length > 0, "the launcher has just its New row: launchers are never hangar ships (" + launcherRows.FirstOrDefault()?.Price + ")");
 
             // 1b. The two partner calls of the play-test round 2: Phil's Builds' pictures and Phil's Iterative Parts' Mk step.
             Check(BuildsLink.HasPictures, "Phil's Builds gives design pictures (API " + BuildsApi.Version + ")");
@@ -238,7 +246,12 @@ namespace PhilsReusabilitySuite
             var newLines = EditorAddon.Instance.Panel.Quote.Lines.Where(l => l.Kind == OwnerKind.New).ToList();
             Check(newLines.Count == 2 && BuildPanel.NewTitle(newLines[0]) == DesignName + " · 7 new parts" && BuildPanel.NewTitle(newLines[1]) == "1 new part",
                   "new parts split by design: " + string.Join(" / ", newLines.Select(BuildPanel.NewTitle).ToArray()));
-            lastPart.design = d.Id;
+            // A launcher on its own isn't a ship (Phil, round 4): every part from the launcher design, it can't be built.
+            foreach (Part p in ship.parts) PRSPart.Of(p).design = dl.Id;
+            EditorAddon.Instance.OpenBuildPanel();
+            Check(EditorAddon.Instance.Panel.OnlyLauncher && !EditorAddon.Instance.Panel.Confirm() && EditorAddon.Instance.Panel.Error == PRSScenario.OnlyLauncherText && PRSScenario.Instance.Jobs.Count == 0,
+                  "a launcher on its own can't be built: " + EditorAddon.Instance.Panel.Error);
+            foreach (Part p in ship.parts) PRSPart.Of(p).design = d.Id;
             EditorAddon.Instance.OpenBuildPanel();
             BuildPanel panel = EditorAddon.Instance.Panel;
             Check(!panel.Unfiled, "a filed design shows no 'Not filed' warning");
@@ -261,17 +274,10 @@ namespace PhilsReusabilitySuite
             // part's (a payload stacked on a launcher belongs to the payload).
             Check(BuildsLink.DesignIdFor(new[] { d.Id, d.Id, "" }, d.Id) == d.Id, "a ship with a part added by hand belongs to its design");
             Check(BuildsLink.DesignIdFor(new[] { "payload", d.Id, d.Id }, "payload") == "payload", "a payload stacked on a launcher belongs to the payload's design");
-            // What a stacked ship is on, for its hangar card (Phil, round 4: only what it sits on): a launcher design built new
-            // with it, or another ship riding inside it as itself (a flown first stage).
+            // What a ship is on, for its hangar card: the launcher design it's built on.
             var onDesign = new HangarShip { Ship = new Ship { Id = "under-test-1", Name = "Top", Number = 1 }, Craft = new Node("SHIP") };
-            foreach (string id in new[] { "another-design", d.Id }) StampedPart(onDesign.Craft, id);
-            Check(BuildsLink.Under(onDesign) == DesignName, "a payload built new on a launcher is 'on' the launcher's design (" + BuildsLink.Under(onDesign) + ")");
-            var onShip = new HangarShip { Ship = new Ship { Id = "under-test-2", Name = "Top", Number = 1 }, Craft = new Node("SHIP") };
-            foreach (string id in new[] { "another-design", d.Id }) StampedPart(onShip.Craft, id);
-            Ship rockall = sc.NewShip("Rockall 002");
-            onShip.Pieces[1] = rockall.Id;
-            Check(BuildsLink.Under(onShip) == "Rockall 002 #1", "with a hangar ship riding inside it, it names that ship (" + BuildsLink.Under(onShip) + ")");
-            sc.Ships.Remove(rockall.Id);
+            foreach (string id in new[] { "another-design", dl.Id }) StampedPart(onDesign.Craft, id);
+            Check(BuildsLink.Under(onDesign) == LauncherName && BuildsLink.LauncherDesign(onDesign.Craft) == dl.Id, "a ship built on a launcher is 'on' the launcher's design (" + BuildsLink.Under(onDesign) + ")");
             var onCraft = new HangarShip { Ship = new Ship { Id = "under-test-3", Name = "Top", Number = 1 }, Craft = new Node("SHIP") };
             foreach (string id in new[] { d.Id, "another-design" }) StampedPart(onCraft.Craft, id);
             Check(BuildsLink.Under(onCraft) == null, "another design that isn't a launcher under it (a capsule from another design, say) isn't what it's 'on' (" + BuildsLink.Under(onCraft) + ")");
@@ -279,7 +285,7 @@ namespace PhilsReusabilitySuite
             string readyId = ready.Id;
             rows = Link.CopiesOf(d);
             CopyRow readyRow = rows.FirstOrDefault(r => r.Id == readyId);
-            Check(rows.Count == 2 && rows[0].IsNew && readyRow != null && readyRow.Text == "ready · never flown", "the library shows New and the ready copy (" + readyRow?.Label + " " + readyRow?.Text + ")");
+            Check(rows.Count == 1 && readyRow != null && readyRow.Text == "ready · never flown", "the library shows the ready copy (" + readyRow?.Label + " " + readyRow?.Text + ")");
             Check(Link.Note(d) == "1 ready in the hangar", "the design's note: " + Link.Note(d));
             CopyDetail det = readyRow != null ? Link.Detail(d, readyRow) : null;
             Check(det != null && det.Title == ready.DisplayName && det.Chips.Any(c => c.Text == "Ready"), "the ready copy's detail panel (" + det?.Title + ")");
@@ -300,6 +306,7 @@ namespace PhilsReusabilitySuite
             BuildsLink.LibraryBuild hop = lib.FirstOrDefault(i => i.Design.Id == d.Id);
             Check(hop != null && madeCurrent >= 8, "every new part of a library build went through PIP's current-Mk step (" + madeCurrent + " parts)");
             Check(hop != null && hop.Blocked == null && hop.Parts == 8 && hop.Ready == 1, "the library lists the Hopper as buildable, with its ready copy (" + hop?.Blocked + ")");
+            Check(lib.All(i => i.Design.Kind == DesignKind.Craft), "and lists no launcher: on its own a launcher isn't a ship");
             if (hop == null) yield break;
             Check(Near(hop.Quote.Total, vabPaid, 1), "it costs what the VAB build cost (" + Pricing.Funds(hop.Quote.Total) + " vs " + Pricing.Funds(vabPaid) + ")");
             double fLib = Funds;
@@ -596,7 +603,7 @@ namespace PhilsReusabilitySuite
                 BuildJob rj = BuildsLink.RestoreBuild(toRestore, rs, false, true, out err);
                 Check(rj != null, "restoring it " + err);
                 HangarShip restored = sc.Hangar.FirstOrDefault(h => h.Id == flownId);
-                Check(restored != null && restored.Ready && restored.PartCount == 8 && restored.Missing == 0 && restored.Pieces.Count == 0, "it's ready again with its own flown parts and a chute (" + restored?.PartCount + " parts)");
+                Check(restored != null && restored.Ready && restored.PartCount == 8 && restored.Missing == 0, "it's ready again with its own flown parts and a chute (" + restored?.PartCount + " parts)");
                 Check(restored != null && restored.DisplayName == flownDisplay, "as the same ship (" + restored?.DisplayName + ")");
                 Check(restored != null && restored.Wear == 0 && restored.Flights == 1, "restoring refurbishes the rest too: the whole craft leaves at 0% wear, still on its one flight");
             }

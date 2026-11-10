@@ -143,8 +143,8 @@ namespace PhilsReusabilitySuite
         }
 
         /// <summary>
-        /// A piece as the hangar will name it: the ship from its launch whose root part it carries ("Oak 005 #4"), or a new
-        /// piece named after its design ("Kopje 005", its number still to give). Else KSP's vessel name.
+        /// A piece as the hangar will see it: the ship coming home ("Peleus III #2", PRSScenario.ShipOfPiece), or else
+        /// parts named after their design ("Boulder 001"). Else KSP's vessel name.
         /// </summary>
         static string PieceName(Vessel v)
         {
@@ -155,8 +155,7 @@ namespace PhilsReusabilitySuite
                 LaunchRecord rec = launch == null ? null : launch.Select(p => sc?.RecordOf(p.launchID, p.flightID)).FirstOrDefault(r => r != null);
                 if (rec != null)
                 {
-                    var at = launch.Select(p => rec.IndexOf(p.flightID)).Where(i => i >= 0).ToList();
-                    Ship ship = sc.ShipOf(PRSScenario.ShipIn(rec, at, Core.Craft.Read(rec.Craft), out _));
+                    Ship ship = sc.ShipOfPiece(rec, launch.Select(p => rec.IndexOf(p.flightID)).Where(i => i >= 0).ToList(), out _);
                     if (ship != null) return ship.DisplayName;
                 }
                 string name = BuildsLink.NameFor(v.parts.Select(p => PRSPart.Of(p)?.design), PRSPart.Of(v.rootPart)?.design);
@@ -376,7 +375,7 @@ namespace PhilsReusabilitySuite
                        + (broke.Count > 0 ? " Lost " + broke.Count + (broke.Count == 1 ? " outer part." : " outer parts.") : "")
                        + money + " In the hangar, now " + h.Flights + (h.Flights == 1 ? " flight." : " flights.");
             else
-                text = Name(v) + " came down at " + landing.ToString("0.0") + " m/s " + how + ", " + where + ": " + (sc.LastBinReason ?? "it has no engine or probe core") + ", so its parts went to the parts bin."
+                text = Name(v) + " came down at " + landing.ToString("0.0") + " m/s " + how + ", " + where + ": " + (sc.LastBinReason ?? "it isn't a ship") + ", so its parts went to the parts bin."
                        + (broke.Count > 0 ? " Lost " + broke.Count + (broke.Count == 1 ? " outer part." : " outer parts.") : "") + money;
             Outcomes.Add(text);
             Log.Info("Stage recovery: " + text + Parts(pv) + (prof.FromLiveParts ? "" : " (drag from default part sizes: it was never measured close by)"));

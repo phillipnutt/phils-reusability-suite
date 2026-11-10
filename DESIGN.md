@@ -20,7 +20,8 @@ booster under a newly built payload.
 5. **A flown booster under a new payload.** In the VAB, pick a stored booster and build a new payload on
    top. Only the new parts cost full money and build time; the booster only needs refurbishing. Phil:
    "combining a used but refueled launcher with a newly built payload is pretty outside of the scope of
-   vanilla KSP... I really like that shit though."
+   vanilla KSP... I really like that shit though." (Round 4: launchers are parts now. A flown booster comes home to the
+   parts bin, and the next launcher takes its parts from there: see "Ship identity, rebuilt".)
 
 **Not wanted.** These are why Kerbal Construction Time "did too much":
 - facility upgrade times;
@@ -223,6 +224,8 @@ payload.
   booster is under it is known only to the build and the launch record.
 
 ## Two-stage launchers (agreed)
+
+(Replaced in round 4, 2026-11-09: launchers are parts, not ships. See "Ship identity, rebuilt" below.)
 
 Phil, 2026-11-07: "I love this vision".
 
@@ -759,19 +762,30 @@ hulls, `WhoIs`, per-part flight counts and wear, "Use it", Restore to design, an
 - **Picked explicitly.** Built ships are opened, launched or picked up from the hangar, or from Phil's Builds' hangar
   list ("Peleus III · 1 in hangar: Peleus III #2"), which brings in the real ship. Loading a design is always a new
   build; the Build panel never decides by itself that it's a hangar ship.
+- **Launchers are parts; the ship is what's saved as the ship** (Phil: "how about whatever is saved as the payload -
+  'Peleus III #2' for example is the ship. That'll govern restores and everything. If I saved that Peleus III as a
+  payload and the booster underneath it, then restore would rebuild the booster. But if I have it saved as just the
+  ship, and slap a Boulder 001 underneath it and clicked build - Builds and Suite both see what's going on, and govern
+  all the rest of it"). Parts placed from a Phil's Builds launcher or upper-stage design are the launcher a ship is
+  built on; everything else in the build is the ship. Launchers aren't ships: no booster has a hangar entry, a name or a
+  log, a launcher on its own can't be built, and recovered launcher parts go to the parts bin (so the next launcher
+  takes them from there). This replaces the flown booster under a new payload, the two-stage launcher completion and
+  the Launchers tab pick-up above. Two hangar ships in one build: the one opened is the ship, and the other's parts are
+  owned parts of it (Phil: "Sure i guess that works"). Not built, at Phil's word: ship parts that land early waiting for
+  the rest, and sorting launcher parts added by hand.
 
 **The records** (`Records.cs`), each in one place, nothing kept on parts:
-- **`Ship`**: id, name, number, the design it was first built as (`DesignId`, set once), its own flights, its flight
-  log. It lives while it exists anywhere: in the hangar, riding inside another hangar ship (a flown first stage under
-  a new payload), kept by a build, or in flight while the part it rides on (its root part) is still flying. Ships that
-  exist nowhere are dropped at the Space Center (`Tidy`).
+- **`Ship`**: id, name, number, the design it was first built as (`DesignId`, set once), its own **blueprint** (the
+  ship as it was last built, without the launcher under it), its own flights, its flight log. It lives while it exists
+  anywhere: in the hangar, kept by a build, or in flight while any of its parts from its launch is still flying. Ships
+  that exist nowhere are dropped at the Space Center (`Tidy`).
 - **`HangarShip`**: the ship, its craft, an id for this copy of the craft (`CraftId`, new whenever its parts change),
-  ready, wear (one number per craft), what each part came home with, parts missing, `Pieces` (its parts that are
-  another ship's: a flown first stage under it), and its **blueprint** with each part's place in it (`Slots`).
+  ready, wear (one number per craft), what each part came home with, how many blueprint parts are missing, and each
+  part's place in the blueprint (`Slots`; -1 for the launcher it's built on).
 - **`LaunchRecord`**: KSP's own launch id, KSP's own part id for each part of the craft as launched (matched to the
   launched-ship config by the craft's id for each part, so the order of the ship's part list doesn't matter), its wear
-  as it left, the ships that went up (each with the part it rides on) and which ship each part is. KSP writes both ids
-  at launch, docking only reads them, and the save keeps them (checked in KSP's own code, and in game by
+  as it left, the ship that went up, and each part's place in that ship's blueprint (-1: launcher parts). KSP writes
+  both ids at launch, docking only reads them, and the save keeps them (checked in KSP's own code, and in game by
   `SelfTestIds`). One record per launch: going back to the pad or quickloading finds it by its launch id.
 - **`BuildJob`**: the ship it keeps, or none (a new ship), which of its parts are which hangar ship's hardware, and the
   parts it took from the bin (counts, given back on Cancel).
@@ -793,34 +807,37 @@ hangar part with something added to it in the VAB (cargo, a bigger size, a deare
 what was added costs its full price (`Owner.Added`). The VAB ship of a hangar ship is named after the ship's name
 ("Peleus III"), never its number.
 
-**A build** is the hangar ship whose hardware is nearest its root (its root part, unless that's a new part), whatever
-the craft is saved as (`MainShipOf`). Any other ship in the build whose own root part is in it rides along as itself
-(Pieces). With no hangar hardware it's a new ship, which belongs to its design for good (the design of all its parts,
-or of its root part, the rule that also names it) and gets that design's next number when it's finished. Restore and
-Refurbish keep their ship explicitly; a kept ship must be in the build. A hangar ship's parts the build leaves out go
-to the parts bin, refurbished at that ship's wear, priced in the build ("1 part left out goes to the parts bin"). What
-was built becomes the ship's blueprint.
+**A build** is the ship that was opened: the hangar ship loaded into the editor, or brought into an empty one
+(`EditorAddon.OpenedCraft`), whatever the craft is saved as, while its parts are in it; a queued build keeps its own.
+Another hangar ship added to it is owned parts, and stops being a ship when the build finishes. Nothing opened: it's a
+new ship, which belongs to its design for good (the design of its ship parts, or of the first of them, the rule that
+also names it) and gets that design's next number when it's finished. Restore and Refurbish keep their ship
+explicitly. A hangar ship's parts the build leaves out go to the parts bin, refurbished at that ship's wear, priced in
+the build ("1 part left out goes to the parts bin"). What was built, less the launcher parts, becomes the ship's
+blueprint (`HangarShip.Built`). A build that's all launcher parts is refused ("put a ship on it"), and Phil's Builds'
+launchers and upper stages aren't in the Space Center's library list.
 
 **A launch** of a hangar ship is always started by the suite (the Space Center's Launch, the Build panel's Launch,
 the VAB's launch-site list), which notes which hangar ship is launching (`PendingLaunch`). At the launch record, only
-that ship counts, and only if every launched part is exactly its hardware. It lists the ship (riding on the craft's
-root part) and every ship inside it (each on its own highest part), counts a flight for each, and takes the ship out
-of the hangar. A launch from KSP's own launch-pad dialog lists no ships, whatever its file says.
+that ship counts, and only if every launched part is exactly its hardware. It records the ship and each part's place
+in its blueprint, counts a flight, and takes the ship out of the hangar. A launch from KSP's own launch-pad dialog
+records no ship, whatever its file says: all of it is parts.
 
-**A return** (`RecoverLaunch`): parts are grouped by launch (two launches docked together are filed per launch). For
-each, the record gives each part's place by its KSP part id; the piece is rebuilt (`Pieces.Build`), and it's the
-launch's ship whose root part it carries (the highest in the launch's tree if several; the others ride inside it as
-themselves). If it carries none it's a new piece, named after its design (or its root part's design) and belonging to
-it, on its first flight. Wear = the craft's wear at launch plus this flight's peaks. Its blueprint is the ship as it
-launched less what it dropped on purpose (stages, payloads), so Restore puts back only what it lost. Each part's
-cargo is taken as it came home, so cargo used or taken out in flight is gone. Parts not in the record (added in
-flight), parts that can't be placed and dangling struts go to the parts bin, refurbished at that wear and paid then.
-A ship whose root part didn't come home is closed as lost. The flight forecast names a falling piece by the same rule
-(`PRSScenario.ShipIn`).
+**A return** (`RecoverLaunch`, `ShipOfPiece`): parts are grouped by launch (two launches docked together are filed per
+launch). For each, the record gives each part's place by its KSP part id. The piece is the launch's ship if it has
+parts of that ship's blueprint including one of its pods or probe cores, and the ship hasn't come home from that launch already (`ShipHome`; a ship taken apart can never come back from an old launch). Anything else
+is parts for the bin: launcher pieces (a booster with its own probe core too), ship parts without a pod or probe
+core, and anything of a launch with no ship. The ship is rebuilt as it came home (`Pieces.Build`); whatever of its
+blueprint didn't come back is missing (dropped, broken off or lost), for Restore. Wear = the craft's wear at launch
+plus this flight's peaks. Each part's cargo is taken as it came home, so cargo used or taken out in flight is gone.
+Parts not in the record (added in flight), parts that can't be placed and dangling struts go to the parts bin,
+refurbished at that wear and paid then. The flight forecast, the stage-recovery message and the Recover prompt use the
+same rule.
 
 **Restore** rebuilds a hangar ship from its own blueprint (`Hardware.Restore`): each part it still has in its place,
-as its own hardware (its Mk, its cargo as it is), and every part it lost new (PIP's current Mk). The button just says
-"Restore". Phil's Builds' Load or Pick up on a hangar ship brings in the same whole ship.
+as its own hardware (its Mk, its cargo as it is), and every part it lost from the parts bin first, else new (PIP's
+current Mk). The button just says "Restore". Phil's Builds' Load or Pick up on a hangar ship brings in the same whole
+ship when it lost parts, and exactly as it's stored (with the launcher it was built on) when it didn't.
 
 **The bin** is matched only when pricing, by kind and count, at no cost ("from the parts bin, already paid for").
 Bin parts are filled from empty. An old-Mk kind that would be the part once updated is offered ("Update and use",
@@ -828,10 +845,10 @@ Bin parts are filled from empty. An old-Mk kind that would be the part once upda
 recovery adds the bin's refurbish to its transport line; the Recover prompt shows it, launch by launch, when parts
 will go to the bin.
 
-**Older saves** (format 1, before round 4) start the suite fresh on load (Phil: start fresh, no
-converter): empty hangar, bin and queue, queued builds refunded, numbers already given out kept. Ships still in flight
-have no launch record any more, so their parts go to the parts bin when they're recovered (Phil: "Parts bin"). The save
-file itself isn't touched; the next save writes format 2.
+**Older saves** (before format 3) start the suite fresh on load (Phil: start fresh, no converter): empty hangar, bin
+and queue, queued builds refunded, numbers already given out kept. Ships still in flight have no launch record any
+more, so their parts go to the parts bin when they're recovered (Phil: "Parts bin"). The save file itself isn't
+touched; the next save writes format 3.
 
 ## Open questions
 

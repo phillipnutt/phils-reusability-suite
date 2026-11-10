@@ -29,31 +29,30 @@ it hasn't had much real play yet. Back up your saves. The design is in [DESIGN.m
   farther away it landed) or **Sell for scrap** (half of what it's worth where it landed). Cancel leaves it where it
   is.
 - **Stage recovery.** Stages that fall out of range come home on their own if they would land safely, on
-  parachutes or with a landing burn. Landing between 6 and 12 m/s breaks off outer parts; faster than that,
-  the stage is lost. The VAB shows each dropping piece's landing speed while you design it, and in flight each
-  stage says as it drops whether it will come home. It works while you watch from the Space Center or the
-  Tracking Station too.
-- **A parts bin.** Loose parts, from ships you take apart or pieces with no engine or probe core, kept as a count
-  of each kind of part. They're refurbished (and emptied of fuel) as they go in, so new builds use them in place of
-  new parts at no cost but their fuel, and the Build panel lists which ones.
+  parachutes or with a landing burn: to the parts bin, or to the hangar if it's the ship itself. Landing between 6
+  and 12 m/s breaks off outer parts; faster than that, the stage is lost. The VAB shows each dropping piece's
+  landing speed while you design it, and in flight each stage says as it drops whether it will come home. It works
+  while you watch from the Space Center or the Tracking Station too.
+- **A parts bin.** Loose parts, from ships you take apart, launchers that come home, and anything else that comes
+  home without its ship, kept as a count of each kind of part. They're refurbished (and emptied of fuel) as they go
+  in, so new builds use them in place of new parts at no cost but their fuel, and the Build panel lists which ones.
 - **Phil's Iterative Parts.** New parts are always their program's current Mk, whether you build in the VAB or
   from the Space Center. Flown parts keep the Mk they were built at until you press **Update PIP parts** (in the
   parts bin or on a hangar ship). A build that could use an old-Mk bin part asks whether to update it first, or
   builds that part new.
 - **Build ahead from the Space Center.** "Build from Phil's Builds…" in the Build queue tab queues any filed
-  launcher or craft without opening the VAB or SPH, and says why if it can't be built yet.
-- **A flown booster under a new payload.** Phil's Builds' library window lists the hangar copies under
-  each launcher. Load a flown first stage and the whole launcher comes in: that exact stage plus a new
-  upper stage from the design (onto the cursor if the editor already has a craft, to attach under your
-  payload). "Load as stored" brings only what's in the hangar. Only the new parts cost full price and
-  full build time.
+  craft without opening the VAB or SPH, and says why if it can't be built yet.
+- **Launchers are parts.** The ship is what you saved as the ship. Put a Phil's Builds launcher under it in the VAB
+  and that launcher isn't the ship: it has no name or log, it comes home to the parts bin, and the next launcher
+  you build takes its parts from there. Saved together with its booster, the booster is the ship's own, and Restore
+  builds it again. A launcher on its own can't be built: put a ship on it.
 - **Built from designs.** Only ships built from a design filed in Phil's Builds come home to the hangar.
-  Pieces of anything else go to the parts bin, and the Build panel warns you first. Loading a design is always a
-  new build: open a built ship from the hangar, or from Phil's Builds' hangar list.
+  Anything else goes to the parts bin, and the Build panel warns you first. Loading a design is always a new build:
+  open a built ship from the hangar, or from Phil's Builds' hangar list.
 
-Every launch records which ships went up in it, so a booster comes home as itself: "Oak 005 #4, 5 flights".
-A ship stays itself however it is rebuilt (open it in the VAB, change it, even save it as another design), and keeps
-its own blueprint for Restore.
+Every launch records the ship that went up in it and which parts are its own. The piece with its pod or probe core
+comes home as that ship: "Peleus III #2, 5 flights". A ship stays itself however it is rebuilt (open it in the VAB,
+change it, even save it as another design), and keeps its own blueprint for Restore.
 
 ## Requirements
 

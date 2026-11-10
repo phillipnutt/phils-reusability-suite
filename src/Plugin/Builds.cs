@@ -314,13 +314,7 @@ namespace PhilsReusabilitySuite
                 if (h == null) return "a hangar ship it uses is gone";
                 if (h.ReservedBy != null && h.ReservedBy != mine) return h.DisplayName + " is in another build now";
             }
-            // The ship it keeps must still exist (a ship riding inside another hangar ship has no hangar entry of its own).
-            if (keepShipId != null)
-            {
-                if (ShipOf(keepShipId) == null) return "the ship it keeps no longer exists";
-                HangarShip k = HangarOf(keepShipId);
-                if (k != null && k.ReservedBy != null && k.ReservedBy != mine) return k.DisplayName + " is in another build now";
-            }
+            if (keepShipId != null && ShipOf(keepShipId) == null) return "the ship it keeps no longer exists";
             foreach (KeyValuePair<string, int> t in q.BinTaken)
             {
                 int have = (Bin.FirstOrDefault(b => b.Key == t.Key)?.Count ?? 0) + (editing != null && editing.BinTaken.TryGetValue(t.Key, out int mineN) ? mineN : 0);
@@ -329,13 +323,14 @@ namespace PhilsReusabilitySuite
             return null;
         }
 
-        /// <param name="keepShipId">The ship this build is (Restore and Refurbish say so). Null: the hangar ship it starts from, if
-        /// any (Phil, round 4: a build from a hangar ship is always that ship, whatever it's saved as), else a new ship.</param>
+        /// <param name="keepShipId">The ship this build is: the hangar ship opened in the VAB (Phil, round 4: a build from a hangar
+        /// ship is always that ship, whatever it's saved as), or the one Restore and Refurbish work on. Null: a new ship.</param>
         public BuildJob StartBuild(Node craft, string name, string facility, Quote q, bool overtime, bool outsource, string keepShipId, out string error)
         {
             error = null;
             string stale = StaleQuote(q, null, keepShipId);
             if (stale != null) { error = "Something changed since this was priced: " + stale + ". Check the new price and try again."; return null; }
+            if (BuildsLink.OnlyLauncher(craft)) { error = OnlyLauncherText; return null; }
             // Old-Mk bin parts that would fit: the build asks first (update them, or build those parts new).
             if (q.OldBin.Count > 0) { error = "Answer the question about the parts bin's older parts first."; return null; }
             double extra = outsource ? Pricing.OutsourceCharge(q.BuildPrice, 1, S) : overtime ? Pricing.OvertimeCharge(q.BuildPrice, 1, S) : 0;
@@ -368,8 +363,8 @@ namespace PhilsReusabilitySuite
             job.RefurbishPrice = q.RefurbishPrice;
             job.FuelPrice = q.FuelPrice;
             job.Paid = q.Total;
-            // The ship it keeps must be in it (its hardware); otherwise it's the hangar ship it starts from, or a new ship.
-            job.ShipId = keepShipId != null && ShipsIn(q).Contains(keepShipId) ? keepShipId : MainShipOf(q);
+            // The ship it keeps must be in it (its hardware); otherwise it's a new ship.
+            job.ShipId = keepShipId != null && q.HangarShips.Contains(keepShipId) ? keepShipId : null;
             job.Owners.Clear();
             foreach (KeyValuePair<int, string> o in q.Owners) job.Owners[o.Key] = o.Value;
             job.BinTaken.Clear();
@@ -470,15 +465,8 @@ namespace PhilsReusabilitySuite
             return StartBuild(h.Noted(), h.Name, Suite.FacilityOf(h.Craft), q, false, false, h.Id, out error);
         }
 
-        /// <summary>
-        /// The ship the hangar hardware nearest a build's root is (Phil, round 4: "once I build the Peleus III #2, that ship
-        /// should always be the Peleus III #2"), or null when the build has no hangar hardware.
-        /// </summary>
-        public string MainShipOf(Quote q) => q.Main.Kind == OwnerKind.Hangar ? HangarOf(q.Main.ShipId)?.MemberOf(q.Main.Index) : null;
-
-        /// <summary>Every ship whose hardware is in a build.</summary>
-        HashSet<string> ShipsIn(Quote q) => new HashSet<string>(q.Owners.Values
-            .Select(t => Hardware.Parse(t, out string id, out int at) ? HangarOf(id)?.MemberOf(at) : null).Where(x => x != null));
+        /// <summary>Why a launcher on its own can't be built (Phil, round 4: launchers aren't ships).</summary>
+        public const string OnlyLauncherText = "That's a launcher on its own, and launchers aren't ships: put a ship on it to build it.";
 
         /// <summary>
         /// A hangar ship rebuilt from its own blueprint ("Restore"): each part it still has in its place, as its own
@@ -487,8 +475,8 @@ namespace PhilsReusabilitySuite
         public Node RestoreCraft(HangarShip h, out int newParts)
         {
             newParts = 0;
-            if (h.Blueprint == null) return null;
-            Node craft = Hardware.Restore(h.Blueprint, h.Slots, h.Craft.Children("PART").ToList(), h.CraftId, out List<int> fresh);
+            if (h.Ship.Blueprint == null) return null;
+            Node craft = Hardware.Restore(h.Ship.Blueprint, h.Slots, h.Craft.Children("PART").ToList(), h.CraftId, out List<int> fresh);
             newParts = fresh.Count;
             Pip.MakeCurrent(craft, p => Hardware.Of(p) == null);
             return craft;
@@ -526,43 +514,30 @@ namespace PhilsReusabilitySuite
 
         /// <summary>
         /// A finished build is a ready hangar ship. It's the ship it keeps (the same name, number, flights and log, however
-        /// it was changed), or a new one with the design's next number. Any other hangar ship inside it whose own root
-        /// part is in it rides along as itself (a flown first stage under a new payload). Parts a hangar ship had that the
-        /// build left out go to the parts bin (refurbished in the build's price). What was built is the ship's blueprint.
+        /// it was changed), or a new one with the design's next number. Any other hangar ship whose parts it used stops being
+        /// a ship (Phil: the one you opened is the ship; the other's parts count as owned). Parts a hangar ship had that the
+        /// build left out go to the parts bin (refurbished in the build's price). What was built, less the launcher it's on,
+        /// is the ship's blueprint.
         /// </summary>
         void Finish(BuildJob job)
         {
             Jobs.Remove(job);
-            Craft built = Core.Craft.Read(job.Craft);
-            var memberOf = new Dictionary<int, string>();
             var used = new Dictionary<string, HashSet<int>>();
             foreach (KeyValuePair<int, string> o in job.Owners)
             {
                 if (!Hardware.Parse(o.Value, out string id, out int at)) continue;
-                HangarShip h = HangarOf(id);
-                if (h == null) continue;
-                memberOf[o.Key] = h.MemberOf(at);
                 if (!used.TryGetValue(id, out HashSet<int> set)) used[id] = set = new HashSet<int>();
                 set.Add(at);
             }
+            List<Node> parts = job.Craft.Children("PART").ToList();
+            var launcher = new HashSet<int>(Enumerable.Range(0, parts.Count).Where(i => BuildsLink.IsLauncherPart(parts[i])));
             Ship main = ShipOf(job.ShipId);
-            var riding = new HashSet<string>();
-            foreach (KeyValuePair<string, HashSet<int>> u in used)
-            {
-                HangarShip h = HangarOf(u.Key);
-                Craft hc = Core.Craft.Read(h.Craft);
-                foreach (string m in new[] { h.Id }.Concat(h.Pieces.Values).Distinct())
-                {
-                    if (m == main?.Id) continue;
-                    int mRoot = m == h.Id ? hc.RootPart.Index : hc.Highest(h.Pieces.Where(p => p.Value == m).Select(p => p.Key));
-                    if (u.Value.Contains(mRoot)) riding.Add(m);
-                }
-            }
             if (main == null)
             {
                 // A new ship belongs to its design for good: Phil's Builds counts it there, whatever it's rebuilt into.
                 main = NewShip(job.Name);
-                main.DesignId = BuildsLink.DesignIdFor(built.Parts.Select(p => Hardware.Module(p.Node)?.Get("design")), Hardware.Module(built.RootPart?.Node)?.Get("design"));
+                List<Node> own = parts.Where((p, i) => !launcher.Contains(i)).ToList();
+                main.DesignId = BuildsLink.DesignIdFor(own.Select(p => Hardware.Module(p)?.Get("design")), Hardware.Module(own.FirstOrDefault())?.Get("design"));
             }
 
             HangarShip ready = HangarOf(main.Id);
@@ -574,11 +549,9 @@ namespace PhilsReusabilitySuite
                 if (h != ready) Hangar.Remove(h);
             }
             if (ready == null) { ready = new HangarShip { Ship = main }; Hangar.Add(ready); }
-            ready.Built(Hardware.Plain(job.Craft.Clone()));
+            ready.Built(Hardware.Plain(job.Craft.Clone()), launcher);
             // The same id as the build's craft, so the ship left in the VAB after pressing Build is this ship.
             ready.CraftId = job.CraftId;
-            ready.Pieces.Clear();
-            foreach (KeyValuePair<int, string> m in memberOf) if (riding.Contains(m.Value)) ready.Pieces[m.Key] = m.Value;
             ready.UT = Planetarium.GetUniversalTime();
             ready.CameBack.Clear();
             ready.Missing = 0;
@@ -587,8 +560,7 @@ namespace PhilsReusabilitySuite
             // Built or refurbished: the whole craft leaves at 0% wear (Phil: Restore refurbishes the surviving parts too).
             ready.Wear = 0;
             ready.ReservedBy = null;
-            Log.Info("Build finished: " + ready.DisplayName + " is ready in the hangar"
-                     + (ready.Pieces.Count > 0 ? ", with " + string.Join(", ", ready.Pieces.Values.Distinct().Select(id => ShipOf(id)?.DisplayName ?? "?").ToArray()) + " in it" : ""));
+            Log.Info("Build finished: " + ready.DisplayName + " is ready in the hangar" + (launcher.Count > 0 ? ", on " + Suite.Parts(launcher.Count) + " of launcher" : ""));
             Suite.Message(ready.DisplayName + " is ready in the hangar");
             if (TimeWarp.fetch != null && TimeWarp.CurrentRateIndex > 0) TimeWarp.SetRate(0, true, false);
             Changed();

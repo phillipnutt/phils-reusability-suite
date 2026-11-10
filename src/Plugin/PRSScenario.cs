@@ -8,19 +8,20 @@ using UnityEngine;
 namespace PhilsReusabilitySuite
 {
     /// <summary>
-    /// The suite's save data and its flight hooks. Every launch is recorded as it leaves the pad, with the ships that
-    /// went up in it (the suite starts every launch of a hangar ship, so it knows which). When something comes home,
-    /// the suite looks up the launch it came from (KSP's own launch id is on every part) and which of that launch's
-    /// ships it carries, and files it as that ship. Everything lives in the save, so KRASH's revert undoes a
-    /// simulation's effects.
+    /// The suite's save data and its flight hooks. Every launch is recorded as it leaves the pad, with the ship that went
+    /// up in it and which parts are that ship's (the suite starts every launch of a hangar ship, so it knows). When
+    /// something comes home, the suite looks up the launch it came from (KSP's own launch id is on every part): the piece
+    /// with the ship's pod or probe core is the ship, and everything else is parts for the bin. Everything lives in the
+    /// save, so KRASH's revert undoes a simulation's effects.
     /// </summary>
     [KSPScenario(ScenarioCreationOptions.AddToAllGames, GameScenes.SPACECENTER, GameScenes.EDITOR, GameScenes.FLIGHT, GameScenes.TRACKSTATION)]
     public partial class PRSScenario : ScenarioModule
     {
         public static PRSScenario Instance { get; private set; }
 
-        /// <summary>The save format. 2: ships, launches and the bin as their own records (round 4); older saves start fresh.</summary>
-        public const int Format = 2;
+        /// <summary>The save format. 3: ships, launches and the bin as their own records, launchers as parts (round 4);
+        /// older saves start fresh.</summary>
+        public const int Format = 3;
 
         public readonly List<LaunchRecord> Launches = new List<LaunchRecord>();
         public readonly List<HangarShip> Hangar = new List<HangarShip>();
@@ -127,33 +128,26 @@ namespace PhilsReusabilitySuite
             var rec = new LaunchRecord { LaunchId = parts[0].launchID, UT = Now, Name = name, Craft = craft };
             rec.Parts.AddRange(Enumerable.Repeat(0u, parts.Count));
             for (int i = 0; i < parts.Count; i++) rec.Parts[at[i]] = parts[i].flightID;
-            // Which ships went up: only a hangar ship the suite itself is launching, and only if this is all its hardware.
+            rec.Slots.AddRange(Enumerable.Repeat(-1, parts.Count));
+            // Which ship went up: only a hangar ship the suite itself is launching, and only if this is all its hardware.
             HangarShip h = LaunchingShip(parts);
             if (h != null)
             {
-                Craft read = Core.Craft.Read(craft);
+                rec.ShipId = h.Id;
                 for (int i = 0; i < parts.Count; i++)
-                    if (Hardware.Parse(PRSPart.NoteOf(parts[i]), out _, out int stored)) rec.Members[at[i]] = h.MemberOf(stored);
-                // Each ship rides on its root part: this one on the craft's root, a flown stage inside it on its own highest part.
-                rec.Ships.Add(new KeyValuePair<string, int>(h.Id, read.RootPart.Index));
-                foreach (string piece in h.Pieces.Values.Distinct())
-                {
-                    int root = read.Highest(rec.Members.Where(m => m.Value == piece).Select(m => m.Key));
-                    if (root >= 0) rec.Ships.Add(new KeyValuePair<string, int>(piece, root));
-                }
+                    if (Hardware.Parse(PRSPart.NoteOf(parts[i]), out _, out int stored) && stored < h.Slots.Count) rec.Slots[at[i]] = h.Slots[stored];
                 rec.Wear = h.Wear;
-                foreach (KeyValuePair<string, int> s in rec.Ships) if (Ships.TryGetValue(s.Key, out Ship sh)) sh.Flights++;
+                h.Ship.Flights++;
                 Hangar.Remove(h);
                 Changed();
-                string with = rec.Ships.Count > 1 ? " (with " + string.Join(", ", rec.Ships.Skip(1).Select(s => ShipOf(s.Key)?.DisplayName ?? "a ship").ToArray()) + ")" : "";
                 if (ship != null)
                 {
                     // KSP charges a craft's price at rollout; a hangar ship is already paid for.
                     float cost = ship.GetShipCosts(out float dry, out float fuel, ShipConstruction.ShipManifest);
                     if (Suite.Career) Funding.Instance.AddFunds(cost, TransactionReasons.VesselRollout);
-                    Log.Info("Launched " + h.DisplayName + with + " from the hangar: already paid for, " + Pricing.Funds(cost) + " handed back");
+                    Log.Info("Launched " + h.DisplayName + " from the hangar: already paid for, " + Pricing.Funds(cost) + " handed back");
                 }
-                else Log.Info("Launched " + h.DisplayName + with + " from the hangar");
+                else Log.Info("Launched " + h.DisplayName + " from the hangar");
             }
             else Log.Warn(name + " launched without being built: KSP charged its normal price, and it's no hangar ship");
             PendingLaunch = null;
@@ -213,20 +207,25 @@ namespace PhilsReusabilitySuite
         }
 
         /// <summary>
-        /// Which of a launch's ships a piece is: the one whose root part it carries (the highest in the launch's tree,
-        /// if it carries several; the others ride inside it as themselves). Null: it carries none, so it's a new piece.
-        /// The one rule, for the hangar and for the flight forecasts.
+        /// The ship a piece coming home is (Phil, round 4: the piece carrying the ship's parts is the ship): its launch's
+        /// ship, if the piece has one of that ship's pods or probe cores and the ship hasn't come home from that launch
+        /// already. Null, with why, when it's just parts for the bin: launcher pieces, and anything else that comes home
+        /// without the ship. The one rule, for the hangar, the Recover prompt and the flight forecasts.
         /// </summary>
-        public static string ShipIn(LaunchRecord rec, ICollection<int> parts, Craft launched, out List<string> riding)
+        public Ship ShipOfPiece(LaunchRecord rec, IEnumerable<int> parts, out string whyNot)
         {
-            riding = new List<string>();
-            if (rec == null) return null;
-            var carried = rec.Ships.Where(s => parts.Contains(s.Value)).ToList();
-            if (carried.Count == 0) return null;
-            int top = launched.Highest(carried.Select(s => s.Value));
-            string main = carried.First(s => s.Value == top).Key;
-            riding.AddRange(carried.Where(s => s.Key != main).Select(s => s.Key).Distinct());
-            return main;
+            whyNot = null;
+            if (rec == null) { whyNot = "it has no launch record"; return null; }
+            if (rec.ShipId == null) { whyNot = "it wasn't launched from the hangar"; return null; }
+            Ship ship = ShipOf(rec.ShipId);
+            if (ship == null || rec.ShipHome) { whyNot = ship == null ? "its ship no longer exists" : ship.DisplayName + " came home already"; return null; }
+            List<Node> launched = rec.Craft.Children("PART").ToList();
+            List<int> own = parts.Where(i => rec.SlotOf(i) >= 0 && i < launched.Count).ToList();
+            if (own.Count == 0) { whyNot = "it's launcher parts, not " + ship.DisplayName; return null; }
+            if (!RecoveryValue.HasCommand(own.Select(i => Hardware.PartName(launched[i])))) { whyNot = "it has none of " + ship.DisplayName + "'s pods or probe cores"; return null; }
+            // Phil's rule: a ship that was never filed as a design in Phil's Builds is just parts.
+            if (S.RequireDesign && !own.Any(i => !string.IsNullOrEmpty(Hardware.Module(launched[i])?.Get("design")))) { whyNot = "it wasn't built from a design filed in Phil's Builds"; return null; }
+            return ship;
         }
 
         // ---- Recovery ----
@@ -280,33 +279,31 @@ namespace PhilsReusabilitySuite
                 return;
             }
             // Each part by its place in the launch; parts added in flight aren't in it (parts bin). Parts a hard landing
-            // broke off didn't come home.
+            // broke off didn't come home (Restore puts them back).
             var at = new Dictionary<int, ProtoPartSnapshot>();
             var strangers = new List<ProtoPartSnapshot>();
-            var broke = new List<int>();
             foreach (ProtoPartSnapshot ps in parts)
             {
                 int i = rec.IndexOf(ps.flightID);
                 if (i < 0 || at.ContainsKey(i)) { strangers.Add(ps); continue; }
-                if (LeftBehindOnNextRecovery.Contains(ps.flightID)) broke.Add(i);
-                else at[i] = ps;
+                if (!LeftBehindOnNextRecovery.Contains(ps.flightID)) at[i] = ps;
             }
             List<Node> launchParts = rec.Craft.Children("PART").ToList();
             // Its wear: the craft's wear when it launched, plus what this flight's hardest moments added.
             double wear = Core.Wear.After(rec.Wear, FlightWear(at.Values));
-            PieceResult r = Pieces.Build(rec.Craft, at.Keys.ToList(), broke);
-            List<string> problems = r.Craft != null ? Pieces.Validate(r.Craft) : new List<string> { "nothing placed" };
-            string binReason = null;
-            if (r.Craft == null || r.Placed.Count == 0 || problems.Count > 0)
+            Ship ship = ShipOfPiece(rec, at.Keys, out string binReason);
+            PieceResult r = ship != null ? Pieces.Build(rec.Craft, at.Keys.ToList()) : null;
+            if (ship != null)
             {
-                binReason = "it couldn't be rebuilt as a ship";
-                if (problems.Count > 0) Log.Error("Rebuilt " + vesselName + " isn't valid (" + string.Join("; ", problems.Take(3).ToArray()) + "); its parts go to the parts bin");
+                List<string> problems = r.Craft != null ? Pieces.Validate(r.Craft) : new List<string> { "nothing placed" };
+                if (r.Craft == null || r.Placed.Count == 0 || problems.Count > 0)
+                {
+                    ship = null;
+                    binReason = "it couldn't be rebuilt as a ship";
+                    if (problems.Count > 0) Log.Error("Rebuilt " + vesselName + " isn't valid (" + string.Join("; ", problems.Take(3).ToArray()) + "); its parts go to the parts bin");
+                }
             }
-            // Only a piece that can fly again is kept whole; anything else is just parts.
-            else if (!RecoveryValue.CanFly(r.Placed.Select(i => at[i].partName))) binReason = "it has no engine or probe core";
-            // Phil's rule: a piece of a ship that was never filed as a design in Phil's Builds is just parts.
-            else if (S.RequireDesign && !r.Placed.Any(i => !string.IsNullOrEmpty(PRSPart.ValueIn(at[i], "design")))) binReason = "it wasn't built from a design filed in Phil's Builds";
-            if (binReason != null)
+            if (ship == null)
             {
                 LastBinReason = binReason;
                 foreach (int i in at.Keys) ToBin(launchParts[i], wear);
@@ -315,53 +312,37 @@ namespace PhilsReusabilitySuite
                 return;
             }
 
-            // Who it is: the launch's ship whose root part it carries; otherwise a new piece, named after its design.
-            Craft launched = Core.Craft.Read(rec.Craft);
-            string shipId = ShipIn(rec, r.Placed, launched, out List<string> riding);
-            Ship ship = ShipOf(shipId);
-            bool isNew = ship == null;
-            if (isNew)
-            {
-                // It belongs to its design for good (Phil's Builds counts it there), named after it.
-                string designId = BuildsLink.DesignIdFor(r.Placed.Select(i => Hardware.Module(launchParts[i])?.Get("design")), Hardware.Module(launchParts[r.Root])?.Get("design"));
-                ship = NewShip((designId != null ? BuildsLink.NameOf(designId) : null) ?? vesselName);
-                ship.DesignId = designId;
-                ship.Flights = 1;   // its first flight was this launch
-            }
-            // Its blueprint: the ship as it launched, less what it dropped on purpose, so Restore puts back what it lost.
-            PieceResult whole = Pieces.Build(rec.Craft, r.Placed.Concat(r.Missing).ToList());
-            var h = new HangarShip { Ship = ship, UT = Now, Craft = Hardware.Plain(r.Craft), Wear = wear, Missing = r.Missing.Count, Blueprint = Hardware.Plain(whole.Craft) };
+            var h = new HangarShip { Ship = ship, UT = Now, Craft = Hardware.Plain(r.Craft), Wear = wear };
             for (int k = 0; k < r.Placed.Count; k++)
             {
                 int i = r.Placed[k];
-                h.Slots.Add(whole.Placed.IndexOf(i));
+                h.Slots.Add(rec.SlotOf(i));
                 // Its inventory as it is now (parts used up or taken out in flight are gone), not as it launched.
                 CarryInventory(at[i], h.Craft.Children("PART").ElementAt(k));
-                if (rec.Members.TryGetValue(i, out string member) && member != ship.Id && riding.Contains(member)) h.Pieces[k] = member;
                 // What each part still holds, so refuelling only tops it up.
                 var left = new Dictionary<string, double>();
                 foreach (ProtoPartResourceSnapshot res in at[i].resources)
                     left[res.resourceName] = (left.TryGetValue(res.resourceName, out double had) ? had : 0) + res.amount;
                 if (left.Count > 0) h.CameBack[k] = left;
             }
+            // Whatever of its blueprint didn't come home with it (dropped, broken off or lost) is missing: Restore puts it back.
+            h.Missing = Math.Max(0, ship.BlueprintParts - h.Slots.Where(s => s >= 0).Distinct().Count());
             h.UpdateFuel();
             Hangar.Add(h);
+            rec.ShipHome = true;
             LastHangarShip = h;
-            // The flight log: when, what it flew as, and how it came home. Ships riding inside it log it too.
+            // The flight log: when, what it flew as, and how it came home.
             double km = RecoveryValue.DistanceKm(pv);
             string landed = NextLandingNote ?? (km < 2 ? "recovered at KSC" : "recovered " + Math.Round(km).ToString("N0") + " km from KSC");
-            string tail = " · " + KSPUtil.PrintDateCompact(rec.UT, false) + " · " + rec.Name + " · " + landed
-                          + (r.Missing.Count > 0 ? ", lost " + Suite.Parts(r.Missing.Count) : "") + " · wear " + Core.Wear.Percent(h.Wear);
-            ship.AddLog(ship.Flights + tail);
-            foreach (string id in riding) { Ship rs = ShipOf(id); if (rs != null) rs.AddLog(rs.Flights + tail + " · inside " + ship.DisplayName); }
+            ship.AddLog(ship.Flights + " · " + KSPUtil.PrintDateCompact(rec.UT, false) + " · " + rec.Name + " · " + landed
+                        + (h.Missing > 0 ? ", missing " + Suite.Parts(h.Missing) : "") + " · wear " + Core.Wear.Percent(h.Wear));
             NextLandingNote = null;
             // Parts that came home but can't be placed, and struts whose other end is gone, go to the parts bin.
             foreach (int i in r.Unplaced.Concat(r.Dropped)) ToBin(launchParts[i], wear);
             foreach (ProtoPartSnapshot ps in strangers) ToBin(PartNodeFrom(ps), wear);
             int binned = r.Unplaced.Count + r.Dropped.Count + strangers.Count;
-            Log.Info("Recovered " + vesselName + ": " + r.Placed.Count + " parts to the hangar as " + h.DisplayName + (isNew ? " (new)" : "")
-                     + (riding.Count > 0 ? ", with " + string.Join(", ", riding.Select(id => ShipOf(id)?.DisplayName ?? "?").ToArray()) + " inside" : "")
-                     + (r.Missing.Count > 0 ? ", " + r.Missing.Count + " missing" : "") + ", wear " + Core.Wear.Percent(h.Wear)
+            Log.Info("Recovered " + vesselName + ": " + r.Placed.Count + " parts to the hangar as " + h.DisplayName
+                     + (h.Missing > 0 ? ", " + h.Missing + " missing" : "") + ", wear " + Core.Wear.Percent(h.Wear)
                      + (binned > 0 ? ", " + binned + " to the parts bin" : ""));
         }
 
@@ -427,8 +408,8 @@ namespace PhilsReusabilitySuite
         }
 
         /// <summary>
-        /// What recovering this ship would pay to refurbish parts into the parts bin: all of them when it can't come home
-        /// as a ship (no engine or probe core, or not from a filed design), else nothing. For the Recover prompt.
+        /// What recovering this ship would pay to refurbish parts into the parts bin: all of a launch's parts in it that
+        /// aren't its ship coming home (ShipOfPiece), else nothing. For the Recover prompt.
         /// </summary>
         public double BinPriceIfRecovered(ProtoVessel pv)
         {
@@ -438,9 +419,7 @@ namespace PhilsReusabilitySuite
             {
                 List<ProtoPartSnapshot> parts = g.ToList();
                 LaunchRecord rec = parts.Select(ps => RecordOf(ps.launchID, ps.flightID)).FirstOrDefault(r => r != null);
-                bool ship = rec != null && RecoveryValue.CanFly(parts.Select(ps => ps.partName))
-                            && (!S.RequireDesign || parts.Any(ps => !string.IsNullOrEmpty(PRSPart.ValueIn(ps, "design"))));
-                if (ship) continue;
+                if (rec != null && ShipOfPiece(rec, parts.Select(ps => rec.IndexOf(ps.flightID)), out _) != null) continue;
                 double wear = Core.Wear.After(rec?.Wear ?? 0, FlightWear(parts));
                 total += parts.Sum(ps => KspCosts.Instance.Cost(PartNodeFrom(ps)).Dry) * Pricing.RefurbishShare(wear, S);
             }
@@ -542,17 +521,15 @@ namespace PhilsReusabilitySuite
 
         /// <summary>
         /// Drops ships that no longer exist anywhere (taken apart, sold, lost), and empty bin kinds nothing holds. A ship
-        /// still exists in flight while the part it rides on (its root part) is still flying.
+        /// still exists in flight, until it comes home, while any of its parts from its launch is still flying.
         /// </summary>
         void Tidy()
         {
             HashSet<uint> live = Flying() ?? new HashSet<uint>();
             var alive = new HashSet<string>(Hangar.Select(h => h.Ship.Id));
-            alive.UnionWith(Hangar.SelectMany(h => h.Pieces.Values));
             alive.UnionWith(Jobs.Where(j => j.ShipId != null).Select(j => j.ShipId));
             foreach (LaunchRecord r in Launches)
-                foreach (KeyValuePair<string, int> s in r.Ships)
-                    if (s.Value >= 0 && s.Value < r.Parts.Count && live.Contains(r.Parts[s.Value])) alive.Add(s.Key);
+                if (r.ShipId != null && !r.ShipHome && Enumerable.Range(0, r.Parts.Count).Any(i => r.SlotOf(i) >= 0 && live.Contains(r.Parts[i]))) alive.Add(r.ShipId);
             int gone = Ships.Keys.Count(id => !alive.Contains(id));
             foreach (string id in Ships.Keys.Where(id => !alive.Contains(id)).ToList()) Ships.Remove(id);
             var held = new HashSet<string>(Jobs.SelectMany(j => j.BinTaken.Keys));
@@ -625,7 +602,7 @@ namespace PhilsReusabilitySuite
         }
 
         /// <summary>
-        /// A save from before round 4 starts the suite fresh (Phil: start fresh, no converter): an empty
+        /// A save from an older version starts the suite fresh (Phil: start fresh, no converter): an empty
         /// hangar, bin and queue, with queued builds refunded. Ships still in flight have no launch record any more, so
         /// their parts go to the parts bin when they're recovered (Phil: "Parts bin"). Numbers already given out stay given.
         /// The save file itself isn't touched; the next save writes the new format.

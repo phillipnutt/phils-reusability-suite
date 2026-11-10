@@ -231,17 +231,16 @@ namespace PhilsReusabilitySuite
             Check(ap != null && (int)Member(program, "Mk") == 1, "its part " + partName + " is in the parts list, at Mk " + Member(program, "Mk"));
             if (ap == null) yield break;
 
-            // 3. Filed as a launcher of two batteries, saved at Mk 1, the way an older design file is.
+            // 3. Filed as a craft (a probe) of two batteries, saved at Mk 1, the way an older design file is.
             ConfigNode file = CellCraft(partName, programId, DesignName, ap);
             toCurrent?.Invoke(null, new object[] { file });
             string saveDir = Path.Combine(KSPUtil.ApplicationRootPath, "saves", SaveName);
-            Directory.CreateDirectory(Path.Combine(saveDir, "Subassemblies"));
-            file.Save(Path.Combine(saveDir, "Subassemblies", DesignName + ".craft"));
-            File.WriteAllText(Path.Combine(saveDir, "PhilsBuilds.cfg"),
-                "PHILS_BUILDS\n{\n\tSUBASSEMBLY\n\t{\n\t\tfile = " + DesignName + "\n\t\tkind = Launcher\n\t\tfamily = Testcell\n\t\tstyle = Roman\n\t\tmark = 1\n\t\trating = 0.01\n\t\twidth = 0.625\n\t}\n}\n");
+            string craftDir = Path.Combine(saveDir, "Ships", "VAB", "Probes");
+            Directory.CreateDirectory(craftDir);
+            file.Save(Path.Combine(craftDir, DesignName + ".craft"));
             Library.Scan();
             Design d = BuildsApi.Designs().FirstOrDefault(x => x.Name == DesignName);
-            Check(d != null && file.GetNodes("PART").All(p => p.GetNode("MODULE")?.GetValue("mk") == "1"), "the launcher is filed, its file saved with Mk 1 parts (" + d?.Name + ")");
+            Check(d != null && d.Kind == DesignKind.Craft && file.GetNodes("PART").All(p => p.GetNode("MODULE")?.GetValue("mk") == "1"), "the craft is filed, its file saved with Mk 1 parts (" + d?.Name + ")");
             if (d == null) yield break;
 
             // 4. A flown copy of it in the hangar, built at Mk 1. Then the program reaches Mk 3.
@@ -296,7 +295,7 @@ namespace PhilsReusabilitySuite
             // Built as it is, the build keeps both.
             EditorAddon.Instance.OpenBuildPanel();
             BuildPanel panel = EditorAddon.Instance.Panel;
-            Check(panel.KeepShipId == hId, "the Build panel keeps the flown ship (it rides on its battery): " + panel.Title);
+            Check(panel.KeepShipId == hId, "the Build panel keeps the flown ship (it's the ship opened): " + panel.Title);
             Check(panel.Confirm(), "building it " + panel.Error);
             BuildJob job = sc.Jobs.LastOrDefault();
             List<Node> jobParts = job?.Craft.Children("PART").ToList() ?? new List<Node>();
@@ -308,7 +307,7 @@ namespace PhilsReusabilitySuite
             BinKind oldB = sc.Bin.FirstOrDefault(k => k.Count > 0 && MkIn(k.Sample) == "1");
             Check(oldB != null && oldB.Count == 1 && Hardware.PartName(oldB.Sample) == partName && Pip.Title(oldB.Sample) == "Testcell I Mk. 1", "the battery it left out is in the parts bin, still Mk 1");
 
-            // 8. Back at the Space Center: the old-Mk bin battery fits the launcher, so a build offers it, doesn't use it.
+            // 8. Back at the Space Center: the old-Mk bin battery fits the design, so a build offers it, doesn't use it.
             yield return ToSpaceCenter();
             sc = PRSScenario.Instance;
             item = BuildsLink.Library().FirstOrDefault(i => i.Design.Id == d.Id);

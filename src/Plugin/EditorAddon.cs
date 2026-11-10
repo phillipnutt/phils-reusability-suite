@@ -26,7 +26,7 @@ namespace PhilsReusabilitySuite
             Look.Init();
             // KSP brings back the ship that was here (its cache) as this editor starts; any later load replaces it.
             restoringCache = EditorDriver.StartupBehaviour == EditorDriver.StartupBehaviours.LOAD_FROM_CACHE;
-            if (!restoringCache) live.Clear();
+            if (!restoringCache) { live.Clear(); if (!Expected(OpenedCraft)) OpenedCraft = null; }
             GameEvents.onEditorShipModified.Add(OnShipModified);
             GameEvents.onEditorLoad.Add(OnEditorLoad);
             GameEvents.onEditorRestart.Add(OnEditorRestart);
@@ -110,9 +110,13 @@ namespace PhilsReusabilitySuite
         // that ship is 'The Peleus', and it knows that the new part I just added is not a built part."
         //
         // A part is real hardware only if it carries a note the suite put there itself when it brought a stored ship in
-        // (Open in the VAB, a queued build to edit, "Use it", a hangar copy picked up in Phil's Builds), and that note still
-        // points at the ship's current parts in the hangar. Parts that arrive any other way (a saved craft, a merge, a
+        // (Open in the VAB, a queued build to edit, a hangar copy picked up in Phil's Builds), and that note still points
+        // at the ship's current parts in the hangar. Parts that arrive any other way (a saved craft, a merge, a
         // subassembly, a design) come in as new parts, however they were saved. A copy is a new part. Launching ends it.
+        //
+        // The build is the ship that was opened (Phil, round 4: "once I build the Peleus III #2, that ship should always
+        // be the Peleus III #2"): the hangar ship loaded into the editor, or brought into an empty one. Another hangar
+        // ship added to it is owned parts, and stops being a ship of its own ("Sure i guess that works").
 
         /// <summary>The stored craft the suite is bringing into the editor right now, and when. It ends as those parts arrive
         /// (or after two minutes, for a ship opened from the Space Center whose scene is still loading).</summary>
@@ -122,6 +126,9 @@ namespace PhilsReusabilitySuite
         static readonly HashSet<string> live = new HashSet<string>();
         /// <summary>The editor is bringing back its cached ship as it opens (KSP's startup flag stays set after that).</summary>
         static bool restoringCache;
+        /// <summary>The stored craft the editor's ship was opened from (a hangar ship's, or a queued build's), or null for
+        /// a new ship. New, or any other load, ends it.</summary>
+        public static string OpenedCraft;
 
         /// <summary>The suite is about to bring this stored craft in: its notes are real.</summary>
         public static void Expect(string craftId) { expect = craftId; expectAt = Time.realtimeSinceStartup; }
@@ -151,11 +158,13 @@ namespace PhilsReusabilitySuite
 
         void OnShipModified(ShipConstruct ship) { Check(ship); }
 
-        /// <summary>A new ship (New, or a load): only what the suite is bringing in is hardware now. Not when KSP brings the
-        /// ship back from its cache.</summary>
+        /// <summary>A new ship (New, or a load): only what the suite is bringing in is hardware now, and only a ship the
+        /// suite is opening is opened. Not when KSP brings the ship back from its cache.</summary>
         void OnEditorRestart()
         {
-            if (!restoringCache) live.Clear();
+            if (restoringCache) return;
+            live.Clear();
+            if (!Expected(OpenedCraft)) OpenedCraft = null;
         }
 
         /// <summary>KSP's craft browser (and the suite's own loads) fire this with the loaded ship, or with a merge's parts.</summary>
@@ -197,6 +206,7 @@ namespace PhilsReusabilitySuite
         internal static void NoteAs(ShipConstruct ship, string craftId)
         {
             if (ship == null) return;
+            OpenedCraft = craftId;
             for (int i = 0; i < ship.parts.Count; i++)
             {
                 PRSPart m = PRSPart.Of(ship.parts[i]);
@@ -213,6 +223,7 @@ namespace PhilsReusabilitySuite
             string path = System.IO.Path.Combine(SuiteFiles.SaveDir, fileTag + ".craft");
             c.Save(path);
             Expect(craftId);
+            OpenedCraft = craftId;
             EditorLogic.LoadShipFromFile(path);
             expect = null;
         }
@@ -239,6 +250,7 @@ namespace PhilsReusabilitySuite
             string path = System.IO.Path.Combine(SuiteFiles.SaveDir, "hangar-" + h.Id + ".craft");
             c.Save(path);
             Expect(h.CraftId);
+            OpenedCraft = h.CraftId;
             Log.Info("Opening " + h.DisplayName + " from the hangar in the " + facility + " (" + h.PartCount + " parts)");
             EditorDriver.StartAndLoadVessel(path, facility == "SPH" ? EditorFacility.SPH : EditorFacility.VAB);
         }
@@ -332,10 +344,13 @@ namespace PhilsReusabilitySuite
         /// <summary>The editor's ship is exactly a hangar ship that isn't fuelled yet: it can launch as it is.</summary>
         public HangarShip AsIs;
         /// <summary>
-        /// The ship this build is: the hangar ship whose hardware is nearest its root (Phil, round 4: "once I build the
-        /// Peleus III #2, that ship should always be the Peleus III #2"), whatever it's saved as. Null: a new ship.
+        /// The ship this build is: the queued build's own ship, or the hangar ship that was opened (Phil, round 4: "once I
+        /// build the Peleus III #2, that ship should always be the Peleus III #2"), whatever it's saved as, while its parts
+        /// are in it. Null: a new ship.
         /// </summary>
         public Ship MainShip;
+        /// <summary>It's all launcher parts: a launcher on its own isn't a ship, so it can't be built.</summary>
+        public bool OnlyLauncher;
         public Pace Chosen = Pace.Normal;
         public string Error;
         /// <summary>Old-Mk bin parts this build leaves out (answered "No": built new instead).</summary>
@@ -373,12 +388,12 @@ namespace PhilsReusabilitySuite
             EditorAddon.Check(ship);
             Craft = KspNodes.FromKsp(ship.SaveShip());
             ShipName = KSP.Localization.Localizer.Format(ship.shipName);
-            // A launcher picked up into an empty VAB keeps KSP's "Untitled Space Craft". A ship that is all one
-            // design is built under that design's name instead, so it comes home as "Kopje 005 #1"; a payload
-            // stacked on a launcher takes the name of the design at its top (its root part), "Seeker I".
+            // A ship picked up into an empty VAB keeps KSP's "Untitled Space Craft": it's built under its design's name
+            // instead (the launcher under it isn't the ship), so it comes home as "Kopje 005 #1".
             if (ShipName == KSP.Localization.Localizer.Format("#autoLOC_900530"))
             {
-                string designName = BuildsLink.NameFor(ship.parts.Select(p => PRSPart.Of(p)?.design), PRSPart.Of(ship.parts.FirstOrDefault(p => p.parent == null))?.design);
+                List<string> own = ship.parts.Select(p => PRSPart.Of(p)?.design).Where(d => !BuildsLink.IsLauncher(d)).ToList();
+                string designName = BuildsLink.NameFor(own, own.FirstOrDefault(d => !string.IsNullOrEmpty(d)));
                 if (!string.IsNullOrEmpty(designName)) ShipName = designName;
             }
             Facility = ship.shipFacility == EditorFacility.SPH ? "SPH" : "VAB";
@@ -387,7 +402,9 @@ namespace PhilsReusabilitySuite
             AsIs = exact != null && !exact.Ready ? exact : null;
             Editing = ReadyShip == null ? sc?.JobOf(Craft) : null;
             Quote = sc?.QuoteFor(Craft, ShipName, Editing, SkipOld);
-            MainShip = Quote != null ? sc.ShipOf(sc.MainShipOf(Quote)) : null;
+            string keep = Editing != null ? Editing.ShipId : sc?.HangarOfCraft(EditorAddon.OpenedCraft)?.Id;
+            MainShip = Quote != null && keep != null && Quote.HangarShips.Contains(keep) ? sc.ShipOf(keep) : null;
+            OnlyLauncher = BuildsLink.OnlyLauncher(Craft);
             Craft.Set("ship", BuildName);
             try { Landings = StageReturns.CheckEditorShip(ship); }
             catch (System.Exception ex) { Landings = new List<StageReturns.EditorPiece>(); Log.Warn("Landing check failed: " + ex.Message); }
@@ -434,6 +451,7 @@ namespace PhilsReusabilitySuite
             PRSScenario sc = PRSScenario.Instance;
             if (sc == null || Quote == null) { Error = "The suite's save data isn't loaded."; return false; }
             if (Quote.PartCount == 0) { Error = "There's nothing to build."; return false; }
+            if (OnlyLauncher) { Error = PRSScenario.OnlyLauncherText; return false; }
             if (Quote.OldBin.Count > 0) { Error = "Answer the question about the parts bin's older parts first."; return false; }
             string error;
             // Bin parts or hangar ships priced into this build may have been sold or put in another build since
@@ -526,7 +544,7 @@ namespace PhilsReusabilitySuite
             if (Unfiled)
             {
                 GUILayout.BeginHorizontal(Look.Notice);
-                GUILayout.Label("<color=#ffcf5a>Not filed in Phil's Builds.</color> Pieces of this ship that aren't from a filed design go to the parts bin when they come home.", Look.Meta, GUILayout.Width(430));
+                GUILayout.Label("<color=#ffcf5a>Not filed in Phil's Builds.</color> A ship that isn't from a filed design goes to the parts bin when it comes home.", Look.Meta, GUILayout.Width(430));
                 GUILayout.FlexibleSpace();
                 if (GUILayout.Button("File it", Look.Ghost, GUILayout.Height(30), GUILayout.Width(80)))
                 {
@@ -537,6 +555,7 @@ namespace PhilsReusabilitySuite
                 GUILayout.Space(6);
             }
             if (Quote == null) { GUILayout.Label("The suite's save data isn't loaded.", Look.MetaBad); EndBody(); return; }
+            if (OnlyLauncher) { GUILayout.Label(PRSScenario.OnlyLauncherText, Look.Notice); EndBody(); return; }
             asking = OldQ.Draw(Quote, Refresh, 540);
 
             // What the build is made of: one build, broken down (Phil read these as cards to pick from).
@@ -705,7 +724,8 @@ namespace PhilsReusabilitySuite
                 }
                 string verb = Editing != null ? "Update build" : Chosen == Pace.Outsource ? "Outsource" : Chosen == Pace.Overtime ? (AsIs != null ? "Refurbish with overtime" : "Build with overtime") : AsIs != null ? "Refurbish" : "Build";
                 string label = verb + " · " + (DueNow < 0 ? "refund " + Pricing.Funds(-DueNow) : Pricing.Funds(DueNow));
-                if (asking) GUILayout.Button("Answer the parts bin first", Look.GoOff, GUILayout.Height(38), GUILayout.MinWidth(180));
+                if (OnlyLauncher) GUILayout.Button("Put a ship on it first", Look.GoOff, GUILayout.Height(38), GUILayout.MinWidth(180));
+                else if (asking) GUILayout.Button("Answer the parts bin first", Look.GoOff, GUILayout.Height(38), GUILayout.MinWidth(180));
                 else if (GUILayout.Button(label, Look.Go, GUILayout.Height(38), GUILayout.MinWidth(180))) Build();
             }
             GUILayout.EndHorizontal();

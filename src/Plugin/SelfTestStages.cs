@@ -118,6 +118,16 @@ namespace PhilsReusabilitySuite
             var boosterIds = v.parts.Where(IsBooster).Select(p => p.flightID).ToList();
             string podRootName = podPiece.Count > 0 ? podPiece[0].partInfo.name : "";
             int hangarBefore = PRSScenario.Instance.Hangar.Count;
+            // It's the launch of a hangar ship, Kerbal X #1, whose blueprint is the whole craft (as if it had been built
+            // and launched from the hangar): the piece with its pod is the ship coming home.
+            LaunchRecord rec = PRSScenario.Instance.RecordOf(v.parts[0].launchID, v.parts[0].flightID);
+            Check(rec != null, "the launch was recorded");
+            if (rec == null) yield break;
+            Ship kx = PRSScenario.Instance.NewShip("Kerbal X");
+            kx.Blueprint = Hardware.Plain(rec.Craft.Clone());
+            kx.Flights = 1;
+            rec.ShipId = kx.Id;
+            for (int i = 0; i < rec.Slots.Count; i++) rec.Slots[i] = i;
             foreach (ModuleAnchoredDecoupler d in v.FindPartModulesImplementing<ModuleAnchoredDecoupler>().ToList()) if (!d.isDecoupled) d.Decouple();
             ModuleDecouple sd = decoupler.FindModuleImplementing<ModuleDecouple>();
             if (sd != null && !sd.isDecoupled) sd.Decouple();
@@ -147,9 +157,10 @@ namespace PhilsReusabilitySuite
             PRSScenario sc = PRSScenario.Instance;
             List<HangarShip> cameHome = sc.Hangar.Skip(hangarBefore).ToList();
             HangarShip podShip = cameHome.FirstOrDefault(h => h.Craft.Children("PART").Any(p => Hardware.PartName(p) == podRootName));
-            Check(podShip != null, "the crew pod came home to the hangar (" + podShip?.DisplayName + ")");
-            Check(outcomes.Any(o => o.Contains("came home")), "its message says it came home");
-            Check(podShip == null || podShip.Flights == 1, "the pod has 1 flight");
+            Check(podShip != null && podShip.Id == kx.Id, "the crew pod came home to the hangar as the ship, " + kx.DisplayName + " (" + podShip?.DisplayName + ")");
+            Check(outcomes.Any(o => o.Contains(kx.DisplayName + " came home")), "its message says it came home");
+            Check(podShip == null || (podShip.Flights == 1 && podShip.Missing == kx.BlueprintParts - podShip.PartCount && podShip.Missing > 0),
+                  "it has 1 flight, and it's missing the stages it dropped (" + podShip?.Missing + ")");
             Check(cameHome.Count == 1, "no lost booster is in the hangar: only the pod came home (" + cameHome.Count + ")");
 
             // The pod was measured for real when it went out of range (it was the ship being flown when it dropped).
@@ -161,7 +172,7 @@ namespace PhilsReusabilitySuite
             List<string> forecasts = StageReturns.Instance != null ? StageReturns.Instance.Forecasts.ToList() : new List<string>();
             foreach (string f in forecasts) Note("forecast: " + f);
             Check(forecasts.Any(f => f.StartsWith("6 × ") && f.Contains("won't survive")), "dropping the six boosters gave one message: they won't survive");
-            Check(forecasts.Any(f => f.Contains("will come home")), "the pod's forecast said it will come home");
+            Check(forecasts.Any(f => f.StartsWith(kx.DisplayName + " will come home")), "the pod's forecast said " + kx.DisplayName + " will come home");
         }
 
         static bool IsBooster(Part p)

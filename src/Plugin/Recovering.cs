@@ -156,6 +156,10 @@ namespace PhilsReusabilitySuite
             return SpaceCenter.Instance.GreatCircleDistance(cb.GetRelSurfaceNVector(pv.latitude, pv.longitude)) / 1000.0;
         }
 
+        /// <summary>A pod or probe core among these parts (what makes a piece the ship coming home).</summary>
+        public static bool HasCommand(IEnumerable<string> partNames) =>
+            partNames.Any(n => PartLoader.getPartInfoByName(n)?.partPrefab?.FindModuleImplementing<ModuleCommand>() != null);
+
         /// <summary>A piece that can fly again: it has an engine, or a pod or probe core.</summary>
         public static bool CanFly(IEnumerable<string> partNames)
         {

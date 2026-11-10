@@ -256,7 +256,7 @@ namespace PhilsReusabilitySuite
             var aboard = v.GetVesselCrew().Select(c => c.name).ToList();
             Check(otherName != null && aboard.Count == 1 && aboard[0] == otherName && !picked.Any(c => c.name == otherName), "it flies with the crew picked: " + string.Join(", ", aboard.ToArray()));
             LaunchRecord rec = sc.RecordOf(v.parts[0].launchID, v.parts[0].flightID);
-            Check(rec != null && rec.Ships.Count == 1 && rec.Ships[0].Key == readyId && rec.Members.Count == readyParts && v.parts.Count == readyParts,
+            Check(rec != null && rec.ShipId == readyId && rec.Slots.Count == readyParts && rec.Slots.All(s => s >= 0) && v.parts.Count == readyParts,
                   "the launch was recorded as " + readyName + " going up, all " + readyParts + " parts its own");
             Check(sc.ShipOf(readyId)?.Flights == 1 && v.vesselName == readyName, "it flies as " + readyName + ", on its first flight");
             Check(v.parts.All(p => string.IsNullOrEmpty(PRSPart.Of(p).hw)), "no part carries a VAB note into flight");
@@ -469,13 +469,13 @@ namespace PhilsReusabilitySuite
             sc = PRSScenario.Instance;
             LaunchRecord padRec = sc.RecordOf(v.parts[0].launchID, v.parts[0].flightID);
             Check(fin != null && v.parts.Count == heldParts - 1, "the saved craft is the ready Flea less a fin (" + v.parts.Count + " parts)");
-            Check(padRec != null && padRec.Ships.Count == 0 && padRec.Members.Count == 0, "launched from a saved file, it's no hangar ship: its launch lists no ships");
+            Check(padRec != null && padRec.ShipId == null && padRec.Slots.All(s => s < 0), "launched from a saved file, it's no hangar ship: no ship went up in it");
             Check(v.parts.All(p => string.IsNullOrEmpty(PRSPart.Of(p).hw)), "the notes it was saved with are gone in flight");
             Check(sc.HangarOf(heldId) != null && sc.HangarOf(heldId).Ready, "the ready hangar ship is untouched");
 
-            // 12. A build made from two ready hangar ships (Phil stacked a ready Argo I #1 on a ready Rockall 002 #1) is
-            // the ship at its top (it rides on its root part): same name, number and flight log. The ship under it rides
-            // inside it as itself, and its card says what it's on.
+            // 12. A build made from two ready hangar ships (Phil stacked a ready Argo I #1 on a ready Rockall 002 #1) is the
+            // one opened (Phil, round 4: "Sure i guess that works"): same name, number and flight log. The other one's
+            // parts are owned parts of it, and that ship ends.
             yield return ToSpaceCenter();
             sc = PRSScenario.Instance;
             HangarShip top = sc.HangarOf(heldId);
@@ -496,15 +496,18 @@ namespace PhilsReusabilitySuite
             foreach (Node p in baseParts) stack.Nodes.Add(p);
             Quote qs = sc.QuoteFor(stack, top.Name, null);
             Check(qs.BuildPrice == 0 && qs.Lines.Count == 2 && qs.Lines.All(l => l.Kind == OwnerKind.Hangar), "both pieces are ready hangar ships: nothing to build (" + qs.Lines.Count + " pieces, " + Pricing.Funds(qs.BuildPrice) + ")");
-            Check(qs.Main.ShipId == topId, "the stack rides on " + topName + "'s root part");
             BuildJob stackJob = sc.StartBuild(stack, top.Name, "VAB", qs, false, false, topId, out err);
             HangarShip result = sc.HangarOf(topId);
             Check(stackJob != null && !sc.Jobs.Contains(stackJob) && result != null && result.Ready, "with nothing to build, it's finished at once " + err);
             if (result == null) yield break;
-            Check(result.DisplayName == topName && result.PartCount == parts, "it's still " + topName + ", now with " + result.PartCount + " parts, not a new number (" + result.DisplayName + ")");
-            Check(sc.HangarOf(underId) == null && sc.Hangar.Count == hangarBefore - 1, "the ship under it joined it: one ship fewer in the hangar");
-            Check(result.Pieces.Count == parts - heldParts && result.Pieces.Values.All(id => id == underId) && sc.ShipOf(underId) != null, underName + " rides inside it as itself");
-            Check(BuildsLink.Under(result) == underName, "its card says it's on " + underName + " (" + BuildsLink.Under(result) + ")");
+            Check(result.DisplayName == topName && result.PartCount == parts && result.Ship.BlueprintParts == parts && result.Slots.All(s => s >= 0),
+                  "it's still " + topName + " (the one opened), now with " + result.PartCount + " parts, all in its blueprint (" + result.DisplayName + ")");
+            Check(sc.HangarOf(underId) == null && sc.Hangar.Count == hangarBefore - 1 && BuildsLink.Under(result) == null, "the other ship's parts are its own now: one ship fewer in the hangar, and it isn't 'on' anything");
+            yield return ToSpaceCenter();
+            sc = PRSScenario.Instance;
+            result = sc.HangarOf(topId);
+            Check(sc.ShipOf(underId) == null && result != null, underName + " is no longer a ship anywhere");
+            if (result == null) yield break;
 
             yield return OldMkSteps(result);
         }
