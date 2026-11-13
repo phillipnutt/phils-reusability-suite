@@ -23,12 +23,18 @@ namespace PhilsReusabilitySuite
         public BuildJob JobOfCraft(string craftId) => craftId == null ? null : Jobs.FirstOrDefault(j => j.CraftId == craftId);
 
         /// <summary>
-        /// Builds cancelled lately, by their craft's id: which hangar parts their parts were. Pressing Build notes the VAB's
-        /// ship as the build; cancelled, those parts are still the hangar ship's own hardware.
+        /// Builds cancelled lately, by their craft's id: which hangar parts their parts were, and the ship each was a build
+        /// of. Pressing Build notes the VAB's ship as the build; cancelled, those parts are still the hangar ship's own
+        /// hardware, and building it again is still that ship.
         /// </summary>
-        readonly List<KeyValuePair<string, Dictionary<int, string>>> cancelled = new List<KeyValuePair<string, Dictionary<int, string>>>();
+        class Cancelled { public string CraftId, ShipId; public Dictionary<int, string> Owners; }
+        readonly List<Cancelled> cancelled = new List<Cancelled>();
 
-        Dictionary<int, string> CancelledOwners(string craftId) => cancelled.FirstOrDefault(c => c.Key == craftId).Value;
+        Dictionary<int, string> CancelledOwners(string craftId) => cancelled.FirstOrDefault(c => c.CraftId == craftId)?.Owners;
+
+        /// <summary>The ship a craft opened in the VAB is: a hangar ship's own craft, or a build of a ship that was cancelled
+        /// (Phil, S8: cancelling a refit and starting it again keeps it the same ship: same number, same history).</summary>
+        public string ShipOfOpened(string craftId) => HangarOfCraft(craftId)?.Id ?? cancelled.FirstOrDefault(c => c.CraftId == craftId)?.ShipId;
 
         /// <summary>A VAB note's craft is one the suite still knows: a hangar ship's, a queued build's or a cancelled build's.</summary>
         public bool Knows(string craftId) => HangarOfCraft(craftId) != null || JobOfCraft(craftId) != null || CancelledOwners(craftId) != null;
@@ -417,7 +423,7 @@ namespace PhilsReusabilitySuite
             Suite.Charge(-refund);
             Release(job);
             Jobs.Remove(job);
-            cancelled.Add(new KeyValuePair<string, Dictionary<int, string>>(job.CraftId, new Dictionary<int, string>(job.Owners)));
+            cancelled.Add(new Cancelled { CraftId = job.CraftId, ShipId = job.ShipId, Owners = new Dictionary<int, string>(job.Owners) });
             if (cancelled.Count > 10) cancelled.RemoveAt(0);
             Changed();
             Log.Info("Build cancelled: " + TitleOf(job) + ", refunded " + Pricing.Funds(refund));

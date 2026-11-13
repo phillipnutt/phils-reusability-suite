@@ -560,11 +560,12 @@ namespace PhilsReusabilitySuite
                 n.AddValue("name", kv.Key);
                 n.AddValue("last", kv.Value);
             }
-            foreach (KeyValuePair<string, Dictionary<int, string>> c in cancelled)
+            foreach (Cancelled c in cancelled)
             {
                 ConfigNode n = node.AddNode("CANCELLED");
-                n.AddValue("craftId", c.Key);
-                foreach (KeyValuePair<int, string> o in c.Value) n.AddValue("owner", o.Key.ToString(CultureInfo.InvariantCulture) + "," + o.Value);
+                n.AddValue("craftId", c.CraftId);
+                if (c.ShipId != null) n.AddValue("ship", c.ShipId);
+                foreach (KeyValuePair<int, string> o in c.Owners) n.AddValue("owner", o.Key.ToString(CultureInfo.InvariantCulture) + "," + o.Value);
             }
         }
 
@@ -596,7 +597,7 @@ namespace PhilsReusabilitySuite
                     int comma = o.IndexOf(',');
                     if (comma > 0 && int.TryParse(o.Substring(0, comma), out int i)) owners[i] = o.Substring(comma + 1);
                 }
-                if (n.GetValue("craftId") != null) cancelled.Add(new KeyValuePair<string, Dictionary<int, string>>(n.GetValue("craftId"), owners));
+                if (n.GetValue("craftId") != null) cancelled.Add(new Cancelled { CraftId = n.GetValue("craftId"), ShipId = n.GetValue("ship"), Owners = owners });
             }
             if (HighLogic.LoadedScene == GameScenes.SPACECENTER) { Prune(); Tidy(); }
         }

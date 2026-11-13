@@ -402,7 +402,7 @@ namespace PhilsReusabilitySuite
             AsIs = exact != null && !exact.Ready ? exact : null;
             Editing = ReadyShip == null ? sc?.JobOf(Craft) : null;
             Quote = sc?.QuoteFor(Craft, ShipName, Editing, SkipOld);
-            string keep = Editing != null ? Editing.ShipId : sc?.HangarOfCraft(EditorAddon.OpenedCraft)?.Id;
+            string keep = Editing != null ? Editing.ShipId : sc?.ShipOfOpened(EditorAddon.OpenedCraft);
             MainShip = Quote != null && keep != null && Quote.HangarShips.Contains(keep) ? sc.ShipOf(keep) : null;
             OnlyLauncher = BuildsLink.OnlyLauncher(Craft);
             Craft.Set("ship", BuildName);

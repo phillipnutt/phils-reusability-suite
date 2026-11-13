@@ -72,10 +72,16 @@ namespace PhilsReusabilitySuite
         {
             if (!Show) { InputLockManager.RemoveControlLock("PRSSuiteWindow"); return; }
             GUI.skin = Look.Skin;
+            if (TestOffset.HasValue) rect.position = Event.current.mousePosition + TestOffset.Value;
             rect = GUI.Window(GetInstanceID(), rect, Draw, GUIContent.none, Look.Window);
-            if (rect.Contains(Event.current.mousePosition)) InputLockManager.SetControlLock(InEditor ? ControlTypes.EDITOR_LOCK : ControlTypes.KSC_ALL, "PRSSuiteWindow");
+            // Phil: scrolling over a suite window scrolls only the window. While the mouse is over it, the scene under it and
+            // its camera (the scroll-wheel zoom) are held.
+            if (rect.Contains(Event.current.mousePosition)) InputLockManager.SetControlLock((InEditor ? ControlTypes.EDITOR_LOCK : ControlTypes.KSC_ALL) | ControlTypes.CAMERACONTROLS, "PRSSuiteWindow");
             else InputLockManager.RemoveControlLock("PRSSuiteWindow");
         }
+
+        /// <summary>Self-test only: keeps the window's corner this far from the mouse (negative: under it, positive: off it).</summary>
+        internal Vector2? TestOffset;
 
         /// <summary>The window header: the suite's name or a title, something on the right, and a close button.</summary>
         public static void HeaderBar(string title, string right, Action close, Action tabs = null)

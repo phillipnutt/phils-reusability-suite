@@ -96,6 +96,21 @@ namespace PhilsReusabilitySuite
             yield return new WaitForSeconds(3f);
         }
 
+        /// <summary>Phil (S10): scrolling over a suite window scrolls only the window. Puts the window under the mouse, then
+        /// off it, and checks the window's own lock holds the camera (the scroll-wheel zoom) only while the mouse is over it.</summary>
+        IEnumerator ScrollStaysInWindow(Action<Vector2?> offset, string lockId, string what, ControlTypes alsoHeld)
+        {
+            offset(new Vector2(-10, -10));
+            yield return new WaitForSeconds(0.5f);
+            ControlTypes held = InputLockManager.GetControlLock(lockId);
+            Check((held & ControlTypes.CAMERACONTROLS) != 0 && (held & alsoHeld) == alsoHeld && InputLockManager.IsLocked(ControlTypes.CAMERACONTROLS),
+                "with the mouse over " + what + ", the camera's scroll zoom and the scene under it are held (" + held + ")");
+            offset(new Vector2(40, 40));
+            yield return new WaitForSeconds(0.5f);
+            Check((InputLockManager.GetControlLock(lockId) & ControlTypes.CAMERACONTROLS) == 0, "with the mouse off " + what + ", the camera is free again");
+            offset(null);
+        }
+
         IEnumerator LoadFlea()
         {
             EditorLogic.LoadShipFromFile(Path.Combine(KSPUtil.ApplicationRootPath, "Ships", "VAB", "Jumping Flea.craft"));
@@ -188,6 +203,7 @@ namespace PhilsReusabilitySuite
             yield return new WaitForSeconds(1f);
             Shot("suite_queue_vab");
             yield return new WaitForSeconds(1f);
+            yield return ScrollStaysInWindow(o => SuiteWindow.Instance.TestOffset = o, "PRSSuiteWindow", "the suite window in the VAB", ControlTypes.EDITOR_PAD_PICK_PLACE);
             SuiteWindow.Instance.Show = false;
 
             // 3. Time passes at the Space Center.
@@ -219,7 +235,13 @@ namespace PhilsReusabilitySuite
             yield return new WaitForSeconds(1f);
             Shot("suite_hangar_ksc");
             yield return new WaitForSeconds(1f);
+            yield return ScrollStaysInWindow(o => SuiteWindow.Instance.TestOffset = o, "PRSSuiteWindow", "the suite window at the Space Center", ControlTypes.KSC_FACILITIES);
+            SuiteWindow.Instance.TestOffset = new Vector2(-10, -10);
+            yield return new WaitForSeconds(0.5f);
             SuiteWindow.Instance.Show = false;
+            yield return new WaitForSeconds(0.5f);
+            SuiteWindow.Instance.TestOffset = null;
+            Check(InputLockManager.GetControlLock("PRSSuiteWindow") == ControlTypes.None, "closing the suite window with the mouse over it lets go of the camera and the Space Center");
 
 
             // 4. Launch a ready ship from the hangar: it's paid for, so it costs nothing more.
@@ -288,6 +310,12 @@ namespace PhilsReusabilitySuite
             Check(RecoverPrompt.Current != null && RecoverPrompt.Current.Vessel == v, "pressing Recover shows the suite's prompt instead of recovering");
             Shot("recover_prompt");
             yield return new WaitForSeconds(1f);
+            RecoverPrompt prompt = RecoverPrompt.Current;
+            if (prompt != null)
+            {
+                yield return ScrollStaysInWindow(o => prompt.TestOffset = o, "PRSRecoverPrompt", "the Recover prompt", ControlTypes.STAGING);
+                Check((InputLockManager.GetControlLock("PRSRecoverPrompt") & ControlTypes.STAGING) != 0, "off the Recover prompt, the ship's other controls stay held while it's up");
+            }
             RecoverPrompt.Current?.TestChoose(null);
             yield return new WaitForSeconds(2f);
             Check(HighLogic.LoadedSceneIsFlight && FlightGlobals.ActiveVessel == v && RecoverPrompt.Current == null, "Cancel leaves the ship where it is");
@@ -361,6 +389,14 @@ namespace PhilsReusabilitySuite
             Check(vabRefurb != null && vabRefurb.Name == storedName && sc.TitleOf(vabRefurb) == storedDisplay, "the build keeps the ship's identity (" + vabRefurb?.Name + ", shown as " + (vabRefurb != null ? sc.TitleOf(vabRefurb) : "") + ")");
             if (vabRefurb != null) sc.Cancel(vabRefurb);
             Check(Near(Funds, f5c, 2), "cancelled for a full refund");
+            // Phil (S8): cancelling a refit and starting it again keeps it the same ship: same number, same history.
+            EditorAddon.Instance.OpenBuildPanel();
+            Check(panel.Editing == null && panel.KeepShipId == storedId && panel.Title == storedDisplay, "after the cancel, the ship still in the VAB is still " + storedDisplay + " (" + panel.Title + ")");
+            Check(panel.Confirm(), "starting the cancelled refit again " + panel.Error);
+            BuildJob again = sc.Jobs.LastOrDefault();
+            Check(again != null && again != vabRefurb && again.ShipId == storedId && sc.TitleOf(again) == storedDisplay, "started again, the build is still " + storedDisplay + " (" + (again != null ? sc.TitleOf(again) : "") + "), not a new ship");
+            if (again != null) sc.Cancel(again);
+            Check(Near(Funds, f5c, 2), "cancelled again for a full refund");
             yield return ToSpaceCenter();
             sc = PRSScenario.Instance;
             stored = sc.HangarOf(storedId);

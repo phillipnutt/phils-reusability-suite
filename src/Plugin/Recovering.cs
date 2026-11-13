@@ -231,9 +231,15 @@ namespace PhilsReusabilitySuite
         void OnGUI()
         {
             GUI.skin = Look.Skin;
+            if (TestOffset.HasValue) rect.position = Event.current.mousePosition + TestOffset.Value;
             rect = GUILayout.Window(GetInstanceID(), rect, Draw, GUIContent.none, Look.Window, GUILayout.Width(520));
-            InputLockManager.SetControlLock(ControlTypes.All & ~ControlTypes.CAMERACONTROLS, "PRSRecoverPrompt");
+            // Everything but the camera is held while it's up, so you can look the ship over; over the prompt itself, the
+            // camera is held too (Phil: scrolling over a suite window scrolls only the window).
+            InputLockManager.SetControlLock(rect.Contains(Event.current.mousePosition) ? ControlTypes.All : ControlTypes.All & ~ControlTypes.CAMERACONTROLS, "PRSRecoverPrompt");
         }
+
+        /// <summary>Self-test only: keeps the prompt's corner this far from the mouse (negative: under it, positive: off it).</summary>
+        internal Vector2? TestOffset;
 
         void OnDestroy()
         {

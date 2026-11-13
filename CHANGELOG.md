@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+From Phil's play on his new career:
+- **Scrolling over a suite window scrolls only the window.** At the Space Center the scroll wheel zoomed the camera
+  too. The Recover prompt still leaves the camera free to look the ship over, except while the mouse is on the prompt.
+- **Cancelling a refit and starting it again keeps it the same ship:** same number, same history. (Bering I #1,
+  cancelled and built again, came out as a new Bering I #2 with one flight.)
+
 From Phil's sixth play-test (round 4): ship identity rebuilt. A ship's name, number, flights and log are the suite's
 own record now, not copies kept on every part, and nothing guesses who a ship is from its parts any more.
 - **A ship is always itself.** A hangar ship opened in the VAB and changed, even saved as another design, is still
